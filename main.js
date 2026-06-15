@@ -17,7 +17,7 @@ app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 app.commandLine.appendSwitch('force-device-scale-factor', '1');
 
 let mainWindow = null;
-let cachedVoices = null;
+let voicesCache = new Map();
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -80,20 +80,27 @@ ipcMain.handle('mmx:run', async (_e, args) => {
 });
 
 ipcMain.handle('mmx:voices', async () => {
-  if (cachedVoices && cachedVoices.length) return cachedVoices;
-  // Try the live API first
+  // Cache voices per API key. The voice list is the same for every key on
+  // the user's plan, but we still want a fresh fetch when the user changes
+  // keys (e.g. switches between two accounts, or pastes a new key). The
+  // previous code used a single module-level cache that never invalidated,
+  // so a key change would silently keep returning voices for the old key.
   const cfg = cfgMod.read();
+  const cacheKey = cfg.api_key || '';
+  if (voicesCache.has(cacheKey)) return voicesCache.get(cacheKey);
+  // Try the live API first
   if (cfg.api_key) {
     const r = await runMmx({ args: ['speech', 'voices'], apiKey: cfg.api_key, onLog: () => {} });
     if (r.ok) {
       const parsed = r.parsed;
-      if (Array.isArray(parsed) && parsed.length) { cachedVoices = parsed; return parsed; }
+      if (Array.isArray(parsed) && parsed.length) { voicesCache.set(cacheKey, parsed); return parsed; }
       if (typeof parsed === 'string') {
-        try { const v = JSON.parse(parsed); if (Array.isArray(v) && v.length) { cachedVoices = v; return v; } } catch { /* fallthrough */ }
+        try { const v = JSON.parse(parsed); if (Array.isArray(v) && v.length) { voicesCache.set(cacheKey, v); return v; } } catch { /* fallthrough */ }
       }
     }
   }
-  // Fallback: bundled voices.json
+  // Fallback: bundled voices.json (cached per empty key so we don't re-read
+  // the file on every call when no API key is configured).
   try {
     const fs = require('fs');
     const path = require('path');
@@ -105,10 +112,13 @@ ipcMain.handle('mmx:voices', async () => {
     for (const c of candidates) {
       if (c && fs.existsSync(c)) {
         const v = JSON.parse(fs.readFileSync(c, 'utf8'));
-        if (Array.isArray(v) && v.length) { cachedVoices = v; return v; }
+        if (Array.isArray(v) && v.length) { voicesCache.set(cacheKey, v); return v; }
       }
     }
   } catch { /* ignore */ }
+  // Cache the empty result too so we don't keep re-running the fallback on
+  // every call when the user really has no voices available.
+  voicesCache.set(cacheKey, []);
   return [];
 });
 
@@ -160,8 +170,14 @@ ipcMain.handle('mmx:diagnose', async () => {
     platform: process.platform,
     electronVersion: process.versions.electron || 'n/a',
     nodeVersion: process.versions.node,
-    nodePath: r.command,
-    mmxEntry: r.prefix[0] || null,
+    // On Windows, `r.command` is the resolved node.exe and `r.prefix[0]`
+    // is the mmx-cli entry script. On macOS/Linux, `r.command` is just
+    // 'mmx' (resolved via PATH) and there's no node wrapper. Report them
+    // truthfully so the Diagnose modal doesn't show "node.exe: mmx" on
+    // non-Windows.
+    nodePath: r.node || null,
+    mmxEntry: r.entry || r.prefix[0] || null,
+    mmxCommand: r.command || null,
     error: r.error,
     apiKeyPresent: !!(cfg.api_key && cfg.api_key.trim()),
     apiKeyLength: (cfg.api_key || '').length,

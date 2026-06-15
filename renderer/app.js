@@ -76,18 +76,34 @@ function toast(msg, kind = 'info', ms = 3000) {
 }
 
 // ----------------- Modal -----------------
+// Stack-based modal manager. The previous version used a single
+// `_modalClose` slot and wiped `modal-root` on every `showModal` call —
+// that destroyed any underlying modal (e.g. opening the bulk-paste
+// dialog from the BatchGen manager wiped the BatchGen modal entirely,
+// and the user lost Esc-to-close on the parent). Stacking keeps each
+// modal's DOM around until its own close is called, and Esc closes the
+// topmost modal first.
 let _modalClose = null;
+const _modalStack = [];
 function showModal(build) {
   const root = $('#modal-root');
-  root.innerHTML = '';
   root.classList.add('active');
   const m = el('div', { class: 'modal' });
   root.appendChild(m);
   const close = () => {
-    root.classList.remove('active');
-    root.innerHTML = '';
-    if (_modalClose === close) _modalClose = null;
+    m.remove();
+    if (root.children.length === 0) {
+      root.classList.remove('active');
+    }
+    const idx = _modalStack.indexOf(close);
+    if (idx >= 0) _modalStack.splice(idx, 1);
+    if (_modalStack.length > 0) {
+      _modalClose = _modalStack[_modalStack.length - 1];
+    } else if (_modalClose === close) {
+      _modalClose = null;
+    }
   };
+  _modalStack.push(close);
   _modalClose = close;
   build(m, close);
   return close;
@@ -2271,19 +2287,27 @@ async function refreshBrowser(opts = {}) {
   // Prefer the per-tab saved folder (set when the user last visited this
   // tab), then the current fbDir, then the output root.
   const saved = (state.currentTab && state.fbDirs[state.currentTab]) || '';
-  const startDir = state.fbDir || saved || state.config.output_dir || '';
-  const out = await window.api.fbList(startDir);
-  if (!out.ok) {
-    $('#fb-list').innerHTML = '';
-    $('#fb-path').textContent = out.error || '(no output dir)';
-    // The saved folder is gone (deleted, on a removed drive, etc.). Clear
-    // it so the next visit falls back to the output root instead of
-    // looping on the same error.
+  let startDir = state.fbDir || saved || state.config.output_dir || '';
+  let out = await window.api.fbList(startDir);
+  // If the user had a per-tab folder persisted but it's gone (deleted,
+  // drive removed, etc.) — fall back to the output root instead of just
+  // showing an error and forcing the user to click "Refresh". Same
+  // fallback if the live fbDir fails for the same reason.
+  if (!out.ok && startDir && startDir !== (state.config.output_dir || '')) {
     if (state.currentTab && state.fbDirs[state.currentTab]) {
       state.fbDirs[state.currentTab] = '';
       scheduleStateSave();
     }
     state.fbDir = '';
+    const fallback = state.config.output_dir || '';
+    if (fallback) {
+      startDir = fallback;
+      out = await window.api.fbList(fallback);
+    }
+  }
+  if (!out.ok) {
+    $('#fb-list').innerHTML = '';
+    $('#fb-path').textContent = out.error || '(no output dir)';
     return;
   }
   // For the file browser, default to current tab's subfolder if it exists.
@@ -3234,6 +3258,7 @@ async function startBatchGen(tabKey) {
 
   let ok = 0, fail = 0;
   let batchError = null;
+  let stoppedAt = 0; // 1-based index of the item we stopped on (0 = didn't stop)
   try {
     for (let i = 0; i < items.length && !_batchAbort; i++) {
       counter.textContent = `${i + 1} / ${items.length}`;
@@ -3278,7 +3303,7 @@ async function startBatchGen(tabKey) {
         if (looksOk) { ok++; logLine(`✓ ${i + 1}/${items.length}${variantTag} OK`, 'ok'); }
         else { fail++; logLine(`✗ ${i + 1}/${items.length}${variantTag} FAILED`, 'err'); }
       }
-      if (_batchAbort) { logLine(`Aborted at item ${i + 1}.`, 'warn'); break; }
+      if (_batchAbort) { stoppedAt = i + 1; logLine(`Aborted at item ${i + 1}.`, 'warn'); break; }
     }
   } catch (e) {
     batchError = e;
@@ -3302,9 +3327,15 @@ async function startBatchGen(tabKey) {
     if (styleSel) styleSel.value = savedStyle;
     if (variantsSel) variantsSel.value = savedVariants;
   });
-  if (lastCmd) lastCmd.textContent = `BatchGen finished: ${ok} ok, ${fail} failed. (variants ×${variantsCount})`;
-
-  toast(`BatchGen done: ${ok} ok, ${fail} failed.`, batchError ? 'err' : (fail === 0 ? 'ok' : 'warn'), 6000);
+  // Distinguish a user-stopped batch from a completed one — previously
+  // both said "done", which was confusing.
+  const summary = stoppedAt
+    ? `BatchGen stopped at item ${stoppedAt}: ${ok} ok, ${fail} failed.`
+    : `BatchGen finished: ${ok} ok, ${fail} failed. (variants ×${variantsCount})`;
+  if (lastCmd) lastCmd.textContent = summary;
+  toast(stoppedAt
+    ? `BatchGen stopped. ${ok} ok, ${fail} failed.`
+    : `BatchGen done: ${ok} ok, ${fail} failed.`, batchError ? 'err' : (fail === 0 ? 'ok' : 'warn'), 6000);
   await refreshBrowser();
   await refreshQuota();
 }
@@ -3801,12 +3832,18 @@ function armGenBtnWithCancel(genBtn, label) {
       genBtn.textContent = origLabel;
       genBtn.disabled = false;
       // Update the per-tab average (only on successful, non-cancelled runs).
-      if (tabKey && !cancelled && state.genStartMs && state.genStartMs[tabKey]) {
-        const dur = (Date.now() - state.genStartMs[tabKey]) / 1000;
-        if (!state.genAvgSec) state.genAvgSec = {};
-        const prev = state.genAvgSec[tabKey] || 0;
-        // Exponential moving average, alpha=0.4 — recent runs weighted higher.
-        state.genAvgSec[tabKey] = prev === 0 ? dur : (prev * 0.6 + dur * 0.4);
+      // Always clear the start time so a later ETA tick doesn't read a
+      // stale value (the previous code only nulled it on success, which
+      // meant a cancelled run kept its start timestamp and the ETA timer
+      // would briefly show "elapsed: 999s" until it auto-cleared).
+      if (tabKey && state.genStartMs && state.genStartMs[tabKey]) {
+        if (!cancelled) {
+          const dur = (Date.now() - state.genStartMs[tabKey]) / 1000;
+          if (!state.genAvgSec) state.genAvgSec = {};
+          const prev = state.genAvgSec[tabKey] || 0;
+          // Exponential moving average, alpha=0.4 — recent runs weighted higher.
+          state.genAvgSec[tabKey] = prev === 0 ? dur : (prev * 0.6 + dur * 0.4);
+        }
         state.genStartMs[tabKey] = null;
       }
       // Only clear the busy flag if it still points to this tab.
@@ -4069,8 +4106,12 @@ function buildFinalPrompt(selEl, manualEl, extraPrefix = '') {
   const selVal = selEl ? selEl.value : '';
   const manual = manualEl ? manualEl.value.trim() : '';
   const styleText = getStyleText(selVal);
-  // Compose: extraPrefix, styleText, manual
-  const parts = [extraPrefix, styleText, manual].filter(Boolean);
+  // Strip trailing whitespace + commas from each part before joining.
+  // The instrumental-mode prefix and some style presets already end with
+  // a trailing comma — joining with ", " would otherwise produce
+  // "no vocals, , manual" (double comma). The trim keeps the join clean.
+  const clean = (s) => String(s || '').replace(/[\s,]+$/, '');
+  const parts = [extraPrefix, styleText, manual].map(clean).filter(Boolean);
   return parts.join(', ');
 }
 
