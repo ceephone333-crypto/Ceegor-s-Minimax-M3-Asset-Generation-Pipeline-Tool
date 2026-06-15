@@ -99,6 +99,13 @@ function runMmx({ args, apiKey, cwd, onLog }) {
       resolveP({ ok: false, code: -1, stdout: '', stderr: r.error || 'mmx unavailable', parsed: null });
       return;
     }
+    // Defensive: the renderer always passes an array, but a future caller
+    // (or a corrupted IPC payload) might not. Bail out cleanly instead of
+    // throwing a cryptic "args is not iterable" from the spread below.
+    if (!Array.isArray(args)) {
+      resolveP({ ok: false, code: -1, stdout: '', stderr: 'mmx: args must be an array', parsed: null });
+      return;
+    }
     const fullArgs = [
       ...r.prefix,
       ...args,
@@ -107,7 +114,13 @@ function runMmx({ args, apiKey, cwd, onLog }) {
     ];
     if (apiKey) fullArgs.push('--api-key', apiKey);
 
-    onLog?.(`$ ${r.command} ${fullArgs.map(quote).join(' ')}`);
+    // Log the command line, but redact the API key — otherwise the user
+    // accidentally leaks their key when they click "Copy log" to share an
+    // error with support. The match handles both `--api-key <value>` and
+    // the quoted form `--api-key "<value>"`.
+    const cmdLine = `$ ${r.command} ${fullArgs.map(quote).join(' ')}`
+      .replace(/--api-key(?:\s+(?:"[^"]*"|'[^']*'|\S+))?/, '--api-key ***');
+    onLog?.(cmdLine);
 
     let stdout = '';
     let stderr = '';
@@ -115,7 +128,11 @@ function runMmx({ args, apiKey, cwd, onLog }) {
     let proc;
     try {
       proc = spawn(r.command, fullArgs, { cwd, windowsHide: true, env: process.env });
-      activeProcs.add(proc);
+      // Mark this as the current generation proc. cancelAll() only kills
+      // this one — NOT other in-flight procs (e.g. a parallel quota check
+      // triggered from the Diagnose dialog). Killing everything would
+      // cancel a quota refresh the user might still want to see complete.
+      currentGenProc = proc;
     } catch (err) {
       resolveP({ ok: false, code: -1, stdout: '', stderr: String(err), parsed: null });
       return;
@@ -149,13 +166,13 @@ function runMmx({ args, apiKey, cwd, onLog }) {
     proc.on('error', (err) => {
       // `error` fires when the process can't be spawned (ENOENT etc.) and
       // is usually followed by `close`. Resolve here in case `close` never
-      // fires, and drop the entry from the active-proc set so a later
-      // cancelAll() doesn't try to kill a non-existent process.
-      activeProcs.delete(proc);
+      // fires, and clear the current-gen-proc slot so a later cancelAll()
+      // doesn't try to kill a non-existent process.
+      if (currentGenProc === proc) currentGenProc = null;
       resolveP({ ok: false, code: -1, stdout, stderr: stderr + '\n' + String(err), parsed: null });
     });
     proc.on('close', (code) => {
-      activeProcs.delete(proc);
+      if (currentGenProc === proc) currentGenProc = null;
       const parsed = tryParseAll(stdout);
       const ok = code === 0;
       if (!ok && !parsed) {
@@ -189,13 +206,19 @@ function quote(v) {
   return s;
 }
 
-// Track active mmx processes so we can cancel them on demand
-const activeProcs = new Set();
+// Track the current "generation" proc so we can cancel it on demand.
+// We deliberately track only ONE proc (the most recent generation) rather
+// than a Set of all in-flight procs: the renderer enforces a single
+// in-flight generation via state.generating, so the only proc that should
+// ever be cancellable is the one the user just kicked off. Other procs
+// (e.g. a parallel mmx quota check from the Diagnose dialog) are
+// unrelated and should keep running.
+let currentGenProc = null;
 function cancelAll() {
-  for (const proc of activeProcs) {
-    try { proc.kill('SIGTERM'); } catch {}
+  if (currentGenProc) {
+    try { currentGenProc.kill('SIGTERM'); } catch {}
+    currentGenProc = null;
   }
-  activeProcs.clear();
 }
 
 module.exports = { runMmx, resolve, cancelAll };
