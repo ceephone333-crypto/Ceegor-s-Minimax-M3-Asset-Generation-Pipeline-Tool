@@ -884,10 +884,15 @@ label { color: var(--fg); font-weight: 500; }
 }
 .shortcut-row span { color: var(--fg-2); }
 
-/* ========== Modal / Toasts ========== */
+/* ========== Modal / Toasts ==========
+   The dark backdrop overlay (rgba(0,0,0,0.55)) only applies when a
+   modal is actually open — the .active class is added by showModal()
+   on first show and removed when the last modal closes. Previously the
+   backdrop was on #modal-root unconditionally, so the page stayed
+   dimmed even when no modal was visible. */
 #modal-root, #toast-root { position: fixed; inset: 0; pointer-events: none; z-index: 100; }
-#modal-root { display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.55); }
-#modal-root.active { pointer-events: auto; }
+#modal-root { display: flex; align-items: center; justify-content: center; }
+#modal-root.active { pointer-events: auto; background: rgba(0, 0, 0, 0.55); }
 .modal {
   background: var(--bg-2);
   border: 1px solid var(--border-2);
