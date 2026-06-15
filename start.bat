@@ -18,7 +18,7 @@ if errorlevel 1 (
 )
 
 if not exist "node_modules\electron\dist\electron.exe" (
-  echo [setup] Installing dependencies (first run)...
+  echo [setup] Installing dependencies, first run...
   call npm install --no-audit --no-fund
   if errorlevel 1 (
     echo [error] npm install failed. Check your network connection.
