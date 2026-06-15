@@ -736,6 +736,98 @@ label { color: var(--fg); font-weight: 500; }
   margin: 0;
   cursor: pointer;
 }
+
+/* "auto-crop" checkbox in the upscale dialog. Sits between the
+   multiplier selector and the W/H inputs (which are revealed by
+   the checkbox). Reuses the crop overlay's label/cb styling. */
+.auto-crop-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--fg);
+}
+.auto-crop-cb {
+  margin: 0;
+  cursor: pointer;
+}
+
+/* 3×3 anchor grid for the auto-crop "phone-dial" anchor
+   selector. Nine equally-sized cells, the center one (idx 4) is
+   the default and uses an accent-coloured background; corner cells
+   use directional arrows so the user can see at a glance which
+   side the crop frame will be pushed to. */
+.anchor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 40px);
+  grid-template-rows: repeat(3, 40px);
+  gap: 4px;
+  justify-content: center;
+  margin: 12px auto;
+  padding: 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.anchor-cell {
+  width: 40px;
+  height: 40px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  color: var(--fg-2);
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+.anchor-cell:hover {
+  background: var(--bg-4);
+  border-color: var(--border-2);
+}
+.anchor-cell.selected {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent-2);
+}
+
+/* File-info block at the top of the right-click context menu.
+   Shows type / size / modified / (for images) dimensions in a
+   compact two-column grid. The Dimensions cell starts with
+   "detecting…" and is filled in once loadImageFromFile resolves. */
+.fb-item-info {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fb-info-row {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+.fb-info-key {
+  color: var(--fg-3);
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+}
+.fb-info-dim {
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
 .crop-stage {
   position: relative;
   display: inline-block;

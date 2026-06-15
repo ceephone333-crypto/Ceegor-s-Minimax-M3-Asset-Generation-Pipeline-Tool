@@ -2273,38 +2273,192 @@ function showUpscaleSettings() {
 }
 
 // Direct upscale overlay used by the right-click menu on an image
-// in the file browser. Unlike the checkbox-flow overlay, the action
-// button here is "Upscale" — it directly upscales the selected file
-// and saves the result next to the original.
-function showUpscaleDirect(srcPath) {
+// in the file browser. Shows the source resolution + the target
+// resolution after upscaling, an "auto-crop to resolution" toggle,
+// and (when that toggle is on) a 3×3 anchor grid + W/H inputs so
+// the user can upscale AND crop in one step. The flow:
+//   1. upscaleImageFile() writes `<name>_Nx.png` to output_dir.
+//   2. If auto-crop is on, cropImageFile() reads it back, places
+//      the crop frame at the chosen anchor (top-left, center,
+//      bottom-right, etc.), writes `<name>_Nx_cropped_WxH.png`,
+//      and the intermediate `_Nx` file is deleted.
+//   3. The cropped file is shown in the preview pane.
+async function showUpscaleDirect(srcPath) {
+  // We need the source's natural resolution to compute the target.
+  // If the image is unreadable, surface the error and bail — the
+  // dialog needs a known sourceW × sourceH to do anything useful.
+  let srcW = 0, srcH = 0;
+  try {
+    const img = await loadImageFromFile(srcPath);
+    srcW = img.naturalWidth;
+    srcH = img.naturalHeight;
+    if (!srcW || !srcH) throw new Error('Image has no natural dimensions');
+  } catch (e) {
+    toast('Failed to load image: ' + (e && e.message || e), 'err', 6000);
+    return;
+  }
   showModal((m, close) => {
     m.appendChild(el('h2', {}, '🔍 Upscale image'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
       'Source: ' + srcPath));
+
+    // Resolution row: source (immutable) + target after upscale (live).
+    // The target updates whenever the multiplier or crop W/H changes.
+    const targetText = el('div', { class: 'meta' }, '');
+    function refreshTarget() {
+      const mult = parseInt(multSel.value, 10) || 2;
+      const tW = srcW * mult;
+      const tH = srcH * mult;
+      const cropW = parseInt(cropWInput.value, 10) || tW;
+      const cropH = parseInt(cropHInput.value, 10) || tH;
+      const w = Math.min(cropW, tW);
+      const h = Math.min(cropH, tH);
+      const cropNote = autoCropCb.checked ? ` · after auto-crop: ${w} × ${h} px` : '';
+      targetText.textContent = `Source ${srcW} × ${srcH} px  →  after upscale: ${tW} × ${tH} px${cropNote}`;
+    }
+
+    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Resolution'), targetText]));
+
+    // Multiplier selector (2× / 3× / 4× / 8×).
     const multSel = el('select', {});
-    for (const m2 of [2, 3, 4]) {
-      const opt = el('option', { value: String(m2) }, `${m2}× (larger)`);
+    for (const m2 of [2, 3, 4, 8]) {
+      const opt = el('option', { value: String(m2) }, `${m2}×`);
       if (m2 === (state.upscaleSettings && state.upscaleSettings.multiplier || 2)) opt.selected = true;
       multSel.appendChild(opt);
     }
     m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Multiplier'), multSel]));
+
+    // auto-crop checkbox. Off by default — keeps the dialog backwards-
+    // compatible (just upscale, like before).
+    const autoCropCb = el('input', { type: 'checkbox', class: 'auto-crop-cb' });
+    autoCropCb.checked = false;
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', { class: 'auto-crop-label' }, [autoCropCb, ' auto-crop to resolution']),
+    ]));
+
+    // Crop W / H inputs. Hidden by default; revealed when auto-crop
+    // is checked. Pre-filled with the post-upscale target so the
+    // common case is "use the full upscaled result".
+    const cropWInput = el('input', { type: 'number', min: '1', value: '0' });
+    const cropHInput = el('input', { type: 'number', min: '1', value: '0' });
+    const cropSizeRow = el('div', { class: 'row auto-crop-only' }, [
+      el('label', {}, 'Crop target W × H'),
+      cropWInput, el('span', {}, ' × '), cropHInput,
+    ]);
+    cropSizeRow.style.display = 'none';
+    m.appendChild(cropSizeRow);
+
+    // 3×3 anchor grid. Each cell = an (x, y) anchor in {left,
+    // center, right} × {top, center, bottom}. The center cell (the
+    // "·" dot, idx 4) is the default — it places the crop frame
+    // with equal borders on all four sides. Selecting a corner cell
+    // pushes the frame to that corner, which "cuts the opposite
+    // sides" of the image (e.g. top-left keeps the top-left, cuts
+    // the right + bottom). Hidden by default.
+    const anchor = { x: 'center', y: 'center' };
+    const anchorGrid = el('div', { class: 'anchor-grid' });
+    const cells = [];
+    // Glyph for each (yi, xi) — uses arrow characters so the
+    // direction is unmistakable. The middle cell gets a dot to
+    // signal "centered, equal borders".
+    const GLYPHS = [
+      // top row
+      ['↖', 'top-left',     'left',    'top'],
+      ['↑', 'top-center',   'center',  'top'],
+      ['↗', 'top-right',    'right',   'top'],
+      // middle row
+      ['←', 'middle-left',  'left',    'center'],
+      ['·', 'center',       'center',  'center'],
+      ['→', 'middle-right', 'right',   'center'],
+      // bottom row
+      ['↙', 'bottom-left',  'left',    'bottom'],
+      ['↓', 'bottom-center','center',  'bottom'],
+      ['↘', 'bottom-right', 'right',   'bottom'],
+    ];
+    for (let i = 0; i < GLYPHS.length; i++) {
+      const [glyph, name, x, y] = GLYPHS[i];
+      const cell = el('button', {
+        type: 'button',
+        class: 'anchor-cell' + (i === 4 ? ' selected' : ''),
+        title: `Anchor: ${name} (crop keeps the ${name} corner)`,
+        'data-x': x, 'data-y': y,
+      }, glyph);
+      cell.addEventListener('click', () => {
+        for (const c of cells) c.classList.remove('selected');
+        cell.classList.add('selected');
+        anchor.x = x;
+        anchor.y = y;
+      });
+      cells.push(cell);
+      anchorGrid.appendChild(cell);
+    }
+    anchorGrid.style.display = 'none';
+    m.appendChild(anchorGrid);
+
+    // Toggle the auto-crop sub-UI. We do this in a single place so
+    // the show / hide stays in sync and the target text always
+    // reflects the current state.
+    function setAutoCropVisible(on) {
+      cropSizeRow.style.display = on ? '' : 'none';
+      anchorGrid.style.display = on ? '' : 'none';
+      refreshTarget();
+    }
+    autoCropCb.addEventListener('change', () => setAutoCropVisible(autoCropCb.checked));
+    multSel.addEventListener('change', refreshTarget);
+    cropWInput.addEventListener('input', refreshTarget);
+    cropHInput.addEventListener('input', refreshTarget);
+    setAutoCropVisible(false); // also primes the W/H inputs + target text
+
     const upscaleBtn = el('button', { class: 'primary' }, 'Upscale');
     const cancelBtn = el('button', { onclick: close }, 'Cancel');
     upscaleBtn.addEventListener('click', async () => {
       const multiplier = parseInt(multSel.value, 10) || 2;
       upscaleBtn.disabled = true; upscaleBtn.textContent = 'Upscaling…';
       try {
-        const out = await upscaleImageFile(srcPath, multiplier);
-        toast(`Upscaled to ${multiplier}× → ${out}`, 'ok', 4000);
-        await refreshBrowser();
-        // Also push the new file into the bottom-right preview pane
-        if (typeof updatePreviewPane === 'function') {
-          try { previewImageFromFile(out); } catch (_) {}
+        // Step 1: upscale.
+        const upscaled = await upscaleImageFile(srcPath, multiplier);
+        // Step 2: optionally crop.
+        if (autoCropCb.checked) {
+          upscaleBtn.textContent = 'Cropping…';
+          const cropW = Math.max(1, parseInt(cropWInput.value, 10) || 1);
+          const cropH = Math.max(1, parseInt(cropHInput.value, 10) || 1);
+          // Need the actual upscaled dimensions to anchor correctly.
+          const upImg = await loadImageFromFile(upscaled);
+          const uW = upImg.naturalWidth;
+          const uH = upImg.naturalHeight;
+          // Clamp the crop to the upscaled size; anchor otherwise.
+          const w = Math.min(cropW, uW);
+          const h = Math.min(cropH, uH);
+          const maxX = uW - w;
+          const maxY = uH - h;
+          let x, y;
+          if (anchor.x === 'left')       x = 0;
+          else if (anchor.x === 'right') x = maxX;
+          else                            x = Math.floor(maxX / 2);
+          if (anchor.y === 'top')         y = 0;
+          else if (anchor.y === 'bottom') y = maxY;
+          else                            y = Math.floor(maxY / 2);
+          const final = await cropImageFile(upscaled, x, y, w, h);
+          // Drop the intermediate (full-upscaled) file — the user
+          // asked for the cropped one, not the raw intermediate.
+          window.api.fbDelete(upscaled).catch(() => {});
+          toast(`Upscaled ${multiplier}× and cropped to ${w} × ${h} px → ${final}`, 'ok', 4000);
+          await refreshBrowser();
+          if (typeof updatePreviewPane === 'function') {
+            try { previewImageFromFile(final); } catch (_) {}
+          }
+        } else {
+          toast(`Upscaled to ${multiplier}× → ${upscaled}`, 'ok', 4000);
+          await refreshBrowser();
+          if (typeof updatePreviewPane === 'function') {
+            try { previewImageFromFile(upscaled); } catch (_) {}
+          }
         }
         close();
       } catch (e) {
-        toast('Upscale failed: ' + (e && e.message || e), 'err', 6000);
-        upscaleBtn.disabled = false; upscaleBtn.textContent = 'Upscale';
+        toast('Upscale' + (autoCropCb.checked ? '+crop' : '') + ' failed: ' + (e && e.message || e), 'err', 6000);
+        upscaleBtn.disabled = false;
+        upscaleBtn.textContent = 'Upscale';
       }
     });
     m.appendChild(el('div', { class: 'footer' }, [cancelBtn, upscaleBtn]));
@@ -2976,8 +3130,56 @@ async function fbClipboardPaste(destDir) {
 function showItemContextMenu(it, x, y) {
   showModal((m, close) => {
     m.appendChild(el('h2', {}, it.name));
-    m.appendChild(el('div', { class: 'meta', style: 'margin-bottom: 12px; color: var(--fg-2);' }, it.path));
+    m.appendChild(el('div', { class: 'meta', style: 'margin-bottom: 8px; color: var(--fg-2);' }, it.path));
+
+    // File-info block. Always shown. Lists the type, size, modified
+    // time, and (for images) the natural resolution. Resolution
+    // has to be decoded from the file, so we render a "detecting…"
+    // placeholder first and fill it in once loadImageFromFile
+    // resolves.
     const isImage = !it.isDir && ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(it.ext);
+    const info = el('div', { class: 'fb-item-info' });
+    if (it.isDir) {
+      info.appendChild(el('div', { class: 'fb-info-row' }, [
+        el('span', { class: 'fb-info-key' }, 'Type'),
+        el('span', {}, 'Folder'),
+      ]));
+    } else {
+      const extLabel = (it.ext || '').replace('.', '').toUpperCase() || 'file';
+      info.appendChild(el('div', { class: 'fb-info-row' }, [
+        el('span', { class: 'fb-info-key' }, 'Type'),
+        el('span', {}, extLabel),
+      ]));
+      info.appendChild(el('div', { class: 'fb-info-row' }, [
+        el('span', { class: 'fb-info-key' }, 'Size'),
+        el('span', {}, humanSize(it.size || 0)),
+      ]));
+      info.appendChild(el('div', { class: 'fb-info-row' }, [
+        el('span', { class: 'fb-info-key' }, 'Modified'),
+        el('span', {}, formatDate(it.mtimeMs)),
+      ]));
+      if (isImage) {
+        const dimCell = el('div', { class: 'fb-info-row' }, [
+          el('span', { class: 'fb-info-key' }, 'Dimensions'),
+          el('span', { class: 'fb-info-dim' }, 'detecting…'),
+        ]);
+        info.appendChild(dimCell);
+        loadImageFromFile(it.path).then((img) => {
+          const dim = dimCell.querySelector('.fb-info-dim');
+          if (!dim) return;
+          if (img.naturalWidth && img.naturalHeight) {
+            dim.textContent = `${img.naturalWidth} × ${img.naturalHeight} px`;
+          } else {
+            dim.textContent = 'unknown';
+          }
+        }).catch(() => {
+          const dim = dimCell.querySelector('.fb-info-dim');
+          if (dim) dim.textContent = 'unreadable';
+        });
+      }
+    }
+    m.appendChild(info);
+
     const row1 = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => { close(); await openItem(it); } }, 'Open / Preview'))]);
     const row2 = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => { close(); await window.api.fbReveal(it.path); } }, 'Reveal in Explorer'))]);
     // Image-pipeline items: Upscale / Crop / Convert. Only show for
@@ -3001,6 +3203,21 @@ function showItemContextMenu(it, x, y) {
     const footer = el('div', { class: 'footer' }, el('button', { class: 'btn-mini', onclick: close }, 'Close'));
     m.appendChild(footer);
   });
+}
+
+// Format a mtimeMs timestamp as a human-readable local string.
+// Returns "—" for null / NaN / 0 (we treat 0 as "no timestamp",
+// which happens for some FS drivers that don't expose mtime).
+function formatDate(ms) {
+  if (!ms || typeof ms !== 'number') return '—';
+  const d = new Date(ms);
+  if (isNaN(d.getTime())) return '—';
+  // YYYY-MM-DD HH:MM in the user's local timezone. Locale-agnostic
+  // on purpose so two users in different regions see the same text
+  // in a shared screenshot.
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+       + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 
 function promptRename(it) {
