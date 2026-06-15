@@ -8,6 +8,7 @@ const { runMmx } = require('./src/mmx');
 const cfgMod = require('./src/config');
 const fb = require('./src/fileBrowser');
 const pathUtils = require('./src/pathUtils');
+const reEsrgan = require('./src/realesrgan');
 
 // Disable native window occlusion (which can cause blurry text on Windows
 // when the window is partially obscured or the OS compositor applies
@@ -274,6 +275,38 @@ ipcMain.handle('mmx:diagnose', async () => {
     apiKeyLength: (cfg.api_key || '').length,
     region: cfg.region,
   };
+});
+
+// ---------------- IPC: Real-ESRGAN (optional upscaler) ----------------
+// BSD-3-Clause licensed, downloaded separately by the user. The
+// renderer asks the main process whether the binary is available
+// before each upscale; if it is, the main process spawns the binary
+// to produce a 4× intermediate PNG, which the renderer then
+// resizes (downscale for 2×/3×, no-op for 4×, 2× step for 8×) and
+// writes to the final path. If the binary is missing, the renderer
+// falls back to the built-in multi-step createImageBitmap pipeline.
+
+ipcMain.handle('upscale:realesrgan:available', () => {
+  const available = reEsrgan.isAvailable();
+  const result = {
+    available,
+    binaryPath: available ? reEsrgan.getBinaryPath() : null,
+    version: available ? reEsrgan.probeVersion() : '',
+  };
+  return result;
+});
+
+ipcMain.handle('upscale:realesrgan:run', async (_e, srcPath, dstPath, opts) => {
+  // The renderer gives us an input and an output path; both are
+  // already validated by the IPC handler's own checks. We only need
+  // to confirm they live under the allowed roots.
+  if (!pathUtils.isPathUnderAny(srcPath, allowedRoots())) {
+    return { ok: false, code: -1, stderr: 'Source path is outside the allowed directories.', outputPath: null };
+  }
+  if (!pathUtils.isPathUnderAny(dstPath, allowedRoots())) {
+    return { ok: false, code: -1, stderr: 'Destination path is outside the allowed directories.', outputPath: null };
+  }
+  return reEsrgan.run(srcPath, dstPath, opts || {});
 });
 
 // ---------------- IPC: file browser ----------------
