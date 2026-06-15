@@ -107,6 +107,48 @@ button.danger:hover { background: var(--danger); color: #fff; }
 .batch-controls .batch-start { font-weight: 600; }
 .batch-controls .batch-edit { padding: 3px 7px; line-height: 1; }
 
+/* "+ Add" button that sits LEFT of Generate on every tab. It
+   captures the current form state into the batch queue (new
+   "snapshot" entry shape). Visually distinct from the primary
+   Generate button (which is the dominant action) but still
+   clearly a button. */
+button.batch-add {
+  /* Slight tint to read as a "constructive" action — same
+     accent family as the primary, but a stop lighter so it
+     doesn't compete with Generate for attention. */
+  background: var(--bg-3);
+  border-color: var(--border-2);
+  color: var(--fg-2);
+  font-weight: 500;
+}
+button.batch-add:hover {
+  background: var(--bg-4);
+  border-color: var(--accent-2);
+  color: var(--fg);
+}
+
+/* The BatchGen popup entry editor. Each entry is a row containing
+   the row-number, a vertical "editor" stack (textarea + optional
+   snapshot tag), and the reorder / delete buttons. */
+.batch-row { display: flex; gap: 6px; align-items: stretch; margin-bottom: 6px; }
+.batch-row-editor { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.batch-row-editor textarea { min-height: 70px; }
+.batch-snapshot-tag {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--fg-2);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 input, select, textarea {
   font: inherit; color: var(--fg);
   background: var(--bg);

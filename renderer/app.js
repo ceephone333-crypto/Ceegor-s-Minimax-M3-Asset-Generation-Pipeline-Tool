@@ -780,7 +780,7 @@ TABS.image = {
     const batchControls = el('span', { 'data-batch-controls': 'image', class: 'batch-controls' });
     // Variants dropdown (image tab: disabled when seed is set)
     const variants = buildVariantsRow({ id: 'variants-image', seedInput: seed });
-    actions.append(genBtn, upscaleLabel, variants.row, batchControls, lastCmd);
+    actions.append(buildAddToBatchBtn('image'), genBtn, upscaleLabel, variants.row, batchControls, lastCmd);
     const preview = el('div', { class: 'preview' }, el('div', { class: 'empty' }, 'No image generated yet.'));
 
     // Sticky footer: actions + preview stay visible while the rest of the
@@ -1213,7 +1213,7 @@ TABS.speech = {
     const batchControls = el('span', { 'data-batch-controls': 'speech', class: 'batch-controls' });
     // Variants dropdown (speech tab has no seed, so always enabled)
     const variants = buildVariantsRow({ id: 'variants-speech' });
-    actions.append(genBtn, variants.row, batchControls, lastCmd);
+    actions.append(buildAddToBatchBtn('speech'), genBtn, variants.row, batchControls, lastCmd);
     const preview = el('div', { class: 'preview' }, el('div', { class: 'empty' }, 'No audio generated yet.'));
     const tabFooter = el('div', { class: 'tab-footer' }, [actions, preview]);
     root.appendChild(tabFooter);
@@ -1679,7 +1679,7 @@ TABS.music = {
     const batchControls = el('span', { 'data-batch-controls': 'music', class: 'batch-controls' });
     // Variants dropdown (music tab has no seed, so always enabled)
     const variants = buildVariantsRow({ id: 'variants-music' });
-    actions.append(genBtn, variants.row, batchControls, lastCmd);
+    actions.append(buildAddToBatchBtn('music'), genBtn, variants.row, batchControls, lastCmd);
     const preview = el('div', { class: 'preview' }, el('div', { class: 'empty' }, 'No audio generated yet.'));
     const tabFooter = el('div', { class: 'tab-footer' }, [actions, preview]);
     root.appendChild(tabFooter);
@@ -3727,35 +3727,190 @@ function openStyleSettings(returnToTab) {
   });
 }
 
+// ----------------- BatchGen helpers -----------------
+
+// Capture the current "momentary task" for a tab: the main prompt
+// text plus a full snapshot of every per-tab form field. This is
+// what the new "Add" button (left of Generate) puts onto the batch
+// queue. The queue can also contain plain-text entries (legacy
+// format, still used by the "Bulk paste" + "+ Add prompt" buttons
+// in the popup) — those are just a string. New snapshot entries
+// are objects with { prompt, settings, ts, label }.
+//
+// The settings snapshot is the same shape captureTabState()
+// returns, so applyTabState() can rehydrate the entire form
+// before the batch runner fires Generate on each entry. That
+// keeps the user's per-entry overrides intact (e.g. a 4× upscale
+// configured when the entry was queued, not the tab's current
+// upscale state when the batch is started).
+function captureBatchEntry(tabKey) {
+  const root = $(`#tab-${tabKey}`);
+  if (!root) return null;
+  // captureTabState walks every input/select/textarea in the tab
+  // and returns { id: value, ... }. The main prompt is in there
+  // (its textarea has an id) but we hoist it to the top level
+  // so the popup can edit it without the user having to remember
+  // which id to target.
+  const raw = captureTabState(tabKey);
+  // Heuristic: the first textarea in the tab is always the main
+  // prompt. (buildParamRow only puts a textarea kind on the main
+  // prompt field; everything else is an enum/number/boolean.)
+  const promptTa = root.querySelector('textarea');
+  const promptId = promptTa ? promptTa.id : null;
+  const prompt = promptId ? (raw[promptId] || '') : '';
+  // Remove the prompt from the settings snapshot — we'll re-apply
+  // the settings first, then overwrite the promptTa.value with
+  // entry.prompt (in case the user edited it in the popup).
+  const settings = Object.assign({}, raw);
+  if (promptId) delete settings[promptId];
+  return {
+    prompt,
+    settings,
+    ts: Date.now(),
+    label: summarizeEntrySettings(settings, tabKey),
+  };
+}
+
+// Normalize a batch entry to the canonical { prompt, settings,
+// ts, label } shape. Accepts the legacy string form (prompt only)
+// for backwards compat with old batches.json files.
+function normalizeBatchEntry(e) {
+  if (e == null) return null;
+  if (typeof e === 'string') {
+    return { prompt: e, settings: null, ts: 0, label: '' };
+  }
+  if (typeof e === 'object' && typeof e.prompt === 'string') {
+    return {
+      prompt: e.prompt,
+      settings: e.settings && typeof e.settings === 'object' ? e.settings : null,
+      ts: typeof e.ts === 'number' ? e.ts : 0,
+      label: typeof e.label === 'string' ? e.label : summarizeEntrySettings(e.settings || {}, ''),
+    };
+  }
+  return null;
+}
+
+// One-line summary of a settings snapshot for the popup's snapshot
+// tag. The goal is to make snapshot entries visually distinct
+// from legacy plain-text entries, and to give the user a quick
+// "this is what was captured" read at a glance. Unknown / missing
+// settings collapse to an empty tag.
+function summarizeEntrySettings(settings, tabKey) {
+  if (!settings) return '';
+  const parts = [];
+  // Variant count (selected via the variants dropdown — common to
+  // every tab; the id is the tab-prefixed variants select).
+  for (const k of Object.keys(settings)) {
+    const v = settings[k];
+    if (v == null) continue;
+    if (k.endsWith('.variants') || k === 'variants') {
+      const n = parseInt(v, 10);
+      if (n && n > 1) parts.push(`${n} variants`);
+      continue;
+    }
+  }
+  // Tab-specific bits.
+  if (tabKey === 'image') {
+    if (settings['image.model']) parts.push(`model ${settings['image.model']}`);
+    if (settings['image.aspect_ratio'] || settings['image.aspect']) {
+      const a = settings['image.aspect_ratio'] || settings['image.aspect'];
+      if (a) parts.push(a);
+    }
+    if (settings['image.upscale_enabled'] === 'on' || settings['image.upscale_enabled'] === true) {
+      const mult = settings['image.upscale_multiplier'] || settings.upscaleSettings?.multiplier;
+      parts.push(`upscale ${mult || ''}×`.replace(/\s+x\s*$/, '×').trim());
+    }
+  } else if (tabKey === 'speech') {
+    if (settings['speech.model']) parts.push(`model ${settings['speech.model']}`);
+    if (settings['speech.voice']) parts.push(`voice ${settings['speech.voice']}`);
+  } else if (tabKey === 'music') {
+    if (settings['music.model']) parts.push(`model ${settings['music.model']}`);
+    if (settings['music.mode'] === 'instrumental' || settings['music.mode'] === 'instr') {
+      parts.push('instr');
+    }
+  } else if (tabKey === 'video') {
+    if (settings['video.model']) parts.push(`model ${settings['video.model']}`);
+    if (settings['video.duration']) parts.push(`${settings['video.duration']}s`);
+  }
+  // Global "Target file prefix" (mirrored on every tab but the
+  // settings-dict in the snapshot uses the canonical name).
+  const prefix = settings.filePrefix || (tabKey && settings[tabKey + '.filePrefix']);
+  if (prefix) parts.unshift(`"${prefix}"`);
+  return parts.join(' · ');
+}
+
+// Build the "+ Add" button that sits LEFT of Generate on every
+// tab. Clicking it captures the current form state (prompt +
+// every per-tab input/select) via captureBatchEntry(), appends
+// the entry to state.batches[tabKey], persists via the
+// batchesSet IPC, refreshes the tab's "Start Batch" button, and
+// shows a confirmation toast with the queue size.
+function buildAddToBatchBtn(tabKey) {
+  const btn = el('button', {
+    class: 'btn-mini batch-add',
+    title: 'Queue this exact generation (current prompt + all settings) for the batch runner. The snapshot is stored, so each entry runs with the settings you had at queue time, not the ones you have at run time.',
+  }, '+ Add');
+  btn.addEventListener('click', async () => {
+    const entry = captureBatchEntry(tabKey);
+    if (!entry) { toast('Could not capture the current tab state.', 'err'); return; }
+    if (!entry.prompt.trim()) {
+      toast('Prompt is required to queue a generation. Fill in the prompt first.', 'warn', 4000);
+      return;
+    }
+    const cur = state.batches[tabKey] || [];
+    if (cur.length >= 100) { toast('Batch is full (max 100 entries).', 'warn'); return; }
+    const next = [...cur, entry];
+    const r = await window.api.batchesSet({ ...state.batches, [tabKey]: next });
+    if (!r.ok) { toast('Save failed: ' + r.error, 'err'); return; }
+    state.batches = { ...state.batches, [tabKey]: next };
+    const shortPrompt = entry.prompt.length > 30
+      ? entry.prompt.slice(0, 30) + '…'
+      : entry.prompt;
+    toast(`Queued "${shortPrompt}" (${next.length} in queue).`, 'ok', 3000);
+    _refreshBatchButtons();
+  });
+  return btn;
+}
+
 // ----------------- BatchGen Manager -----------------
 // Opens a modal with up to 100 prompt inputs for a single tab.
 // Save persists to batches.json and refreshes the tab's "Start Batch" button.
 function openBatchManager(tabKey) {
   const tabName = tabKey.charAt(0).toUpperCase() + tabKey.slice(1);
-  const current = (state.batches[tabKey] || []).slice();
+  // Normalize every entry to the canonical shape so the renderer
+  // doesn't have to special-case legacy strings vs new objects.
+  const current = (state.batches[tabKey] || []).map(normalizeBatchEntry).filter(Boolean);
   showModal((m, close) => {
     m.appendChild(el('h2', {}, `BatchGen — ${tabName} Tab`));
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-      `Enter up to 100 prompts/texts. They will be generated one after another with the tab's current options + the selected style preset. "Start Batch" runs them sequentially in the tab. "${tabName === 'Video' ? 'Note: your plan includes 3 free video generations per week — the rest will fail with quota errors.' : ''}"`));
+      `Enter up to 100 prompts/texts. They will be generated one after another with the tab's current options + the selected style preset. Entries with the "📸 snapshot" tag were captured via the new "Add" button on the tab — they remember the form settings (model, upscale, crop, etc.) that were active at queue time and re-apply them before each generation. "Start Batch" runs them sequentially in the tab. "${tabName === 'Video' ? 'Note: your plan includes 3 free video generations per week — the rest will fail with quota errors.' : ''}"`));
 
     // List of textareas
     const list = el('div', { class: 'batch-list' });
     function renderList() {
       list.innerHTML = '';
       if (!current.length) {
-        list.appendChild(el('div', { class: 'batch-empty' }, 'No prompts yet. Click "+ Add prompt" below to add the first one.'));
+        list.appendChild(el('div', { class: 'batch-empty' }, 'No prompts yet. Click "+ Add prompt" below to add a plain-text entry, or use the new "+ Add" button on the tab to capture the full current config.'));
         return;
       }
-      current.forEach((text, i) => {
+      current.forEach((entry, i) => {
         const row = el('div', { class: 'batch-row' });
         const num = el('div', { class: 'batch-num' }, String(i + 1));
-        const ta = el('textarea', {}, text);
+        // Vertical stack: textarea on top, snapshot tag below.
+        const editor = el('div', { class: 'batch-row-editor' });
+        const ta = el('textarea', {}, entry.prompt);
         ta.placeholder = tabKey === 'speech' ? 'Text to read…' : 'Prompt for asset…';
-        ta.addEventListener('input', () => { current[i] = ta.value; });
+        ta.addEventListener('input', () => { entry.prompt = ta.value; });
+        editor.appendChild(ta);
+        if (entry.label) {
+          const tag = el('div', { class: 'batch-snapshot-tag', title: 'This entry was captured from the current tab state. The form fields will be restored to these values before this entry is generated.' },
+            ['📸 snapshot · ' + entry.label]);
+          editor.appendChild(tag);
+        }
         const up = el('button', { class: 'btn-mini', title: 'Move up', onclick: () => { if (i > 0) { [current[i-1], current[i]] = [current[i], current[i-1]]; renderList(); } } }, '↑');
         const down = el('button', { class: 'btn-mini', title: 'Move down', onclick: () => { if (i < current.length-1) { [current[i+1], current[i]] = [current[i], current[i+1]]; renderList(); } } }, '↓');
         const del = el('button', { class: 'btn-mini danger', title: 'Remove', onclick: () => { current.splice(i, 1); renderList(); } }, '✕');
-        row.append(num, ta, up, down, del);
+        row.append(num, editor, up, down, del);
         list.appendChild(row);
       });
     }
@@ -3764,7 +3919,7 @@ function openBatchManager(tabKey) {
 
     // Add / Clear / Paste-many controls
     const ctrls = el('div', { class: 'row', style: 'margin-top: 8px; flex-direction: row; gap: 6px; align-items: center;' });
-    const addBtn = el('button', { class: 'btn-mini', onclick: () => { if (current.length >= 100) { toast('Max 100 entries.', 'warn'); return; } current.push(''); renderList(); setTimeout(() => { const ta = list.querySelectorAll('textarea'); ta[ta.length-1]?.focus(); }, 0); } }, '+ Add prompt');
+    const addBtn = el('button', { class: 'btn-mini', onclick: () => { if (current.length >= 100) { toast('Max 100 entries.', 'warn'); return; } current.push({ prompt: '', settings: null, ts: Date.now(), label: '' }); renderList(); setTimeout(() => { const tas = list.querySelectorAll('textarea'); tas[tas.length-1]?.focus(); }, 0); } }, '+ Add prompt');
     const clearBtn = el('button', { class: 'btn-mini', onclick: () => { if (current.length && !confirm('Clear all ' + current.length + ' entries?')) return; current.length = 0; renderList(); } }, 'Clear all');
     const pasteBtn = el('button', { class: 'btn-mini', onclick: () => {
       const ta = el('textarea', { placeholder: 'Paste one prompt per line, then click Import.' });
@@ -3779,7 +3934,7 @@ function openBatchManager(tabKey) {
           const lines = ta.value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
           const room = 100 - current.length;
           const toAdd = lines.slice(0, room);
-          for (const l of toAdd) current.push(l);
+          for (const l of toAdd) current.push({ prompt: l, settings: null, ts: Date.now(), label: '' });
           dclose();
           renderList();
           if (lines.length > room) toast(`Imported ${room} (skipped ${lines.length - room} to stay under 100).`, 'warn');
@@ -3794,8 +3949,12 @@ function openBatchManager(tabKey) {
     const save = el('button', { class: 'primary' }, `Save (${current.length})`);
     const closeBtn = el('button', { onclick: close }, 'Close');
     save.addEventListener('click', async () => {
-      // Trim + filter empties
-      const cleaned = current.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 100);
+      // Normalize + drop empties + cap at 100. Preserves the
+      // object shape so the per-entry settings survive the round-trip.
+      const cleaned = current
+        .map((e) => ({ prompt: String(e.prompt || '').trim(), settings: (e.settings && typeof e.settings === 'object') ? e.settings : null, ts: typeof e.ts === 'number' ? e.ts : 0, label: typeof e.label === 'string' ? e.label : '' }))
+        .filter((e) => e.prompt.length > 0)
+        .slice(0, 100);
       if (cleaned.length === 0) {
         if (!confirm('Save an EMPTY batch (this removes the Start Batch button)?')) return;
       }
@@ -3848,7 +4007,11 @@ function _refreshBatchButtons() {
 // ----------------- BatchGen Runner -----------------
 let _batchAbort = false;
 async function startBatchGen(tabKey) {
-  const items = (state.batches[tabKey] || []).slice();
+  // Normalize every entry to the canonical { prompt, settings, ts,
+  // label } shape — legacy plain-text entries become { prompt: text,
+  // settings: null, ... } so the rest of the runner doesn't have
+  // to special-case the two shapes.
+  const items = (state.batches[tabKey] || []).map(normalizeBatchEntry).filter(Boolean);
   if (!items.length) { toast('Batch is empty.', 'warn'); return; }
   if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
   if (tabKey === 'video' && items.length > 3) {
@@ -3865,13 +4028,10 @@ async function startBatchGen(tabKey) {
   const lastCmd = tabRoot.querySelector('.lastcmd');
   if (!promptTa || !genBtn) { toast('Could not locate tab controls.', 'err'); return; }
 
-  // Save current state
-  const savedPrompt = promptTa.value;
-  const savedStyle = styleSel ? styleSel.value : '';
-  // Variants dropdown (if present) — batch honors the same value
-  const variantsSel = tabRoot.querySelector('.variants-select');
-  const savedVariants = variantsSel ? variantsSel.value : '1';
-  const variantsCount = Math.max(1, Math.min(5, parseInt(savedVariants, 10) || 1));
+  // Save current state for restoration after the batch is done.
+  // We don't include the prompt here because the per-entry
+  // snapshot's prompt overrides it below.
+  const savedSnapshot = captureTabState(tabKey);
 
   // Show progress overlay
   const overlay = el('div', { class: 'batch-overlay' });
@@ -3898,17 +4058,42 @@ async function startBatchGen(tabKey) {
   let ok = 0, fail = 0;
   let batchError = null;
   let stoppedAt = 0; // 1-based index of the item we stopped on (0 = didn't stop)
+  let totalVariants = 0;
   try {
     for (let i = 0; i < items.length && !_batchAbort; i++) {
+      const entry = items[i];
       counter.textContent = `${i + 1} / ${items.length}`;
-      currentPrompt.textContent = items[i].slice(0, 200) + (items[i].length > 200 ? '…' : '');
-      // Set the prompt + fire input event so the style preview updates.
-      // We suppress the global state-save (scheduled by the input event)
-      // so a batch item doesn't overwrite the user's saved prompt.
+      currentPrompt.textContent = (entry.prompt || '').slice(0, 200) + ((entry.prompt || '').length > 200 ? '…' : '');
+
+      // Per-entry snapshot: if the entry has a settings snapshot,
+      // re-apply it BEFORE we set the prompt so the prompt value
+      // in the snapshot (which we deleted in captureBatchEntry)
+      // doesn't fight us. suppressStateSave wraps the whole thing
+      // so a batch run doesn't blow away the user's saved state.
+      const variantsSel = tabRoot.querySelector('.variants-select');
       suppressStateSave(() => {
-        promptTa.value = items[i];
+        if (entry.settings && typeof entry.settings === 'object') {
+          // applyTabState fires input/change on every input it
+          // touches, which is exactly what we want — the style
+          // preview, has-custom class, etc. all need the event
+          // to update.
+          applyTabState(tabKey, entry.settings);
+        } else {
+          // Legacy entry (no snapshot): just set the prompt.
+          promptTa.value = entry.prompt;
+          promptTa.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        // Always set the prompt last so an in-popup edit of the
+        // prompt text wins over the snapshot's stored prompt.
+        promptTa.value = entry.prompt;
         promptTa.dispatchEvent(new Event('input', { bubbles: true }));
       });
+      // Read the variants count from the (now-restored) variants
+      // dropdown. Legacy entries fall back to 1.
+      const variantsSel2 = tabRoot.querySelector('.variants-select');
+      const variantsCount = Math.max(1, Math.min(5, parseInt(variantsSel2 ? variantsSel2.value : '1', 10) || 1));
+      totalVariants += variantsCount;
+
       // Run N variants for this batch item
       for (let vi = 0; vi < variantsCount; vi++) {
         if (_batchAbort) break;
@@ -3957,20 +4142,19 @@ async function startBatchGen(tabKey) {
     stopBtn.onclick = () => overlay.remove();
   }
 
-  // Restore original state. Suppress the input-event-driven state save for
-  // the same reason as the per-item overwrite: we don't want the batch to
-  // leave behind any transient state.
+  // Restore original state. The user's last view of the tab
+  // (the settings they had before clicking Start Batch) is
+  // reapplied via captureTabState → applyTabState round-trip.
+  // suppressStateSave ensures the per-item transient form
+  // changes don't leak into the persisted state.json.
   suppressStateSave(() => {
-    promptTa.value = savedPrompt;
-    promptTa.dispatchEvent(new Event('input', { bubbles: true }));
-    if (styleSel) styleSel.value = savedStyle;
-    if (variantsSel) variantsSel.value = savedVariants;
+    applyTabState(tabKey, savedSnapshot);
   });
   // Distinguish a user-stopped batch from a completed one — previously
   // both said "done", which was confusing.
   const summary = stoppedAt
     ? `BatchGen stopped at item ${stoppedAt}: ${ok} ok, ${fail} failed.`
-    : `BatchGen finished: ${ok} ok, ${fail} failed. (variants ×${variantsCount})`;
+    : `BatchGen finished: ${ok} ok, ${fail} failed. (${totalVariants} variants total)`;
   if (lastCmd) lastCmd.textContent = summary;
   toast(stoppedAt
     ? `BatchGen stopped. ${ok} ok, ${fail} failed.`
@@ -4092,7 +4276,7 @@ TABS.video = {
     const batchControls = el('span', { 'data-batch-controls': 'video', class: 'batch-controls' });
     // Variants dropdown (video tab has no seed, so always enabled)
     const variants = buildVariantsRow({ id: 'variants-video' });
-    actions.append(genBtn, variants.row, batchControls, lastCmd);
+    actions.append(buildAddToBatchBtn('video'), genBtn, variants.row, batchControls, lastCmd);
     const preview = el('div', { class: 'preview' }, el('div', { class: 'empty' }, 'No video generated yet. Note: video generation is async and may take 1-3 minutes.'));
     const tabFooter = el('div', { class: 'tab-footer' }, [actions, preview]);
     root.appendChild(tabFooter);
