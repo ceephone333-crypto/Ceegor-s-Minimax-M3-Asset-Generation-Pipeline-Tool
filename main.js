@@ -7,6 +7,7 @@ const fsp = fs.promises;
 const { runMmx } = require('./src/mmx');
 const cfgMod = require('./src/config');
 const fb = require('./src/fileBrowser');
+const pathUtils = require('./src/pathUtils');
 
 // Disable native window occlusion (which can cause blurry text on Windows
 // when the window is partially obscured or the OS compositor applies
@@ -18,6 +19,32 @@ app.commandLine.appendSwitch('force-device-scale-factor', '1');
 
 let mainWindow = null;
 let voicesCache = new Map();
+
+// Set of paths the user has explicitly picked via a system Open dialog
+// during this session. Used by the file-browser path allowlist so the
+// user can move / copy files to a folder outside `output_dir` after
+// picking it (which is the only way the main process learns about
+// folders the user has actually authorised).
+const trustedPickPaths = new Set();
+
+// "Allowed roots" = output_dir + every path the user has explicitly
+// picked. Every fb:* handler funnels its path arguments through this.
+function allowedRoots() {
+  const cfg = cfgMod.read();
+  const roots = [];
+  if (cfg.output_dir) roots.push(cfg.output_dir);
+  for (const p of trustedPickPaths) roots.push(p);
+  return roots;
+}
+
+// Whitelist of mmx subcommands the renderer is allowed to invoke. The
+// rest of the args are still user-provided form values — the subcommand
+// is the only piece that can never legitimately come from a form input,
+// so gating it here stops a compromised renderer from spraying the CLI
+// with arbitrary commands.
+const ALLOWED_MMX_SUBCOMMANDS = new Set([
+  'image', 'speech', 'music', 'video', 'quota', 'voices',
+]);
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -39,6 +66,15 @@ function createWindow() {
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // Block any in-app navigation. The renderer loads exactly one local
+  // file; if some future bug tries to navigate to a remote origin we
+  // refuse it. Default Electron behaviour would otherwise be to ALLOW
+  // the navigation and silently break the IPC bridge.
+  mainWindow.webContents.on('will-navigate', (e) => e.preventDefault());
+  // Block window.open / target=_blank popups. The renderer has no
+  // legitimate need to spawn additional windows, and an unblocked
+  // `window.open` is a classic XSS escape hatch.
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   // mainWindow.webContents.openDevTools({ mode: 'detach' });
 }
 
@@ -56,13 +92,30 @@ app.on('window-all-closed', () => {
 // ---------------- IPC: config ----------------
 ipcMain.handle('config:get', () => cfgMod.read());
 ipcMain.handle('config:set', (_e, cfg) => {
-  cfgMod.write(cfg);
+  // Defensive: only persist the fields we care about. The renderer can
+  // be compromised — never trust a foreign object wholesale.
+  const safe = {
+    api_key: typeof cfg?.api_key === 'string' ? cfg.api_key : '',
+    output_dir: typeof cfg?.output_dir === 'string' ? cfg.output_dir : '',
+    region: cfg?.region === 'cn' ? 'cn' : 'global',
+    theme: cfg?.theme === 'light' ? 'light' : 'dark',
+    styles: Array.isArray(cfg?.styles)
+      ? cfg.styles
+          .filter((s) => s && typeof s === 'object' && typeof s.name === 'string' && typeof s.value === 'string')
+          .map((s) => ({ name: s.name, value: s.value }))
+      : [],
+  };
+  cfgMod.write(safe);
   return cfgMod.read();
 });
 ipcMain.handle('config:path', () => cfgMod.configPath());
 ipcMain.handle('config:pickFolder', async () => {
   const r = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] });
   if (r.canceled || !r.filePaths.length) return null;
+  // Remember the picked path so the file browser can write / move into
+  // it later (it's the only way the main process learns about a folder
+  // the user authorised outside `output_dir`).
+  trustedPickPaths.add(r.filePaths[0]);
   return r.filePaths[0];
 });
 
@@ -71,6 +124,17 @@ ipcMain.handle('config:pickFolder', async () => {
 // `mmx:log` IPC channel. The renderer subscribes once in init().
 
 ipcMain.handle('mmx:run', async (_e, args) => {
+  // Defence in depth: the renderer is already sandboxed, but in case it
+  // is ever compromised we want the main process to refuse to run any
+  // mmx subcommand that isn't on the whitelist. Everything after the
+  // subcommand is user-provided form data, so we let it through (the
+  // mmx CLI itself validates those flags).
+  if (!Array.isArray(args) || args.length < 1) {
+    return { ok: false, code: -1, stdout: '', stderr: 'mmx: first arg (subcommand) is required', parsed: null };
+  }
+  if (typeof args[0] !== 'string' || !ALLOWED_MMX_SUBCOMMANDS.has(args[0])) {
+    return { ok: false, code: -1, stdout: '', stderr: `mmx: subcommand '${String(args[0])}' is not allowed`, parsed: null };
+  }
   const cfg = cfgMod.read();
   if (!cfg.api_key) {
     return { ok: false, code: -1, stdout: '', stderr: 'No API key configured. Edit config.txt next to the .exe.', parsed: null };
@@ -186,32 +250,74 @@ ipcMain.handle('mmx:diagnose', async () => {
 });
 
 // ---------------- IPC: file browser ----------------
+// All fb:* handlers validate the paths they receive against the allowed
+// roots (output_dir + every path the user has explicitly picked via a
+// system Open dialog). Without this, a compromised renderer could
+// read / write / delete any file the Electron app has access to.
 ipcMain.handle('fb:list', async (_e, dir) => {
+  if (!pathUtils.isPathUnderAny(dir, allowedRoots())) {
+    return { ok: false, error: 'Path is outside the allowed directories.' };
+  }
   try { return { ok: true, ...(await fb.list(dir)) }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 ipcMain.handle('fb:mkdir', async (_e, dir, name) => {
+  if (!pathUtils.isPathUnderAny(dir, allowedRoots())) {
+    return { ok: false, error: 'Parent path is outside the allowed directories.' };
+  }
   try { return { ok: true, path: await fb.mkdir(dir, name) }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 ipcMain.handle('fb:rename', async (_e, p, newName) => {
+  if (!pathUtils.isPathUnderAny(p, allowedRoots())) {
+    return { ok: false, error: 'Source path is outside the allowed directories.' };
+  }
   try { return { ok: true, path: await fb.rename(p, newName) }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 ipcMain.handle('fb:delete', async (_e, p) => {
+  if (!pathUtils.isPathUnderAny(p, allowedRoots())) {
+    return { ok: false, error: 'Path is outside the allowed directories.' };
+  }
   try { return { ok: true, path: await fb.deletePath(p) }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 ipcMain.handle('fb:move', async (_e, src, destDir) => {
+  if (!pathUtils.isPathUnderAny(src, allowedRoots())) {
+    return { ok: false, error: 'Source path is outside the allowed directories.' };
+  }
+  if (!pathUtils.isPathUnderAny(destDir, allowedRoots())) {
+    return { ok: false, error: 'Destination path is outside the allowed directories.' };
+  }
   try { return { ok: true, path: await fb.moveTo(src, destDir) }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 ipcMain.handle('fb:copy', async (_e, src, destDir) => {
+  if (!pathUtils.isPathUnderAny(src, allowedRoots())) {
+    return { ok: false, error: 'Source path is outside the allowed directories.' };
+  }
+  if (!pathUtils.isPathUnderAny(destDir, allowedRoots())) {
+    return { ok: false, error: 'Destination path is outside the allowed directories.' };
+  }
   try { return { ok: true, path: await fb.copyTo(src, destDir) }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
-ipcMain.handle('fb:reveal', (_e, p) => { fb.reveal(p); return { ok: true }; });
+ipcMain.handle('fb:reveal', (_e, p) => {
+  if (!pathUtils.isPathUnderAny(p, allowedRoots())) {
+    return { ok: false, error: 'Path is outside the allowed directories.' };
+  }
+  fb.reveal(p);
+  return { ok: true };
+});
 ipcMain.handle('fb:read', async (_e, p) => {
+  // fb:read is what the renderer uses to display the contents of text /
+  // srt / json files in the preview pane. Previously this had NO path
+  // check — a compromised renderer could call fbRead('C:\\Users\\me\
+  // .ssh\\id_rsa') and get the file back as base64. Now we restrict it
+  // to the same allowlist as the rest of the file browser.
+  if (!pathUtils.isPathUnderAny(p, allowedRoots())) {
+    return { ok: false, error: 'Path is outside the allowed directories.' };
+  }
   try {
     const buf = await fb.readFile(p);
     return { ok: true, base64: buf.toString('base64') };
@@ -220,9 +326,12 @@ ipcMain.handle('fb:read', async (_e, p) => {
 // Write a file from base64 data. Used by the in-app image pipeline
 // (upscaler / cropper / format-converter) which produces a canvas-backed
 // PNG / JPEG / WebP blob in the renderer and needs a way to persist it
-// to disk. We refuse to write outside the configured output_dir by
-// default, but allow explicit outPath arguments (e.g. "<src>_2x.png"
-// alongside the original — same dir, just a derived filename).
+// to disk. We refuse to write outside the configured output_dir (or
+// any folder the user explicitly picked via a system dialog) by
+// validating the NORMALISED parent directory — a `..` segment in the
+// input can no longer bypass the check because the path is resolved
+// first. Writes are capped at 25 MB so a compromised renderer can't
+// OOM the main process.
 ipcMain.handle('fb:write', async (_e, outPath, base64Data) => {
   try {
     if (!outPath || typeof outPath !== 'string') {
@@ -231,29 +340,40 @@ ipcMain.handle('fb:write', async (_e, outPath, base64Data) => {
     if (!base64Data || typeof base64Data !== 'string') {
       return { ok: false, error: 'Base64 data is required.' };
     }
-    // Guardrail: refuse to write a file that isn't under the user's
-    // output_dir or under a sub-directory of an existing file path the
-    // user already navigated to. This prevents the upscaler/cropper
-    // from accidentally writing to /Windows or other sensitive paths.
-    const cfg = cfgMod.read();
-    const base = (cfg.output_dir || '').replace(/[\\/]+$/, '').toLowerCase();
-    const parent = require('path').dirname(outPath).replace(/[\\/]+$/, '').toLowerCase();
-    // Allow the write if either:
-    //   - the parent is exactly output_dir or under it
-    //   - the parent is under a path the user has navigated to (state.fbDirs)
-    //   - the parent is under any directory the user is allowed to write to
-    //     (i.e. the parent exists and is writable)
-    // For now, simplest rule: parent must be output_dir or a sub-path
-    // of output_dir, OR the parent is the same dir as an existing file
-    // (we allow writing "name_2x.png" next to "name.png").
-    const parentOk = base && (parent === base || parent.startsWith(base + (cfg.output_dir.includes('\\') ? '\\' : '/')));
-    const sameAsExisting = require('fs').existsSync(parent) && require('fs').statSync(parent).isDirectory();
-    if (!parentOk && !sameAsExisting) {
+    // Resolve the path FIRST so any `..` segments collapse to the
+    // directory the OS will actually see. We then check the resolved
+    // parent against the allowed roots. A compromised renderer that
+    // passes `C:\Generated\image\..\..\Windows\evil.exe` will fail the
+    // allowlist check (the resolved parent is `C:\Windows`, not under
+    // the user's output dir). The previous version compared the
+    // un-normalised parent string and let a `..` slip through when the
+    // resolved target happened to exist on disk.
+    const outAbs = pathUtils.normalize(outPath);
+    if (!outAbs) {
+      return { ok: false, error: 'Output path is invalid.' };
+    }
+    if (!pathUtils.isParentUnderAny(outAbs, allowedRoots())) {
       return { ok: false, error: 'Refusing to write outside the output directory.' };
     }
+    // Cap the write size. A 25 MB base64 buffer is enough for any
+    // image the in-app pipeline produces; larger payloads are rejected
+    // so a compromised renderer can't OOM the main process.
+    const MAX_BYTES = 25 * 1024 * 1024;
     const buf = Buffer.from(base64Data, 'base64');
-    require('fs').writeFileSync(outPath, buf);
-    return { ok: true, path: outPath };
+    if (buf.length > MAX_BYTES) {
+      return { ok: false, error: `Refusing to write more than ${MAX_BYTES} bytes at once.` };
+    }
+    // Atomic write: tmp + rename, so a kill mid-write can't leave a
+    // half-written file next to the user's generated assets.
+    const tmp = outAbs + '.tmp-' + process.pid + '-' + Date.now();
+    await fsp.writeFile(tmp, buf);
+    try {
+      await fsp.rename(tmp, outAbs);
+    } catch (renameErr) {
+      try { await fsp.unlink(tmp); } catch {}
+      throw renameErr;
+    }
+    return { ok: true, path: outAbs };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
@@ -270,12 +390,26 @@ ipcMain.handle('batches:set', (_e, batches) => {
 // ----------------- IPC: file picker (Browse button) -----------------
 ipcMain.handle('file:pick', async (_e, opts) => {
   opts = opts || {};
+  // The renderer passes `title` and `filters` as part of opts. Both are
+  // safe to forward to showOpenDialog (the OS dialog ignores anything
+  // weird), but we still cap the title length and validate the filters
+  // shape to be safe.
+  const title = typeof opts.title === 'string' ? opts.title.slice(0, 200) : 'Select file';
+  const filters = Array.isArray(opts.filters) && opts.filters.length
+    ? opts.filters
+        .filter((f) => f && typeof f === 'object' && typeof f.name === 'string' && Array.isArray(f.extensions))
+        .slice(0, 20)
+        .map((f) => ({ name: String(f.name).slice(0, 100), extensions: f.extensions.map((e) => String(e).slice(0, 20)) }))
+    : [{ name: 'All files', extensions: ['*'] }];
   const r = await dialog.showOpenDialog(mainWindow, {
-    title: opts.title || 'Select file',
+    title,
     properties: ['openFile'],
-    filters: opts.filters && opts.filters.length ? opts.filters : [{ name: 'All files', extensions: ['*'] }],
+    filters,
   });
   if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+  // Same as config:pickFolder — remember the picked path so the file
+  // browser can use it as a write / move target later.
+  trustedPickPaths.add(r.filePaths[0]);
   return { ok: true, path: r.filePaths[0] };
 });
 
