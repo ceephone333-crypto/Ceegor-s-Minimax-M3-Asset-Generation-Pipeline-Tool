@@ -147,10 +147,90 @@ function showStartupPopup() {
     }
     m.appendChild(shortcuts);
     m.appendChild(el('div', { class: 'footer' }, [
-      el('button', { class: 'primary', onclick: close }, 'OK'),
+      el('button', { class: 'primary', onclick: () => {
+        close();
+        // After the user dismisses the greetings popup, if any of the
+        // essential settings (api_key, output_dir) are still empty, walk
+        // them through the first-time setup form. The folder field uses
+        // the standard Windows folder-selection dialog via pickFolder.
+        if (!state.config.api_key || !state.config.output_dir) {
+          openFirstTimeSetup();
+        }
+      } }, 'OK'),
     ]));
     // OK on Enter for convenience
     setTimeout(() => { m.querySelector('button.primary')?.focus(); }, 0);
+  });
+}
+
+// ----------------- First-time setup popup -----------------
+// Shown right after the greetings popup if either the API key or the
+// output directory is missing. Fields are pre-filled with whatever
+// values are already in config.txt so the user only has to fix the
+// gaps. The "Save" button validates that both required fields are
+// present and writes the config before closing. "Skip for now" closes
+// without saving — the user can fill the values in later from ⚙
+// Settings.
+function openFirstTimeSetup() {
+  showModal((m, close) => {
+    m.classList.add('first-time-setup-modal');
+    m.appendChild(el('h2', {}, 'First-time setup'));
+    m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+      'A few required settings are still empty. Please fill them in to start using the tool. You can change all of these later in ⚙ Settings.'));
+
+    const cfg = { ...state.config };
+
+    // API key
+    const apiInput = el('input', { type: 'text', value: cfg.api_key || '', placeholder: 'sk-cp-xxxxxxxx' });
+    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'API key (MiniMax Token Plan)'), apiInput]));
+
+    // Output directory — text input + Browse button that opens the
+    // standard Windows folder-selection dialog (the same one the
+    // ⚙ Settings popup uses).
+    const outInput = el('input', { type: 'text', value: cfg.output_dir || '', placeholder: 'C:\\Users\\me\\Pictures\\MiniMax' });
+    const browse = el('button', { class: 'btn-mini', type: 'button' }, 'Browse…');
+    browse.addEventListener('click', async () => {
+      const picked = await window.api.pickFolder();
+      if (picked) outInput.value = picked;
+    });
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', {}, 'Output directory'),
+      el('div', { class: 'combo' }, [outInput, browse]),
+    ]));
+
+    // Region (already has a default of 'global' but show it so the
+    // user can confirm / change it on first launch).
+    const regInput = el('select', {});
+    for (const r of ['global', 'cn']) regInput.appendChild(el('option', { value: r }, r));
+    regInput.value = cfg.region || 'global';
+    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Region'), regInput]));
+
+    const save = el('button', { class: 'primary' }, 'Save');
+    const skip = el('button', { onclick: close }, 'Skip for now');
+    save.addEventListener('click', async () => {
+      const api_key = apiInput.value.trim();
+      const output_dir = outInput.value.trim();
+      const region = regInput.value || 'global';
+      if (!api_key) { toast('API key is required. Edit it now or click "Skip for now" and set it later in ⚙ Settings.', 'err', 5000); return; }
+      if (!output_dir) { toast('Output directory is required. Pick a folder with the Browse… button, or click "Skip for now".', 'err', 5000); return; }
+      const newCfg = { ...state.config, api_key, output_dir, region };
+      state.config = await window.api.setConfig(newCfg);
+      toast('Settings saved.', 'ok');
+      close();
+      // Reload anything that depends on config (quota + the file
+      // browser, so the freshly-set output_dir is shown).
+      refreshQuota();
+      refreshBrowser();
+    });
+    m.appendChild(el('div', { class: 'footer' }, [skip, save]));
+
+    // Focus the first empty field, then the second — saves the user a
+    // click when both are blank.
+    setTimeout(() => {
+      if (!cfg.api_key) apiInput.focus();
+      else if (!cfg.output_dir) outInput.focus();
+      else apiInput.focus();
+    }, 0);
   });
 }
 
@@ -3638,6 +3718,20 @@ async function init() {
     if (outRoot && state.fbDir.toLowerCase() === outRoot.toLowerCase()) return;
     state.fbDir = parentDir(state.fbDir) || outRoot;
     refreshBrowser({ keepCurrent: true });
+  });
+  // Navigate to a folder chosen via the standard Windows folder-selection
+  // dialog. The picked path is stored as the current browser location
+  // for the active tab and persisted across restarts (via fbDirs in
+  // state.json), and is also added to the trusted-pick set in the
+  // main process so any subsequent fb:* operation in this folder is
+  // authorised.
+  $('#fb-pick').addEventListener('click', async () => {
+    const picked = await window.api.pickFolder();
+    if (!picked) return; // user cancelled the dialog
+    state.fbDir = picked;
+    if (state.currentTab) state.fbDirs[state.currentTab] = picked;
+    scheduleStateSave();
+    await refreshBrowser({ keepCurrent: true });
   });
   // File browser live filter
   const fbSearch = $('#fb-search');
