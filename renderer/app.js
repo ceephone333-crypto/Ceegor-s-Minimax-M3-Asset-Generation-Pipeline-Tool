@@ -2004,22 +2004,56 @@ async function upscaleStep(src, w, h) {
   return canvas;
 }
 
-// Upscale an image to multiplier× its original size. We walk up to
-// the target in 2x steps rather than doing one single Nx resize —
-// each individual step has a smaller interpolation error, so the
-// final image is noticeably sharper than the previous one-shot
-// implementation (especially for 3×, 4× and 8×). The default
-// imageSmoothingQuality='high' path is still used as a fallback for
-// runtimes without createImageBitmap.
+// Toast-once latch: don't re-spam the user with the "Real-ESRGAN
+// missing" message on every upscale. Resetting it requires a restart
+// of the app, which is what we want — a single reminder per session
+// is enough.
+let _reEsrganNotified = false;
+
+// Upscale an image to multiplier× its original size. If the
+// realesrgan-ncnn-vulkan binary is installed (PATH or ./bin/), we
+// run it to get a high-quality 4× intermediate, then resize the
+// result down to the requested multiplier (or do an extra 2× step
+// for 8×). Real-ESRGAN's x4plus model is BSD-3-Clause licensed and
+// produces noticeably more detail than the built-in
+// multi-step createImageBitmap pipeline. If the binary is missing,
+// we fall back to the multi-step pipeline so the tool is never
+// blocked.
 //
 // Returns the output path on disk.
 async function upscaleImageFile(srcPath, multiplier) {
   multiplier = Math.max(1, Math.min(8, Math.floor(Number(multiplier) || 2)));
+
+  // Probe Real-ESRGAN availability. Cheap IPC (just a `which` /
+  // bundled-file stat); the result is cached in the main process.
+  let reStatus = null;
+  try { reStatus = await window.api.realesrganAvailable(); } catch (_) {}
+
+  if (reStatus && reStatus.available) {
+    try {
+      return await upscaleImageFileRealesrgan(srcPath, multiplier, reStatus);
+    } catch (e) {
+      // Real-ESRGAN is available but failed (corrupt model, GPU OOM,
+      // etc.). Log the error and fall back to the built-in pipeline
+      // so the user still gets a result.
+      console.error('Real-ESRGAN upscale failed, falling back to built-in:', e);
+      toast('Real-ESRGAN upscale failed (' + (e.message || e) + '). Using built-in upscale.', 'warn', 4000);
+      // fall through to built-in
+    }
+  } else if (!_reEsrganNotified) {
+    _reEsrganNotified = true;
+    toast(
+      'Real-ESRGAN not installed — using the built-in upscale. ' +
+      'Drop the binary into ./bin/ (or add it to PATH) for noticeably higher-quality output. ' +
+      'See README for the download link.',
+      'info', 6000,
+    );
+  }
+
+  // Built-in multi-step path.
   const srcImg = await loadImageFromFile(srcPath);
   const targetW = Math.max(1, Math.floor(srcImg.naturalWidth * multiplier));
   const targetH = Math.max(1, Math.floor(srcImg.naturalHeight * multiplier));
-  // Walk up to the target in 2x steps (final step may be smaller if
-  // the multiplier isn't a power of 2).
   let curW = srcImg.naturalWidth;
   let curH = srcImg.naturalHeight;
   let cur = srcImg;
@@ -2030,8 +2064,6 @@ async function upscaleImageFile(srcPath, multiplier) {
     curW = stepW;
     curH = stepH;
   }
-  // cur is at the target size. Transfer to a canvas (ImageBitmap has
-  // no toDataURL) and apply the alpha->white flatten for JPEG.
   const mime = mimeFromPath(srcPath);
   const out = document.createElement('canvas');
   out.width = targetW;
@@ -2048,6 +2080,78 @@ async function upscaleImageFile(srcPath, multiplier) {
   const r = await window.api.fbWrite(outPath, b64);
   if (!r.ok) throw new Error(r.error || 'fbWrite failed');
   return r.path;
+}
+
+// Real-ESRGAN path. The ncnn-vulkan binary always outputs at the
+// model's native scale (4× for x4plus). For multipliers other than
+// 4×, we resize the intermediate using the same createImageBitmap
+// step the built-in path uses:
+//   - 2×: 4× → 2×  (downscale)
+//   - 3×: 4× → 3×  (downscale)
+//   - 4×: 4× as-is
+//   - 8×: 4× → 8×  (extra 2× step)
+async function upscaleImageFileRealesrgan(srcPath, multiplier, reStatus) {
+  // The Real-ESRGAN binary needs a writable output path. Write its
+  // 4× intermediate to a `.realesrgan_tmp.png` next to the source
+  // (in output_dir, so it's already in the allowed roots) and
+  // clean it up in `finally`.
+  const sep = srcPath.includes('\\') ? '\\' : '/';
+  const dot = srcPath.lastIndexOf('.');
+  const stem = dot > 0 ? srcPath.slice(0, dot) : srcPath;
+  const tempOut = stem + '.realesrgan_tmp.png';
+
+  let r;
+  try {
+    r = await window.api.realesrganRun(srcPath, tempOut, {
+      model: 'realesrgan-x4plus',
+      scale: 4,
+    });
+  } catch (e) {
+    throw new Error('Real-ESRGAN run threw: ' + (e.message || e));
+  }
+  if (!r || !r.ok) {
+    const msg = (r && r.stderr) || 'Real-ESRGAN returned a non-zero exit';
+    throw new Error(msg);
+  }
+
+  try {
+    // Load the 4× intermediate and resize to the user's multiplier.
+    const reImg = await loadImageFromFile(tempOut);
+    const naturalW = reImg.naturalWidth / 4;
+    const naturalH = reImg.naturalHeight / 4;
+    const targetW = Math.max(1, Math.floor(naturalW * multiplier));
+    const targetH = Math.max(1, Math.floor(naturalH * multiplier));
+    let cur = reImg;
+    let curW = reImg.naturalWidth;
+    let curH = reImg.naturalHeight;
+    if (multiplier !== 4) {
+      cur = await upscaleStep(cur, targetW, targetH);
+      curW = targetW;
+      curH = targetH;
+    }
+
+    const mime = mimeFromPath(srcPath);
+    const out = document.createElement('canvas');
+    out.width = curW;
+    out.height = curH;
+    const octx = out.getContext('2d');
+    if (mime === 'image/jpeg') {
+      octx.fillStyle = '#ffffff';
+      octx.fillRect(0, 0, curW, curH);
+    }
+    octx.drawImage(cur, 0, 0);
+    const dataUrl = out.toDataURL(mime, 0.95);
+    const b64 = dataUrl.split(',')[1];
+    const outPath = derivedOutputPath(srcPath, `_${multiplier}x`);
+    const w = await window.api.fbWrite(outPath, b64);
+    if (!w.ok) throw new Error(w.error || 'fbWrite failed');
+    return w.path;
+  } finally {
+    // Best-effort cleanup of the intermediate. If the user is
+    // hammering the upscale button the file may already be
+    // re-created; fbDelete tolerates ENOENT.
+    window.api.fbDelete(tempOut).catch(() => {});
+  }
 }
 
 // Crop an image to the given pixel rectangle (in image coordinates).

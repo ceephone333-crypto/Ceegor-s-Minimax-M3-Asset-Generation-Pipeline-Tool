@@ -27,6 +27,15 @@ contextBridge.exposeInMainWorld('api', {
   fbRead: (path) => ipcRenderer.invoke('fb:read', path),
   fbWrite: (outPath, base64Data) => ipcRenderer.invoke('fb:write', outPath, base64Data),
 
+  // ---- Real-ESRGAN (optional upscaler, BSD-3-Clause) ----
+  // Returns { available, binaryPath, version }. When unavailable, the
+  // renderer falls back to the built-in multi-step createImageBitmap
+  // pipeline.
+  realesrganAvailable: () => ipcRenderer.invoke('upscale:realesrgan:available'),
+  // Spawn the binary. srcPath/dstPath must live under the allowed
+  // roots (validated in main.js). opts: { model, scale, gpu? }.
+  realesrganRun: (srcPath, dstPath, opts) => ipcRenderer.invoke('upscale:realesrgan:run', srcPath, dstPath, opts),
+
   // ---- batches (BatchGen storage) ----
   batchesGet: () => ipcRenderer.invoke('batches:get'),
   batchesSet: (batches) => ipcRenderer.invoke('batches:set', batches),
