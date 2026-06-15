@@ -272,6 +272,31 @@ label { color: var(--fg); font-weight: 500; }
 }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
 .row { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* The "Target file prefix" row is shown on every tab's Parameters
+   section above the per-field grid. Give it a faint background and a
+   little extra padding so it reads as a "this is a global setting,
+   not just another per-tab option". The four mirrored inputs across
+   the tabs all carry the .file-prefix-input class so the buildFilePrefixRow
+   helper can keep them in sync via class querySelectorAll. */
+.row.file-prefix-row {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+.row.file-prefix-row > label {
+  margin: 0;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.row.file-prefix-row > input.file-prefix-input {
+  flex: 1;
+  min-width: 0;
+}
 .row > label {
   font-size: 12px; color: var(--fg);
   display: flex; align-items: center; gap: 5px;
