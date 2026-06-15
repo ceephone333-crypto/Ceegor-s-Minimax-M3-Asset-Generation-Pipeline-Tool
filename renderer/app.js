@@ -26,6 +26,10 @@ const state = {
   batches: { image: [], speech: [], music: [], video: [] },
   // Per-tab last visited folder (for per-tab folder persistence, see showTab)
   fbDirs: { image: '', speech: '', music: '', video: '' },
+  // Global "Target file prefix" — prepended to every generated file's
+  // name. Mirrored on all 4 tabs (one input on each) so the user can
+  // tweak it without switching tabs. Persisted to state.json.
+  filePrefix: '',
   // Upscale-on-Generate: when true, every newly generated image is
   // upscaled locally (Canvas API) after the mmx call returns, using the
   // settings below. Persisted to state.json so it survives restarts.
@@ -235,6 +239,43 @@ function openFirstTimeSetup() {
 }
 
 // ----------------- Form helpers -----------------
+
+// Build the "Target file prefix" input row. The same row is mounted on
+// every tab (image/speech/music/video) but the value is global — when
+// the user types in one tab, the other tabs' inputs are updated in
+// place so they always show the same prefix. The prefix is prepended
+// verbatim to the generated file's name in every gen handler (see
+// image/speech/music/video .gen-btn click listeners). The value lives
+// in state.filePrefix and is persisted to state.json via saveAllStates.
+function buildFilePrefixRow() {
+  const input = el('input', {
+    type: 'text',
+    class: 'file-prefix-input',
+    value: state.filePrefix || '',
+    placeholder: '(no prefix)',
+  });
+  // Keep the four mirrored inputs in sync and bump the autosave debounce
+  // so the value lands in state.json within ~500ms of the last keystroke.
+  input.addEventListener('input', () => {
+    state.filePrefix = input.value;
+    for (const other of document.querySelectorAll('input.file-prefix-input')) {
+      if (other !== input) other.value = state.filePrefix;
+    }
+    scheduleStateSave();
+  });
+  return el('div', { class: 'row file-prefix-row' }, [
+    el('label', {}, [
+      'Target file prefix',
+      el('span', {
+        class: 'help',
+        'data-help': 'Prepended to every generated file name. Empty = original name. Example: prefix "ZYX" turns abc123.jpg into ZYXabc123.jpg.',
+        title: 'Prepended to every generated file name. Empty = original name. Example: prefix "ZYX" turns abc123.jpg into ZYXabc123.jpg.',
+      }, '?'),
+    ]),
+    input,
+  ]);
+}
+
 // Build a "parameter row" with label, dropdown, optional help tooltip.
 // `def = { kind, options, default, help, customType }`
 //   kind: 'enum' | 'boolean' | 'text' | 'number' | 'enum-text' (enum with custom text override)
@@ -691,6 +732,7 @@ TABS.image = {
 
     root.appendChild(el('div', { class: 'section' }, [
       el('h3', {}, 'Parameters'),
+      buildFilePrefixRow(),
       el('div', { class: 'grid' }, [aspect.row, n.row, width.row, height.row, seed.row, respFmt.row, promptOpt.row, watermark.row, subjRef.row]),
     ]));
 
@@ -808,7 +850,8 @@ TABS.image = {
         if (useOutDir) return outDir;
         const ts = timestamp();
         const variantTag = variantsCount > 1 ? `_v${v}` : '';
-        return uniquePath(outDir, `${ts}_${slug}${variantTag}.png`);
+        const prefix = (state.filePrefix || '').trim();
+        return uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.png`);
       }
       try {
         for (let v = 1; v <= variantsCount; v++) {
@@ -1212,7 +1255,8 @@ TABS.speech = {
           }
           const ts = timestamp();
           const variantTag = variantsCount > 1 ? `_v${v}` : '';
-          const outFile = uniquePath(outDir, `${ts}_${slug}${variantTag}.${ext}`);
+          const prefix = (state.filePrefix || '').trim();
+          const outFile = uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.${ext}`);
           args.push('--out', outFile);
           lastCmd.textContent = `mmx ${args.join(' ')}`;
           const statusMsg = variantsCount > 1
@@ -1606,6 +1650,7 @@ TABS.music = {
 
     root.appendChild(el('div', { class: 'section' }, [
       el('h3', {}, 'Parameters'),
+      buildFilePrefixRow(),
       el('div', { class: 'grid' }, [
         mode.row, model.row,
         lyrics.row, lyricsFile.row,
@@ -3516,6 +3561,7 @@ TABS.video = {
 
     root.appendChild(el('div', { class: 'section' }, [
       el('h3', {}, 'Parameters'),
+      buildFilePrefixRow(),
       el('div', { class: 'grid' }, [
         model.row, firstFrame.row,
         lastFrame.row, subjectImage.row,
@@ -3569,7 +3615,8 @@ TABS.video = {
           appendFlag(args, pollInterval.input);
           const ts = timestamp();
           const variantTag = variantsCount > 1 ? `_v${v}` : '';
-          const outFile = uniquePath(outDir, `${ts}_${slug}${variantTag}.mp4`);
+          const prefix = (state.filePrefix || '').trim();
+          const outFile = uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.mp4`);
           args.push('--download', outFile);
           lastCmd.textContent = `mmx ${args.join(' ')}`;
           const statusMsg = variantsCount > 1
@@ -3832,6 +3879,8 @@ async function init() {
   if (savedState.upscaleSettings && typeof savedState.upscaleSettings === 'object' && savedState.upscaleSettings.multiplier) {
     state.upscaleSettings = { multiplier: parseInt(savedState.upscaleSettings.multiplier, 10) || 2 };
   }
+  // Restore the global file-name prefix (mirrored on every tab).
+  if (typeof savedState.filePrefix === 'string') state.filePrefix = savedState.filePrefix;
   const startTab = (savedState.currentTab && ['image','speech','music','video'].includes(savedState.currentTab))
     ? savedState.currentTab : 'image';
   for (const tabKey of ['image', 'speech', 'music', 'video']) {
@@ -4118,6 +4167,9 @@ async function saveAllStates() {
     // Persist the upscale-on-Generate state alongside the tabs.
     upscaleEnabled: !!state.upscaleEnabled,
     upscaleSettings: state.upscaleSettings || { multiplier: 2 },
+    // Global file-name prefix (mirrored on every tab; prepended to
+    // every generated file).
+    filePrefix: state.filePrefix || '',
   }).catch(() => {});
 }
 function setupTabAutosave(tabKey) {
