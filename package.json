@@ -1,0 +1,53 @@
+{
+  "name": "ceegor-minimax-m3-asset-generation-pipeline-tool",
+  "version": "1.0.0",
+  "description": "Cross-modal asset generation GUI for the MiniMax Token Plan — image, speech, music, and video, with a local image pipeline (upscale / crop / format conversion).",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win portable --x64",
+    "build:dir": "electron-builder --win --dir"
+  },
+  "keywords": [
+    "minimax",
+    "mmx",
+    "asset-generation",
+    "electron",
+    "image-pipeline",
+    "upscale",
+    "crop",
+    "format-conversion"
+  ],
+  "author": "Ceegor",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.ceegor.minimax-asset-tool",
+    "productName": "MiniMaxAssetTool",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*",
+      "voices.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "MiniMaxAssetTool.exe"
+    },
+    "portable": {
+      "artifactName": "MiniMaxAssetTool.exe"
+    }
+  }
+}

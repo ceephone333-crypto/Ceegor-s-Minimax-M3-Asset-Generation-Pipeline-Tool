@@ -1,0 +1,991 @@
+/* renderer/styles.css — native Windows 11 look, high contrast, no blur. */
+
+/* ========== DARK theme (default) ==========
+   Uses Windows 11 system colors as a baseline. Solid backgrounds, sharp
+   1px borders, no transparency on text, no animations on text/color.
+   Text is brightened further on user request: --fg-2 → #f5f5fa (almost
+   pure white), --fg-3 → #e8e8f0 (very light gray for muted text). The
+   success / danger / warn accents are also nudged brighter so the dark
+   theme doesn't feel like the text is "stuck" in the middle. */
+:root,
+:root[data-theme="dark"] {
+  --bg:        #1f1f23;
+  --bg-2:      #2a2a30;
+  --bg-3:      #38383f;
+  --bg-4:      #4a4a52;
+  --border:    #4a4a52;
+  --border-2:  #6a6a74;
+  --fg:        #ffffff;
+  --fg-2:      #f5f5fa;
+  --fg-3:      #e8e8f0;
+  --accent:    #4d9aff;
+  --accent-2:  #3a7ce0;
+  --accent-3:  #2a5fae;
+  --success:   #6ee0a8;
+  --danger:    #ff8a8a;
+  --warn:      #f8c47a;
+  --radius:    4px;
+  --radius-sm: 3px;
+  --font-mono: "Cascadia Code", "Consolas", "SF Mono", "Menlo", monospace;
+}
+
+/* ========== LIGHT theme ==========
+   Windows 11 light defaults: light gray window bg, white cards.
+   Text colors are explicit shades of dark — pure black for primary text
+   (#000) down through medium gray for muted text (#5a5a62) — so the
+   hierarchy is visible on the bright background. The previous version
+   used #000000 for all three fg colors, which flattened the visual
+   hierarchy and made secondary/muted text hard to tell apart. */
+:root[data-theme="light"] {
+  --bg:        #f3f3f3;
+  --bg-2:      #ffffff;
+  --bg-3:      #f0f0f0;
+  --bg-4:      #e2e2e5;
+  --border:    #d0d0d4;
+  --border-2:  #9aa3b2;
+  --fg:        #000000;   /* main text — pure black */
+  --fg-2:      #1a1a1f;   /* secondary text — near-black, distinguishable */
+  --fg-3:      #5a5a62;   /* muted text — medium gray for hints/metadata */
+  --accent:    #0078d4;
+  --accent-2:  #006bbd;
+  --accent-3:  #005ba1;
+  --success:   #0a7c2e;
+  --danger:    #b91c1c;
+  --warn:      #92400e;
+  --radius:    4px;
+  --radius-sm: 3px;
+  --font-mono: "Cascadia Code", "Consolas", "SF Mono", "Menlo", monospace;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 "Segoe UI", "Segoe UI Variable", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+/* ========== Base elements ========== */
+button {
+  font: inherit; color: var(--fg);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px; cursor: pointer;
+}
+button:hover { background: var(--bg-4); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+button.primary {
+  background: var(--accent-2); border-color: var(--accent-2); color: #fff;
+  font-weight: 600;
+}
+button.primary:hover { background: var(--accent-3); border-color: var(--accent-3); }
+button.primary:disabled { background: var(--bg-3); border-color: var(--border); color: var(--fg-3); }
+
+button.danger { background: var(--bg-3); border-color: var(--danger); color: var(--danger); }
+button.danger:hover { background: var(--danger); color: #fff; }
+
+.btn-mini { padding: 3px 9px; font-size: 12px; }
+
+/* ========== Batch controls (in tab action bar) ==========
+   Empty queue:   single "Setup Batch Mode" button.
+   Has entries:   "Start BatchGen (N)" + a small "✎" edit icon button. */
+.batch-controls { display: inline-flex; gap: 4px; align-items: center; }
+.batch-controls .batch-setup { font-weight: 500; }
+.batch-controls .batch-start { font-weight: 600; }
+.batch-controls .batch-edit { padding: 3px 7px; line-height: 1; }
+
+input, select, textarea {
+  font: inherit; color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  padding: 5px 9px;
+  outline: none;
+}
+input[type="text"], input[type="number"], textarea { width: 100%; }
+textarea {
+  resize: vertical;
+  min-height: 140px;
+  font-family: inherit;
+  line-height: 1.45;
+  /* The 64px default was too small — selecting text in a tiny box routinely
+     grabbed the scrollable #content container instead and dragged the view.
+     140px comfortably fits 4-5 lines of prompt without scrolling, and the
+     user can still resize down if they prefer. */
+  user-select: text;
+  -webkit-user-select: text;
+}
+/* The main prompt / text / lyrics textareas get a bit more room by default
+   so the user can comfortably edit longer content and mark text without
+   the view jumping. (All textareas in .row are still resizable.) */
+.row > textarea {
+  min-height: 160px;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+input::placeholder, textarea::placeholder { color: var(--fg-3); }
+input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-allowed; }
+select { padding-right: 24px; background-image: linear-gradient(45deg, transparent 50%, var(--fg-2) 50%), linear-gradient(135deg, var(--fg-2) 50%, transparent 50%); background-position: calc(100% - 13px) 50%, calc(100% - 8px) 50%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; appearance: none; -webkit-appearance: none; }
+
+label { color: var(--fg); font-weight: 500; }
+
+/* ========== Top bar ========== */
+#topbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+#topbar .brand { font-weight: 700; font-size: 14px; color: var(--fg); }
+#tabs { display: flex; gap: 2px; }
+.tab {
+  background: transparent; border: 1px solid transparent;
+  color: var(--fg-2);
+  padding: 5px 14px; border-radius: var(--radius-sm);
+  font-weight: 500;
+  position: relative;
+}
+/* Status dots overlaid on tab buttons. Red = generation in progress, green =
+   generation finished (only when the user is not currently on that tab).
+   Bumped from 8px → 10px and given a darker outline so they're visible
+   against both dark and light themes. */
+.tab::after {
+  content: "";
+  position: absolute;
+  top: 5px; right: 5px;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  display: none;
+  box-shadow: 0 0 0 2px var(--bg-2), 0 0 4px rgba(0, 0, 0, 0.6);
+}
+.tab.tab-dot-red::after {
+  display: block;
+  background: var(--danger);
+  animation: tab-dot-pulse 1.2s ease-in-out infinite;
+  z-index: 2;
+}
+.tab.tab-dot-green::after { display: block; background: var(--success); z-index: 2; }
+@keyframes tab-dot-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+/* Per-tab ETA timer shown next to the tab label while a generation is
+   running. Made more visible (12px, brighter) so the user actually sees it. */
+.tab .tab-eta {
+  display: inline-block;
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-2);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  vertical-align: 1px;
+}
+.tab.tab-dot-red .tab-eta { color: var(--danger); opacity: 0.85; }
+.tab:hover { background: var(--bg-3); color: var(--fg); }
+.tab.active {
+  background: var(--bg-3);
+  border-color: var(--border-2);
+  color: var(--fg);
+  font-weight: 600;
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 3px;
+}
+.quota { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--fg-2); font-size: 12px; }
+.quota-label { opacity: 0.75; }
+#quota-value { font-variant-numeric: tabular-nums; color: var(--fg); font-weight: 500; }
+#quota-value .quota-warn { color: var(--warn); font-weight: 600; }
+#quota-value .quota-low { color: var(--danger); font-weight: 600; }
+#quota-value .quota-not-in-plan { color: var(--fg-3); font-style: italic; }
+#quota-value .quota-in-plan { color: var(--fg); font-weight: 600; }
+#quota-value span small { color: var(--fg-3); font-weight: 400; opacity: 0.85; }
+
+/* Status indicator in top bar (e.g. "Ready", "Generating image...") */
+.status {
+  color: var(--fg-2);
+  font-size: 12px;
+  font-style: italic;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+.status.busy { color: var(--accent); font-style: normal; font-weight: 600; }
+.status.busy::before {
+  content: "● ";
+  animation: status-blink 1.2s linear infinite;
+}
+@keyframes status-blink { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+/* ========== Layout ========== */
+#layout { flex: 1; display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+#content { overflow: auto; padding: 14px 18px; }
+#sidebar {
+  border-left: 1px solid var(--border);
+  background: var(--bg-2);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.tabpanel { display: none; }
+.tabpanel.active { display: block; }
+
+/* ========== Sticky tab footer (actions + preview) ==========
+   The lower part of every tab (the Generate row and the preview area) is
+   pinned to the bottom of the scrollable #content. The user can scroll the
+   parameter sections above and always see the Generate button + result. */
+.tabpanel { padding-bottom: 0; }
+.tab-footer {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  padding: 10px 0 4px;
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  z-index: 5;
+  /* small shadow so the user sees content scrolling behind the footer */
+  box-shadow: 0 -8px 12px -10px rgba(0, 0, 0, 0.45);
+}
+.tab-footer .actions { margin-bottom: 10px; }
+.tab-footer .preview { margin-bottom: 4px; }
+
+/* ========== Sections / forms ========== */
+.section {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.section h3 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: var(--fg-2);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+.row { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.row > label {
+  font-size: 12px; color: var(--fg);
+  display: flex; align-items: center; gap: 5px;
+  font-weight: 600;
+}
+.row > label .help {
+  color: var(--fg-2);
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  border-radius: 50%;
+  width: 14px; height: 14px;
+  text-align: center; font-size: 10px; line-height: 12px;
+  cursor: help; font-weight: 700;
+}
+.row > label .help:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.row .combo { display: flex; gap: 4px; align-items: stretch; }
+.row .combo select { flex: 1; min-width: 0; }
+.row .combo input { flex: 2; min-width: 0; }
+.row .combo button { flex: 0 0 auto; }
+.row .check { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.row .check input { width: auto; }
+
+/* When a dropdown is set to "Custom…", make the input the dominant element. */
+.row .combo.has-custom select { flex: 1 1 80px; max-width: 110px; }
+.row .combo.has-custom input { flex: 1 1 60%; min-width: 140px; }
+
+/* ========== Action bar ========== */
+.actions { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.actions .lastcmd {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--fg-2);
+  background: var(--bg); border: 1px solid var(--border-2); border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 1; min-width: 0;
+}
+.batch-start { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.batch-start:hover { background: var(--accent-2); border-color: var(--accent-2); }
+
+/* ========== Style-preview ========== */
+.style-preview {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--fg-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+  line-height: 1.5;
+}
+.style-preview .prefix { color: var(--accent); font-weight: 600; }
+.style-preview .empty { color: var(--fg-3); font-style: italic; }
+
+/* ========== Prompt character counter ==========
+   Small "X / 2000" readout placed right under the prompt + style preview.
+   Counts only what would be sent in the --prompt argument (style + manual
+   + optional prefix). Goes orange near the limit, red when over. */
+.prompt-counter {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+.prompt-counter .prompt-counter-val { font-weight: 700; color: var(--fg-2); }
+.prompt-counter .prompt-counter-max { color: var(--fg-3); }
+.prompt-counter.warn .prompt-counter-val { color: var(--warn); }
+.prompt-counter.warn .prompt-counter-max { color: var(--warn); }
+.prompt-counter.err  .prompt-counter-val { color: var(--danger); }
+.prompt-counter.err  .prompt-counter-max { color: var(--danger); }
+.prompt-counter.err  .prompt-counter-label { color: var(--danger); }
+
+/* ========== Variants dropdown ==========
+   Compact dropdown in the action bar. Disabled (greyed) when a seed is
+   set, since multiple variants would all be identical. */
+.variants-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-direction: row;
+  margin: 0;
+}
+.variants-row > .variants-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  margin: 0;
+}
+.variants-row .variants-select {
+  width: auto;
+  min-width: 60px;
+  padding: 3px 22px 3px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  background-color: var(--bg-3);
+  color: var(--fg);
+}
+.variants-row .variants-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  color: var(--fg-3);
+}
+
+/* ========== Preview area ========== */
+.preview {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  min-height: 200px;
+}
+.preview img, .preview video {
+  max-width: 100%; max-height: 60vh; display: block; margin: 0 auto;
+  background: var(--bg-3); border-radius: var(--radius-sm);
+}
+.preview img.preview-thumb {
+  /* Generation preview is now a thumbnail (max 400×400) instead of a
+     full-size image. Clicking the thumbnail opens the image overlay
+     at 1:1 pixel mode. We use object-fit: contain so the aspect ratio
+     is preserved and the image is rendered completely (no crop). */
+  max-width: 400px;
+  max-height: 400px;
+  object-fit: contain;
+  cursor: zoom-in;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.preview img.preview-thumb:hover {
+  transform: scale(1.02);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.preview audio { width: 100%; }
+.preview .empty { color: var(--fg-2); text-align: center; padding: 24px; }
+/* Error preview (generation failed): show the message + a Retry button
+   so the user can re-trigger the same generation without re-entering
+   parameters. */
+.preview .empty .preview-error-title {
+  color: var(--danger);
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+.preview .empty .preview-error-message {
+  color: var(--fg);
+  font-size: 13px;
+  margin-bottom: 10px;
+  word-break: break-word;
+  font-family: var(--font-mono);
+}
+.preview .empty .preview-error-tips {
+  text-align: left;
+  max-width: 560px;
+  margin: 0 auto 12px;
+  padding: 8px 14px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.preview .empty .preview-error-tip {
+  color: var(--fg-2);
+  padding: 1px 0;
+}
+.preview .empty .preview-error-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.preview .meta { color: var(--fg-2); font-size: 12px; margin-top: 8px; word-break: break-all; font-family: var(--font-mono); }
+
+/* ========== Sidebar / file browser ========== */
+.sidebar-head, .sidebar-toolbar {
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-toolbar input[type="text"] {
+  padding: 3px 7px; font-size: 12px;
+}
+.path-label { flex: 1; font-size: 12px; color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fb-list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; }
+.fb-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; cursor: pointer; user-select: none;
+  border-left: 2px solid transparent;
+}
+.fb-item:hover { background: var(--bg-3); }
+.fb-item.selected { background: var(--bg-4); border-left-color: var(--accent); color: var(--fg); }
+.fb-item.fb-drop-target { background: var(--accent-3); border-left-color: var(--accent); color: #fff; }
+.fb-item .icon { width: 16px; text-align: center; opacity: 0.9; }
+.fb-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.fb-item .size { color: var(--fg-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+/* ========== Log bar ==========
+   Layout: grid with 2 columns — left = the existing log (with its
+   Copy / Clear / Collapse buttons), right = a new "Picture preview"
+   pane that shows the asset the user clicked in the file browser.
+   Both panes share the same height; the file browser above is NOT
+   widened into the right cell (per the user's spec). */
+#logbar {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+  min-height: 32px;
+  height: 180px;
+  max-height: 280px;
+  overflow: hidden;
+}
+.logbar-pane {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+.logbar-log {
+  border-right: 1px solid var(--border);
+  min-width: 0;
+}
+.logbar-log details {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.logbar-log summary {
+  flex-shrink: 0;
+}
+.logbar-log #log {
+  flex: 1;
+  min-height: 0;
+  max-height: none;  /* override the previous 160px cap — the grid cell
+                        controls the height now */
+}
+#logbar summary {
+  padding: 5px 14px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--fg-2);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#logbar summary:hover { color: var(--fg); }
+.logbar-buttons { display: inline-flex; gap: 4px; }
+.logbar-buttons .btn-mini { padding: 1px 8px; font-size: 11px; }
+/* When the <details> is closed, show a hint that the log is collapsed —
+   keep a small footprint. */
+#logbar details:not([open]) > summary { padding: 4px 14px; }
+
+/* ========== Picture preview pane (right side of the log bar) ==========
+   Shows the asset the user clicked in the file browser. The image is
+   constrained to fit within the pane (object-fit: contain) so a giant
+   screenshot is shrunk to fit and a tiny icon stays at its natural
+   size — both rendered completely, no cropping. */
+.logbar-preview {
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.preview-pane-header {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-2);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.preview-pane-header .btn-mini { padding: 0 7px; font-size: 11px; line-height: 1.4; }
+.preview-pane-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 8px;
+  min-height: 0;
+  gap: 4px;
+}
+.preview-pane-empty {
+  color: var(--fg-3);
+  font-style: italic;
+  text-align: center;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.preview-pane-content img {
+  max-width: 100%;
+  max-height: calc(100% - 18px);
+  object-fit: contain;
+  display: block;
+  cursor: zoom-in;
+  background: var(--bg-3);
+  border-radius: var(--radius-sm);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.preview-pane-filename {
+  font-size: 11px;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ========== Image overlay (1:1 + zoom dropdown) ==========
+   Full-screen modal that opens when the user clicks a thumbnail. Shows
+   the image at its natural pixel size (1:1) by default, with a zoom
+   dropdown that scales to 75% / 50% / 25% / Fit-to-window. */
+.image-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.92);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+}
+.image-overlay-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 16px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.image-overlay-filename {
+  flex: 1;
+  font-size: 12px;
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.image-overlay-size {
+  font-size: 11px;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+.image-overlay-zoom {
+  width: auto;
+  padding: 4px 8px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.image-overlay-close {
+  font-size: 22px;
+  padding: 0 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.image-overlay-content {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  min-height: 0;
+}
+.image-overlay-img {
+  display: block;
+  image-rendering: auto;
+}
+.image-overlay-img.zoom-100 {
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  image-rendering: pixelated;
+}
+.image-overlay-img.zoom-75 { width: 75%; height: auto; }
+.image-overlay-img.zoom-50 { width: 50%; height: auto; }
+.image-overlay-img.zoom-25 { width: 25%; height: auto; }
+.image-overlay-img.zoom-fit {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  width: auto;
+  height: auto;
+  image-rendering: auto;
+}
+
+/* ========== Crop overlay ========== */
+.crop-dim-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.crop-dim-row label { font-size: 12px; color: var(--fg-2); }
+.crop-dim-row input[type="number"] { width: 90px; }
+.crop-stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 60vh;
+  overflow: auto;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+}
+.crop-image { display: block; max-width: none; image-rendering: auto; }
+.crop-frame {
+  position: absolute;
+  border: 2px solid #4ec98b;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  cursor: move;
+  pointer-events: auto;
+}
+.crop-frame::before {
+  /* Faint inner highlight so the frame reads as "selectable" against
+     bright or busy images. */
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+}
+
+/* ========== Upscale checkbox in the image tab action bar ========== */
+.upscale-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-2);
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 8px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+.upscale-checkbox input { margin: 0; cursor: pointer; }
+.upscale-checkbox:hover { background: var(--bg-3); }
+.upscale-checkbox.active {
+  background: var(--accent-3);
+  border-color: var(--accent);
+  color: #fff;
+}
+.upscale-checkbox .upscale-mult {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  opacity: 0.85;
+}
+#log {
+  margin: 0; padding: 6px 14px 12px;
+  max-height: 160px; overflow: auto;
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--fg-2); white-space: pre-wrap;
+}
+
+/* ========== Startup modal ========== */
+.startup-modal { width: min(560px, 92vw); }
+.startup-modal .startup-version {
+  display: inline-block;
+  margin: 0 0 10px;
+  padding: 3px 8px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg);
+}
+.startup-modal .startup-info {
+  color: var(--fg-2);
+  line-height: 1.55;
+  margin: 0 0 14px;
+}
+
+/* ========== Style manager (modal) ========== */
+.style-list { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.style-list li { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.style-list li:last-child { border-bottom: none; }
+.style-list li:hover { background: var(--bg-3); }
+.style-list .sname { font-weight: 600; color: var(--fg); }
+.style-list .sval { color: var(--fg-2); font-size: 12px; word-break: break-word; margin-top: 2px; }
+.style-list .sactions { display: flex; gap: 4px; align-items: flex-start; }
+.style-list .empty-row { color: var(--fg-2); font-style: italic; padding: 18px; text-align: center; }
+
+/* ========== BatchGen modal ========== */
+.batch-list { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow: auto; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-2); }
+.batch-row { display: grid; grid-template-columns: 30px 1fr auto auto auto; gap: 4px; align-items: stretch; }
+.batch-row textarea { min-height: 32px; max-height: 80px; font-size: 12px; }
+.batch-num {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-3); color: var(--fg-2);
+  border-radius: var(--radius-sm); font-size: 12px; font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.batch-empty { color: var(--fg-2); font-style: italic; padding: 16px; text-align: center; }
+
+/* ========== BatchGen overlay ========== */
+.batch-overlay {
+  position: relative;
+  background: var(--bg-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 14px;
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 6px 0;
+}
+.batch-overlay-title { font-weight: 700; font-size: 14px; color: var(--fg); }
+.batch-overlay-counter {
+  font-family: var(--font-mono);
+  font-size: 22px; font-weight: 700; color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.batch-overlay-prompt {
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px; font-size: 12px;
+  color: var(--fg); max-height: 60px; overflow: auto;
+  font-family: var(--font-mono);
+}
+.batch-overlay-elapsed { color: var(--fg-2); font-size: 12px; font-family: var(--font-mono); }
+.batch-overlay-log {
+  max-height: 140px; overflow: auto;
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 6px 8px;
+  font-family: var(--font-mono); font-size: 11px;
+}
+.batch-log-line { padding: 1px 0; color: var(--fg-2); }
+.batch-log-line.ok { color: var(--success); }
+.batch-log-line.err { color: var(--danger); }
+.batch-log-line.warn { color: var(--warn); }
+
+/* ========== Tooltips (data-help) ==========
+   Bigger, more readable, Windows-style. */
+[data-help] { position: relative; }
+[data-help]:hover::after {
+  content: attr(data-help);
+  position: absolute;
+  left: 24px; top: -6px;
+  background: var(--bg-2);
+  color: var(--fg);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 13px; line-height: 1.55;
+  white-space: pre-wrap;
+  width: max-content;
+  min-width: 280px;
+  max-width: 460px;
+  z-index: 50;
+  font-weight: 400;
+}
+
+/* ========== Keyboard shortcuts box (inside modal) ========== */
+.shortcuts-box {
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin: 12px 0 8px;
+}
+.shortcuts-box h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--fg-2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+.shortcut-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.shortcut-row kbd {
+  display: inline-block;
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg);
+  min-width: 110px;
+  text-align: center;
+}
+.shortcut-row span { color: var(--fg-2); }
+
+/* ========== Modal / Toasts ========== */
+#modal-root, #toast-root { position: fixed; inset: 0; pointer-events: none; z-index: 100; }
+#modal-root { display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.55); }
+#modal-root.active { pointer-events: auto; }
+.modal {
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  padding: 18px 22px;
+  width: min(720px, 92vw);
+  max-height: 88vh;
+  overflow: auto;
+  color: var(--fg);
+}
+.modal h2 { margin: 0 0 6px; font-size: 17px; color: var(--fg); }
+.modal p { color: var(--fg-2); line-height: 1.55; }
+.modal .row { margin-bottom: 10px; }
+.modal .row > label { color: var(--fg); font-weight: 500; }
+.modal .footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+#toast-root { display: block; pointer-events: none; }
+.toast {
+  position: fixed; right: 16px; bottom: 16px;
+  background: var(--bg-2);
+  color: var(--fg);
+  border: 1px solid var(--border-2);
+  border-left: 3px solid var(--accent);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  max-width: 360px;
+  pointer-events: auto;
+  font-size: 13px;
+}
+.toast.err { border-left-color: var(--danger); }
+.toast.ok { border-left-color: var(--success); }
+.toast.warn { border-left-color: var(--warn); }
+
+/* ========== Info banner inside sections ========== */
+.info-banner {
+  background: var(--bg-2);
+  border: 1px solid var(--warn);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+.info-banner .info-banner-title { font-weight: 700; color: var(--warn); margin-bottom: 4px; }
+
+/* ========== Instrumental (voice-less) section in Music tab ==========
+   Highlighted so the user can immediately see the option. */
+.instrumental-section {
+  border: 1px solid var(--accent);
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-3));
+}
+.instrumental-section > h3 {
+  color: var(--accent) !important;
+}
+.instrumental-banner {
+  border-color: var(--accent) !important;
+  border-left-color: var(--accent) !important;
+  background: var(--bg-2);
+}
+.instrumental-banner .info-banner-title { color: var(--accent) !important; }
+.row.locked-by-instrumental select { opacity: 0.55; cursor: not-allowed; }
+
+/* ========== Long-hover tooltip (1s hover) ==========
+   Shown for the .lastcmd span in the actions row — the full mmx command
+   is usually longer than the visible area, so on >1s hover we pop up the
+   complete text in a copy-friendly box. */
+.long-hover-tooltip {
+  position: fixed;
+  z-index: 200;
+  max-width: 80vw;
+  background: var(--bg-2);
+  color: var(--fg);
+  border: 1px solid var(--border-2);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  user-select: text;
+  cursor: text;
+}
+
+/* ========== Misc ========== */
+.spinner {
+  display: inline-block; width: 12px; height: 12px;
+  border: 2px solid var(--fg-3); border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: -2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: var(--fg-3); }

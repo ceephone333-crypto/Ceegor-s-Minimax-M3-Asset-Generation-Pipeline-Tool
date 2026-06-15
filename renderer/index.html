@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>MiniMax Assets Tool</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">MiniMax Assets Tool</div>
+    <nav id="tabs">
+      <button data-tab="image" class="tab active">Image</button>
+      <button data-tab="speech" class="tab">Speech</button>
+      <button data-tab="music" class="tab">Music</button>
+      <button data-tab="video" class="tab">Video</button>
+    </nav>
+    <div id="quota" class="quota"><span class="quota-label">Quota:</span> <span id="quota-value">—</span> <button id="quota-refresh" class="btn-mini" title="Refresh quota (Ctrl+R)">↻</button></div>
+    <div id="status" class="status" title="App status">Ready</div>
+    <button id="btn-styles" class="btn-mini" title="Style Settings (Ctrl+T) — manage prompt-prefix presets">🎨</button>
+    <button id="btn-theme" class="btn-mini" title="Toggle dark/light mode (Ctrl+L)">🌓</button>
+    <button id="btn-settings" class="btn-mini" title="Settings / config (Ctrl+S)">⚙</button>
+  </header>
+
+  <main id="layout">
+    <section id="content">
+      <div id="tab-image" class="tabpanel active"></div>
+      <div id="tab-speech" class="tabpanel"></div>
+      <div id="tab-music" class="tabpanel"></div>
+      <div id="tab-video" class="tabpanel"></div>
+    </section>
+    <aside id="sidebar">
+      <div class="sidebar-head">
+        <button id="fb-up" class="btn-mini" title="Up">↑</button>
+        <span id="fb-path" class="path-label" title="">—</span>
+        <button id="fb-refresh" class="btn-mini" title="Refresh">↻</button>
+      </div>
+      <div class="sidebar-toolbar">
+        <input id="fb-search" type="text" placeholder="Filter…" title="Filter file browser" style="flex: 1;" />
+        <button id="fb-new" class="btn-mini" title="New folder">+ Folder</button>
+        <button id="fb-open" class="btn-mini" title="Open in Explorer">↗</button>
+      </div>
+      <ul id="fb-list" class="fb-list"></ul>
+    </aside>
+  </main>
+
+  <footer id="logbar">
+    <div class="logbar-pane logbar-log">
+      <details open id="log-details">
+        <summary>
+          <span>Log</span>
+          <span class="logbar-buttons">
+            <button id="log-copy" class="btn-mini" title="Copy the entire log to the clipboard">📋 Copy</button>
+            <button id="log-clear" class="btn-mini" title="Clear the log">🗑 Clear</button>
+            <button id="log-toggle" class="btn-mini" title="Collapse / expand the log">▲ Collapse</button>
+          </span>
+        </summary>
+        <pre id="log"></pre>
+      </details>
+    </div>
+    <div class="logbar-pane logbar-preview">
+      <div class="preview-pane-header">
+        <span>🖼 Picture preview</span>
+        <button id="preview-clear" class="btn-mini" title="Clear preview">✕</button>
+      </div>
+      <div class="preview-pane-content" id="fb-preview-content">
+        <div class="preview-pane-empty">Click an image in the file browser to preview it here.</div>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Modal dialogs -->
+  <div id="modal-root"></div>
+  <div id="toast-root"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
