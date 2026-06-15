@@ -6,6 +6,48 @@ const fs = require('fs');
 
 const AGENT_FLAGS = ['--non-interactive'];
 
+// Build a minimal env for the spawned mmx process. We deliberately do
+// NOT pass `process.env` wholesale: that would leak every environment
+// variable the parent shell set (AWS_*, GITHUB_TOKEN, SSH_AUTH_SOCK,
+// MINIMAX_NODE_PATH and any other secrets the user has loaded) into the
+// mmx child, which then forwards them to the network when it talks to
+// the mmx API. The whitelist below keeps the child functional on
+// Windows / macOS / Linux while making sure we don't accidentally pass
+// anything that isn't strictly required to locate node + load the CLI.
+function buildChildEnv() {
+  const env = {};
+  // PATH so node (when on POSIX) / mmx (when on Windows resolving the
+  // shim) can find the executables they need.
+  if (process.env.PATH) env.PATH = process.env.PATH;
+  // Platform-specific home / profile so the child can find user
+  // configs (npm global node_modules on Windows lives under APPDATA).
+  if (process.platform === 'win32') {
+    if (process.env.SYSTEMROOT) env.SYSTEMROOT = process.env.SYSTEMROOT;
+    if (process.env.APPDATA) env.APPDATA = process.env.APPDATA;
+    if (process.env.LOCALAPPDATA) env.LOCALAPPDATA = process.env.LOCALAPPDATA;
+    if (process.env.USERPROFILE) env.USERPROFILE = process.env.USERPROFILE;
+    if (process.env.TEMP) env.TEMP = process.env.TEMP;
+    if (process.env.TMP) env.TMP = process.env.TMP;
+    if (process.env.HOMEDRIVE) env.HOMEDRIVE = process.env.HOMEDRIVE;
+    if (process.env.HOMEPATH) env.HOMEPATH = process.env.HOMEPATH;
+    // PATHEXT so .cmd / .bat lookups work
+    if (process.env.PATHEXT) env.PATHEXT = process.env.PATHEXT;
+  } else {
+    if (process.env.HOME) env.HOME = process.env.HOME;
+    if (process.env.USER) env.USER = process.env.USER;
+    if (process.env.LANG) env.LANG = process.env.LANG;
+    if (process.env.LC_ALL) env.LC_ALL = process.env.LC_ALL;
+    if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR;
+  }
+  // Allow the user to opt-in to a custom node path (used by the
+  // findNodeExe resolver) — but only that one explicit variable, not
+  // every MINIMAX_* var.
+  if (process.env.MINIMAX_NODE_PATH) env.MINIMAX_NODE_PATH = process.env.MINIMAX_NODE_PATH;
+  // Node-specific: tell node where to find the mmx-cli module.
+  if (process.env.NODE_PATH) env.NODE_PATH = process.env.NODE_PATH;
+  return env;
+}
+
 // Cache the resolved mmx.mjs path + the node executable to use.
 let resolved = null;
 
@@ -127,7 +169,9 @@ function runMmx({ args, apiKey, cwd, onLog }) {
     let lastStdoutTrim = '';
     let proc;
     try {
-      proc = spawn(r.command, fullArgs, { cwd, windowsHide: true, env: process.env });
+      // Use a whitelisted env instead of the full process.env — see
+      // buildChildEnv for the rationale.
+      proc = spawn(r.command, fullArgs, { cwd, windowsHide: true, env: buildChildEnv() });
       // Mark this as the current generation proc. cancelAll() only kills
       // this one — NOT other in-flight procs (e.g. a parallel quota check
       // triggered from the Diagnose dialog). Killing everything would
