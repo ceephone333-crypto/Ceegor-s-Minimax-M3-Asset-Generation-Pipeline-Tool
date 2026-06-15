@@ -1979,40 +1979,73 @@ function derivedOutputPath(srcPath, infix) {
   return candidate;
 }
 
-// Upscale an image to multiplier× its original size using the canvas.
-// Returns the output path on disk.
-async function upscaleImageFile(srcPath, multiplier) {
-  multiplier = Math.max(1, Math.min(8, Math.floor(Number(multiplier) || 2)));
-  const img = await loadImageFromFile(srcPath);
-  const newW = Math.max(1, Math.floor(img.naturalWidth * multiplier));
-  const newH = Math.max(1, Math.floor(img.naturalHeight * multiplier));
+// One resize step. Prefers createImageBitmap with resizeQuality: 'high'
+// — Chromium uses a Lanczos-style resampler for that, which is
+// noticeably sharper than the default canvas drawImage path. Falls
+// back to canvas drawImage with imageSmoothingQuality = 'high' for
+// older runtimes that don't expose createImageBitmap.
+async function upscaleStep(src, w, h) {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      return await createImageBitmap(src, {
+        resizeWidth: w,
+        resizeHeight: h,
+        resizeQuality: 'high',
+      });
+    } catch (_) { /* fall through to canvas path */ }
+  }
   const canvas = document.createElement('canvas');
-  canvas.width = newW;
-  canvas.height = newH;
+  canvas.width = w;
+  canvas.height = h;
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, 0, 0, newW, newH);
-  const mime = mimeFromPath(srcPath);
-  // JPEG can't store alpha; flatten onto white if needed.
-  if (mime === 'image/jpeg') {
-    const flat = document.createElement('canvas');
-    flat.width = newW; flat.height = newH;
-    const fctx = flat.getContext('2d');
-    fctx.fillStyle = '#ffffff';
-    fctx.fillRect(0, 0, newW, newH);
-    fctx.drawImage(canvas, 0, 0);
-    const dataUrl = flat.toDataURL('image/jpeg', 0.95);
-    const b64 = dataUrl.split(',')[1];
-    const out = derivedOutputPath(srcPath, `_${multiplier}x`);
-    const r = await window.api.fbWrite(out, b64);
-    if (!r.ok) throw new Error(r.error || 'fbWrite failed');
-    return r.path;
+  ctx.drawImage(src, 0, 0, w, h);
+  return canvas;
+}
+
+// Upscale an image to multiplier× its original size. We walk up to
+// the target in 2x steps rather than doing one single Nx resize —
+// each individual step has a smaller interpolation error, so the
+// final image is noticeably sharper than the previous one-shot
+// implementation (especially for 3×, 4× and 8×). The default
+// imageSmoothingQuality='high' path is still used as a fallback for
+// runtimes without createImageBitmap.
+//
+// Returns the output path on disk.
+async function upscaleImageFile(srcPath, multiplier) {
+  multiplier = Math.max(1, Math.min(8, Math.floor(Number(multiplier) || 2)));
+  const srcImg = await loadImageFromFile(srcPath);
+  const targetW = Math.max(1, Math.floor(srcImg.naturalWidth * multiplier));
+  const targetH = Math.max(1, Math.floor(srcImg.naturalHeight * multiplier));
+  // Walk up to the target in 2x steps (final step may be smaller if
+  // the multiplier isn't a power of 2).
+  let curW = srcImg.naturalWidth;
+  let curH = srcImg.naturalHeight;
+  let cur = srcImg;
+  while (curW < targetW || curH < targetH) {
+    const stepW = Math.min(targetW, curW * 2);
+    const stepH = Math.min(targetH, curH * 2);
+    cur = await upscaleStep(cur, stepW, stepH);
+    curW = stepW;
+    curH = stepH;
   }
-  const dataUrl = canvas.toDataURL(mime);
+  // cur is at the target size. Transfer to a canvas (ImageBitmap has
+  // no toDataURL) and apply the alpha->white flatten for JPEG.
+  const mime = mimeFromPath(srcPath);
+  const out = document.createElement('canvas');
+  out.width = targetW;
+  out.height = targetH;
+  const octx = out.getContext('2d');
+  if (mime === 'image/jpeg') {
+    octx.fillStyle = '#ffffff';
+    octx.fillRect(0, 0, targetW, targetH);
+  }
+  octx.drawImage(cur, 0, 0);
+  const dataUrl = out.toDataURL(mime, 0.95);
   const b64 = dataUrl.split(',')[1];
-  const out = derivedOutputPath(srcPath, `_${multiplier}x`);
-  const r = await window.api.fbWrite(out, b64);
+  const outPath = derivedOutputPath(srcPath, `_${multiplier}x`);
+  const r = await window.api.fbWrite(outPath, b64);
   if (!r.ok) throw new Error(r.error || 'fbWrite failed');
   return r.path;
 }
@@ -2159,28 +2192,68 @@ function showCropOverlay(srcPath) {
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
       'Source: ' + srcPath));
 
-    // Inputs row: Width, Height, Apply
+    // Inputs row: auto-size checkbox, Width, Height, Apply
+    // The "auto-size" checkbox is on by default: when checked, the
+    // image and the green crop frame are both scaled to fit inside the
+    // stage so a 4K source doesn't overflow the modal. The W/H inputs
+    // still describe the crop in image pixels (the scale only affects
+    // the on-screen display).
+    const autoSizeCb = el('input', { type: 'checkbox', class: 'auto-size-cb' });
+    autoSizeCb.checked = true;
     const wInput = el('input', { type: 'number', min: '1', value: '1024' });
     const hInput = el('input', { type: 'number', min: '1', value: '1024' });
     const applyBtn = el('button', { class: 'btn-mini' }, 'Apply');
     const cropBtn = el('button', { class: 'primary' }, 'Crop');
     const cancelBtn = el('button', { onclick: close }, 'Cancel');
-    // The image stage: image at natural size + draggable frame overlay.
+    // The image stage: image + draggable frame overlay.
     const stage = el('div', { class: 'crop-stage' });
     const img = el('img', { class: 'crop-image' });
     // Hidden until we know the image's natural size.
     img.style.visibility = 'hidden';
     stage.appendChild(img);
-    // We'll create the frame lazily once the user clicks Apply (we
-    // need the image's natural size to compute default frame position).
     let frame = null;
     let frameX = 0, frameY = 0;
+    // displayScale converts image pixels -> display pixels:
+    //   displayW = imageW * displayScale
+    //   displayH = imageH * displayScale
+    // When auto-size is on and the image is bigger than the stage,
+    // displayScale < 1 so the whole image + frame fit on screen. When
+    // auto-size is off, displayScale = 1 (natural size, the original
+    // behaviour). The drag handler uses this value to convert
+    // display-pixel mouse deltas back into image-pixel positions.
+    let displayScale = 1;
 
     m.appendChild(el('div', { class: 'crop-dim-row' }, [
+      el('label', { class: 'auto-size-label' }, [autoSizeCb, ' auto-size']),
       el('label', {}, 'Width'), wInput, el('label', {}, 'Height'), hInput, applyBtn,
     ]));
     m.appendChild(stage);
     m.appendChild(el('div', { class: 'footer' }, [cancelBtn, cropBtn]));
+
+    // Recompute the image's CSS size + the displayScale. Called when
+    // the image finishes loading and when the user toggles the
+    // checkbox. Reads the stage's actual client size (subtracting the
+    // 4px padding on each side) so the math holds even after the
+    // modal has been resized by the user.
+    function applyAutoSize() {
+      if (!img.naturalW) return;
+      const stageW = stage.clientWidth || 1;
+      const stageH = stage.clientHeight || 1;
+      if (autoSizeCb.checked) {
+        // Fit completely; never upscale beyond 1:1 (so we don't
+        // bloat a small image to look pixelated).
+        const s = Math.min(stageW / img.naturalW, stageH / img.naturalH, 1);
+        displayScale = isFinite(s) && s > 0 ? s : 1;
+      } else {
+        displayScale = 1;
+      }
+      img.style.width = (img.naturalW * displayScale) + 'px';
+      img.style.height = (img.naturalH * displayScale) + 'px';
+    }
+    autoSizeCb.addEventListener('change', () => {
+      applyAutoSize();
+      if (frame) showFrame();
+    });
 
     // Load the image. Once decoded, show it and pre-fill W/H with the
     // natural size so the user can immediately Apply.
@@ -2191,12 +2264,15 @@ function showCropOverlay(srcPath) {
       img.style.visibility = '';
       wInput.value = String(loaded.naturalWidth);
       hInput.value = String(loaded.naturalHeight);
+      applyAutoSize();
     }).catch((e) => {
       toast('Failed to load image: ' + e.message, 'err', 6000);
       close();
     });
 
     // Create / recreate the frame at the specified W x H, centered.
+    // frameX/frameY are always in IMAGE pixels; the CSS left/top are
+    // scaled by displayScale so the frame visually fits the image.
     function showFrame() {
       const w = Math.max(1, parseInt(wInput.value, 10) || 1);
       const h = Math.max(1, parseInt(hInput.value, 10) || 1);
@@ -2206,17 +2282,20 @@ function showCropOverlay(srcPath) {
       }
       if (frame) frame.remove();
       frame = el('div', { class: 'crop-frame', title: 'Drag to position' });
-      frame.style.width = w + 'px';
-      frame.style.height = h + 'px';
-      // Center initially
-      const contW = stage.clientWidth || 1;
-      frameX = Math.max(0, Math.floor((Math.min(img.naturalW || w, contW) - w) / 2));
+      // Display size = image size * scale
+      frame.style.width = (w * displayScale) + 'px';
+      frame.style.height = (h * displayScale) + 'px';
+      // Center the frame initially
+      frameX = Math.max(0, Math.floor((img.naturalW - w) / 2));
       frameY = Math.max(0, Math.floor((img.naturalH - h) / 2));
-      frame.style.left = frameX + 'px';
-      frame.style.top = frameY + 'px';
+      // Display position = image position * scale
+      frame.style.left = (frameX * displayScale) + 'px';
+      frame.style.top = (frameY * displayScale) + 'px';
       stage.appendChild(frame);
+      // Pass displayScale so the drag handler can convert
+      // display-pixel mouse deltas to image-pixel positions.
       setupCropFrameDrag(frame, stage, () => img.naturalW, () => img.naturalH,
-        (x, y) => { frameX = x; frameY = y; });
+        (x, y) => { frameX = x; frameY = y; }, displayScale);
     }
     applyBtn.addEventListener('click', showFrame);
 
@@ -2242,16 +2321,25 @@ function showCropOverlay(srcPath) {
 }
 
 // Make the crop frame draggable, constrained to the image bounds.
-function setupCropFrameDrag(frame, stage, getImageW, getImageH, onMove) {
+// `displayScale` is the image-pixel-to-display-pixel ratio used by
+// the parent overlay (1.0 = no scaling). When the image is rendered
+// smaller than its natural size (because the auto-size checkbox is
+// on and the source is larger than the stage), the frame's CSS
+// width/height/left/top are in display pixels but the bounds checks
+// and the position we report back to the caller are in image
+// pixels. We convert at the boundary.
+function setupCropFrameDrag(frame, stage, getImageW, getImageH, onMove, displayScale = 1) {
   let dragging = false;
-  let startX, startY, frameStartX, frameStartY;
+  let startX, startY, frameStartImgX, frameStartImgY;
   function onDown(e) {
     e.preventDefault();
     dragging = true;
     const pt = e.touches ? e.touches[0] : e;
     startX = pt.clientX; startY = pt.clientY;
-    frameStartX = parseInt(frame.style.left, 10) || 0;
-    frameStartY = parseInt(frame.style.top, 10) || 0;
+    // The frame's CSS left/top is in display pixels. Convert to
+    // image pixels so the move deltas below are in the right space.
+    frameStartImgX = Math.round((parseInt(frame.style.left, 10) || 0) / displayScale);
+    frameStartImgY = Math.round((parseInt(frame.style.top, 10) || 0) / displayScale);
     document.addEventListener('mousemove', onMv);
     document.addEventListener('mouseup', onUp);
     document.addEventListener('touchmove', onMv, { passive: false });
@@ -2263,14 +2351,19 @@ function setupCropFrameDrag(frame, stage, getImageW, getImageH, onMove) {
     const pt = e.touches ? e.touches[0] : e;
     const dx = pt.clientX - startX;
     const dy = pt.clientY - startY;
-    const w = parseInt(frame.style.width, 10) || 1;
-    const h = parseInt(frame.style.height, 10) || 1;
+    // Frame size in image pixels = CSS size / displayScale.
+    const w = Math.round((parseInt(frame.style.width, 10) || 1) / displayScale);
+    const h = Math.round((parseInt(frame.style.height, 10) || 1) / displayScale);
     const iw = getImageW() || 1;
     const ih = getImageH() || 1;
-    let nx = Math.max(0, Math.min(frameStartX + dx, iw - w));
-    let ny = Math.max(0, Math.min(frameStartY + dy, ih - h));
-    frame.style.left = nx + 'px';
-    frame.style.top = ny + 'px';
+    // Convert display-pixel mouse deltas to image pixels.
+    const dImgX = Math.round(dx / displayScale);
+    const dImgY = Math.round(dy / displayScale);
+    let nx = Math.max(0, Math.min(frameStartImgX + dImgX, iw - w));
+    let ny = Math.max(0, Math.min(frameStartImgY + dImgY, ih - h));
+    // Write back as display pixels.
+    frame.style.left = (nx * displayScale) + 'px';
+    frame.style.top = (ny * displayScale) + 'px';
     if (onMove) onMove(nx, ny);
   }
   function onUp() {

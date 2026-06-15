@@ -719,6 +719,23 @@ label { color: var(--fg); font-weight: 500; }
 }
 .crop-dim-row label { font-size: 12px; color: var(--fg-2); }
 .crop-dim-row input[type="number"] { width: 90px; }
+/* "auto-size" checkbox in the crop overlay. Sits at the start of the
+   crop-dim-row, before Width/Height/Apply. Wrapped in a label so
+   clicking the text toggles the checkbox too. */
+.crop-dim-row .auto-size-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 10px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.crop-dim-row .auto-size-cb {
+  margin: 0;
+  cursor: pointer;
+}
 .crop-stage {
   position: relative;
   display: inline-block;
