@@ -1,6 +1,6 @@
 # MiniMax Asset Generation Pipeline Tool
 
-A cross-modal asset generation GUI for the [MiniMax Token Plan](https://MiniMax.io) — image, speech, music, and video — packaged with a local image pipeline (upscale, crop, format conversion) that runs entirely in the browser. No ML libraries, no external services, no API calls beyond the MiniMax CLI itself.
+A cross-modal asset generation GUI for the [MiniMax Token Plan](https://MiniMax.io) — image, speech, music, and video — packaged with a local image pipeline (upscale, crop, format conversion) that runs entirely in the browser. No ML libraries, no external services, no API calls beyond the MiniMax CLI itself. Perfect for spending the last available weekly tokens and not waste them.
 
 Built on Electron. Ships as a portable Windows .exe or as a runnable source tree. MIT licensed.
 
