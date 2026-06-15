@@ -30,6 +30,13 @@ const state = {
   // name. Mirrored on all 4 tabs (one input on each) so the user can
   // tweak it without switching tabs. Persisted to state.json.
   filePrefix: '',
+  // Real-ESRGAN model name (passed to the ncnn-vulkan binary via
+  // `-n <model>`). The default is the general-purpose 4× BSD-3 model.
+  // Users pick a different one in ⚙ Settings → Image upscaling →
+  // Model. The actual spawn is whitelisted in src/realesrgan.js to a
+  // short known set so a corrupted state.json can't inject an
+  // arbitrary model name (or argv flag) into the binary.
+  realesrganModel: 'realesrgan-x4plus',
   // Upscale-on-Generate: when true, every newly generated image is
   // upscaled locally (Canvas API) after the mmx call returns, using the
   // settings below. Persisted to state.json so it survives restarts.
@@ -2082,6 +2089,18 @@ async function upscaleImageFile(srcPath, multiplier) {
   return r.path;
 }
 
+// Whitelist of Real-ESRGAN model names we know about. The model
+// becomes the `-n` flag value of the spawn, so this is also a
+// defence against a corrupted state.json / compromised renderer
+// injecting an arbitrary flag into the binary's argv. Update
+// when a new model is added to ./bin/models/.
+const REAL_ESRGAN_MODELS = new Set([
+  'realesrgan-x4plus',
+  'realesrgan-x4plus-anime',
+  'realesrgan-animevideov3',
+  'realesr-general-x4v3',
+]);
+
 // Real-ESRGAN path. The ncnn-vulkan binary always outputs at the
 // model's native scale (4× for x4plus). For multipliers other than
 // 4×, we resize the intermediate using the same createImageBitmap
@@ -2091,6 +2110,12 @@ async function upscaleImageFile(srcPath, multiplier) {
 //   - 4×: 4× as-is
 //   - 8×: 4× → 8×  (extra 2× step)
 async function upscaleImageFileRealesrgan(srcPath, multiplier, reStatus) {
+  // Pick a model: prefer the user's saved choice, but only if it's on
+  // the whitelist. Anything else (default, typo, exploit attempt)
+  // falls back to the general-purpose 4× BSD-3 model.
+  const wanted = (state.realesrganModel || '').trim();
+  const model = REAL_ESRGAN_MODELS.has(wanted) ? wanted : 'realesrgan-x4plus';
+
   // The Real-ESRGAN binary needs a writable output path. Write its
   // 4× intermediate to a `.realesrgan_tmp.png` next to the source
   // (in output_dir, so it's already in the allowed roots) and
@@ -2103,7 +2128,7 @@ async function upscaleImageFileRealesrgan(srcPath, multiplier, reStatus) {
   let r;
   try {
     r = await window.api.realesrganRun(srcPath, tempOut, {
-      model: 'realesrgan-x4plus',
+      model,
       scale: 4,
     });
   } catch (e) {
@@ -3232,6 +3257,81 @@ function openSettings() {
     });
     m.appendChild(el('div', { class: 'footer' }, [cancel, test, diag, save]));
   });
+
+  // After the main settings popup is built, append a "Image
+  // upscaling" section with Real-ESRGAN status + re-detect + model
+  // selector. This is a second showModal call layered on top of the
+  // outer one — the renderer's modal stack handles Esc to close the
+  // topmost first, so the user gets a clean back-out.
+  showRealesrganSettings();
+}
+
+// ----------------- Real-ESRGAN settings -----------------
+// A second modal layer inside ⚙ Settings, on top of the regular
+// settings popup. Shows: status (detected / not found / version),
+// a Re-detect button (re-runs the IPC probe in case the user
+// installed the binary after launch), and a model selector. The
+// model choice is persisted to state.json via scheduleStateSave.
+function showRealesrganSettings() {
+  showModal(async (m, close) => {
+    m.classList.add('realesrgan-settings-modal');
+    m.appendChild(el('h2', {}, 'Image upscaling'));
+    m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+      'The built-in pipeline (multi-step createImageBitmap) is always available. Real-ESRGAN (BSD-3-Clause) gives noticeably better detail when the binary is installed.'));
+
+    // Status row. We probe once on open, then a "Re-detect" button
+    // re-runs the probe.
+    const statusText = el('div', { class: 're-status' }, 'Detecting…');
+    const reBtn = el('button', { class: 'btn-mini' }, 'Re-detect');
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', {}, 'Real-ESRGAN status'), statusText, reBtn,
+    ]));
+
+    // Model selector — same four canonical model names as the
+    // REAL_ESRGAN_MODELS whitelist in upscaleImageFileRealesrgan.
+    const modelSel = el('select', {});
+    for (const [val, lbl] of [
+      ['realesrgan-x4plus', 'realesrgan-x4plus  (general-purpose 4×, default)'],
+      ['realesrgan-x4plus-anime', 'realesrgan-x4plus-anime  (anime / illustration)'],
+      ['realesrgan-animevideov3', 'realesrgan-animevideov3  (video frames)'],
+      ['realesr-general-x4v3', 'realesr-general-x4v3  (latest general, smaller)'],
+    ]) {
+      const opt = el('option', { value: val }, lbl);
+      if (val === (state.realesrganModel || 'realesrgan-x4plus')) opt.selected = true;
+      modelSel.appendChild(opt);
+    }
+    modelSel.addEventListener('change', () => {
+      state.realesrganModel = modelSel.value;
+      scheduleStateSave();
+    });
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', {}, 'Model'), modelSel,
+    ]));
+
+    async function refreshStatus() {
+      statusText.textContent = 'Detecting…';
+      try {
+        const r = await window.api.realesrganAvailable();
+        if (r && r.available) {
+          statusText.textContent = 'Detected: ' + (r.binaryPath || '') +
+            (r.version ? '  (v' + r.version + ')' : '');
+          statusText.style.color = 'var(--success)';
+        } else {
+          statusText.textContent = 'Not found. Download realesrgan-ncnn-vulkan and drop the binary into ./bin/ (or onto PATH). See README for the link.';
+          statusText.style.color = 'var(--fg-2)';
+        }
+      } catch (e) {
+        statusText.textContent = 'Probe failed: ' + (e.message || e);
+        statusText.style.color = 'var(--danger)';
+      }
+    }
+    reBtn.addEventListener('click', () => { refreshStatus(); });
+    refreshStatus();
+
+    m.appendChild(el('div', { class: 'footer' }, [
+      el('button', { class: 'primary', onclick: close }, 'Done'),
+    ]));
+  });
 }
 
 function showDiagnose() {
@@ -4078,6 +4178,12 @@ async function init() {
   }
   // Restore the global file-name prefix (mirrored on every tab).
   if (typeof savedState.filePrefix === 'string') state.filePrefix = savedState.filePrefix;
+  // Restore the Real-ESRGAN model choice. Same sanitisation as
+  // state.js: capped length, falls back to the default on any
+  // garbage value. App-level whitelisting happens in the call site.
+  if (typeof savedState.realesrganModel === 'string' && savedState.realesrganModel.trim()) {
+    state.realesrganModel = savedState.realesrganModel.trim().slice(0, 64);
+  }
   const startTab = (savedState.currentTab && ['image','speech','music','video'].includes(savedState.currentTab))
     ? savedState.currentTab : 'image';
   for (const tabKey of ['image', 'speech', 'music', 'video']) {
@@ -4367,6 +4473,9 @@ async function saveAllStates() {
     // Global file-name prefix (mirrored on every tab; prepended to
     // every generated file).
     filePrefix: state.filePrefix || '',
+    // Real-ESRGAN model name (defaults to the general-purpose 4×
+    // BSD-3 model).
+    realesrganModel: state.realesrganModel || 'realesrgan-x4plus',
   }).catch(() => {});
 }
 function setupTabAutosave(tabKey) {
