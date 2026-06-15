@@ -41,6 +41,12 @@ function write(s) {
     upscaleSettings: (s && s.upscaleSettings && typeof s.upscaleSettings === 'object')
       ? { multiplier: parseInt(s.upscaleSettings.multiplier, 10) || 2 }
       : { multiplier: 2 },
+    // Real-ESRGAN model name (default: the general-purpose 4× BSD-3
+    // model). Whitelisted in app.js to a known set so a corrupted
+    // state.json can't inject a path-traversal arg into the spawn.
+    realesrganModel: (typeof s?.realesrganModel === 'string' && s.realesrganModel.trim())
+      ? s.realesrganModel.trim().slice(0, 64)
+      : 'realesrgan-x4plus',
   };
   // Atomic write: write to a temp file then rename. Avoids a corrupt
   // state.json if the process is killed mid-write.
