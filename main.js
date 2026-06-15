@@ -75,6 +75,33 @@ function createWindow() {
   // legitimate need to spawn additional windows, and an unblocked
   // `window.open` is a classic XSS escape hatch.
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // Confirm-before-close guard. Without this, a misclick on the X
+  // button (or Alt+F4 / Cmd+Q) can kill an in-progress mmx generation
+  // and discard whatever the user was working on. We show a modal
+  // question dialog; the default button is "Cancel" and Esc also maps
+  // to Cancel, so the safe option is the default. A flag breaks the
+  // recursion when the user actually confirms.
+  let _confirmingClose = false;
+  mainWindow.on('close', async (e) => {
+    if (_confirmingClose) return;
+    e.preventDefault();
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      title: 'Close MiniMax Asset Tool?',
+      message: 'Are you sure you want to close the tool?',
+      detail: 'Any in-progress generation will be cancelled. Your settings, file prefix, and per-tab folders are saved automatically (after every change), so you can pick up where you left off the next time you launch the app.',
+      buttons: ['Close', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (result.response === 0) {
+      _confirmingClose = true;
+      // destroy() bypasses the 'close' event so the guard doesn't
+      // re-fire and trap us in a loop.
+      mainWindow.destroy();
+    }
+  });
   // mainWindow.webContents.openDevTools({ mode: 'detach' });
 }
 
