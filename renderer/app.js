@@ -77,11 +77,90 @@ function el(tag, attrs = {}, children = []) {
   return e;
 }
 
+// ----------------- API key masking -----------------
+// The API key is the single most sensitive piece of config we
+// touch. Once it lands in the log pane, the user can copy it
+// with one click — the same one-click they use to share logs
+// with support — and accidentally leak the full key. We mask
+// everywhere except the actual mmx call:
+//   - maskApiKey(key)               -> first 5 chars + "***", or
+//                                     "***" for short / empty keys
+//   - maskLine(line, key)           -> replaces every occurrence
+//                                     of the key in `line` with
+//                                     the masked version
+//   - showRevealableKey(...)        -> builds a settings-row
+//                                     input that shows the masked
+//                                     value by default and
+//                                     reveals the real key on
+//                                     click of a "Show" toggle
+function maskApiKey(key) {
+  if (!key || typeof key !== 'string') return '';
+  if (key.length <= 5) return '***';
+  return key.slice(0, 5) + '***';
+}
+function maskLine(line, apiKey) {
+  if (!apiKey || typeof line !== 'string') return line;
+  return line.split(apiKey).join(maskApiKey(apiKey));
+}
+
+// Build a "revealable key" input row for the settings dialog. The
+// real key is shown only when the user clicks "Show"; by default
+// the field displays maskApiKey(key) (first 5 chars + ***) so a
+// shoulder-surfer or screen-capture sees the masked version.
+// The input is what the caller reads at save time (always the
+// current real value, not the masked one), so a Save with no
+// user interaction still works correctly. When the user types
+// over the field, the new value is the "real" value from then
+// on — the toggle then toggles between masked(new) and new.
+//
+// SECURITY: when hidden, the input is also `readonly`, so the
+// user can't type over the masked value (which would otherwise
+// look like a normal field and could trick them into "saving"
+// the masked version). The `getValue()` returned from this
+// helper always returns the *real* value, regardless of the
+// input's current display — so the caller's Save handler is
+// safe to read from it without re-implementing the mask logic.
+function showRevealableKey(realKey, opts) {
+  opts = opts || {};
+  const placeholder = opts.placeholder || '';
+  const label = opts.label || 'API key';
+  let curValue = realKey || '';
+  const inp = el('input', { type: 'text', placeholder, autocomplete: 'off' });
+  let revealed = false;
+  const toggle = el('button', { class: 'btn-mini', type: 'button' }, 'Show');
+  function refresh() {
+    inp.value = revealed ? curValue : maskApiKey(curValue);
+    inp.readOnly = !revealed;
+    toggle.textContent = revealed ? 'Hide' : 'Show';
+  }
+  refresh();
+  inp.addEventListener('input', () => {
+    // The input is readonly while hidden, so this only fires when
+    // the user is actually editing the real value. Track every
+    // edit so getValue() returns the latest typed value.
+    if (revealed) curValue = inp.value;
+  });
+  toggle.addEventListener('click', () => {
+    revealed = !revealed;
+    refresh();
+  });
+  const row = el('div', { class: 'row' }, [
+    el('label', {}, label),
+    el('div', { class: 'combo' }, [inp, toggle]),
+  ]);
+  return { row, input: inp, getValue: () => curValue, isRevealed: () => revealed };
+}
+
 function log(line) {
   const logEl = $('#log');
   if (!logEl) return;
   const ts = new Date().toLocaleTimeString();
-  logEl.textContent += `[${ts}] ${line}\n`;
+  // The log is copied to clipboard by the user (📋 Copy button)
+  // and pasted into support tickets. We must never let a full
+  // API key ride along. maskLine replaces every occurrence of
+  // the real key in the line with the first-5 + "***" version.
+  const safe = maskLine(line, state.config && state.config.api_key);
+  logEl.textContent += `[${ts}] ${safe}\n`;
   logEl.scrollTop = logEl.scrollHeight;
 }
 
@@ -198,9 +277,21 @@ function openFirstTimeSetup() {
 
     const cfg = { ...state.config };
 
-    // API key
-    const apiInput = el('input', { type: 'text', value: cfg.api_key || '', placeholder: 'sk-cp-xxxxxxxx' });
-    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'API key (MiniMax Token Plan)'), apiInput]));
+    // API key. We use the showRevealableKey helper so the first-time
+    // setup behaves the same as the regular ⚙ Settings popup: the
+    // real key is hidden behind a "Show" toggle by default, but
+    // the user can reveal it (or type a new one) with one click.
+    // Without the toggle, the placeholder is a generic "sk-cp-xxx…"
+    // so the user knows what shape to paste, but the value field
+    // never contains the real key unless the user explicitly asked
+    // for it. See the comment on showRevealableKey for the full
+    // security rationale.
+    const apiRow = showRevealableKey(cfg.api_key || '', {
+      placeholder: 'sk-cp-xxxxxxxx',
+      label: 'API key (MiniMax Token Plan)',
+    });
+    m.appendChild(apiRow.row);
+    const apiInput = apiRow.input;
 
     // Output directory — text input + Browse button that opens the
     // standard Windows folder-selection dialog (the same one the
@@ -226,7 +317,11 @@ function openFirstTimeSetup() {
     const save = el('button', { class: 'primary' }, 'Save');
     const skip = el('button', { onclick: close }, 'Skip for now');
     save.addEventListener('click', async () => {
-      const api_key = apiInput.value.trim();
+      // Use the helper's getValue() (not apiInput.value) so we
+      // never accidentally persist the masked version. The helper
+      // returns the real current value regardless of whether the
+      // field is currently shown or hidden.
+      const api_key = apiKeyRow.getValue().trim();
       const output_dir = outInput.value.trim();
       const region = regInput.value || 'global';
       if (!api_key) { toast('API key is required. Edit it now or click "Skip for now" and set it later in ⚙ Settings.', 'err', 5000); return; }
@@ -1077,7 +1172,7 @@ TABS.image = {
           const outFile = makeOutPath(v);
           const args = baseArgs.slice();
           if (!useOutDir) args.push('--out', outFile);
-          lastCmd.textContent = `mmx ${args.join(' ')}`;
+          lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
 
           const statusMsg = variantsCount > 1
             ? `Generating image… variant ${v}/${variantsCount}`
@@ -1514,7 +1609,7 @@ TABS.speech = {
           const prefix = (state.filePrefix || '').trim();
           const outFile = uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.${ext}`);
           args.push('--out', outFile);
-          lastCmd.textContent = `mmx ${args.join(' ')}`;
+          lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
           const statusMsg = variantsCount > 1
             ? `Generating speech… variant ${v}/${variantsCount}`
             : 'Generating speech…';
@@ -1995,7 +2090,7 @@ TABS.music = {
           const variantTag = variantsCount > 1 ? `_v${v}` : '';
           const outFile = uniquePath(outDir, `${ts}_${slug}${variantTag}.${ext}`);
           args.push('--out', outFile);
-          lastCmd.textContent = `mmx ${args.join(' ')}`;
+          lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
           const statusMsg = variantsCount > 1
             ? `Generating music… variant ${v}/${variantsCount} (may take 30s–2min each)`
             : 'Generating music… (may take 30s–2min)';
@@ -3869,13 +3964,22 @@ function openSettings() {
     m.appendChild(el('h2', {}, 'Settings'));
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px;' }, 'Config is stored in config.txt next to the executable. API key is never embedded in the binary.'));
 
-    const apiInput = el('input', { type: 'text', value: state.config.api_key || '' });
+    // API key. We use the showRevealableKey helper so the real
+    // key is hidden behind a "Show" toggle by default — see the
+    // comment on the helper for the security rationale. The
+    // input's value is always the real key, never the masked
+    // one, so a Save with no edits works as before.
+    const apiKeyRow = showRevealableKey(state.config.api_key || '', {
+      placeholder: 'sk-cp-xxxxxxxx',
+      label: 'API key (MiniMax Token Plan)',
+    });
+    const apiInput = apiKeyRow.input;
     const outInput = el('input', { type: 'text', value: state.config.output_dir || '', placeholder: '(default: ./generated/)' });
     const regInput = el('select', {});
     for (const r of ['global', 'cn']) regInput.appendChild(el('option', { value: r }, r));
     regInput.value = state.config.region || 'global';
 
-    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'API key (MiniMax Token Plan)'), apiInput]));
+    m.appendChild(apiKeyRow.row);
     m.appendChild(el('div', { class: 'row' }, [
       el('label', {}, 'Output directory'),
       el('div', { class: 'combo' }, [outInput, el('button', { class: 'btn-mini', onclick: async () => { const p = await window.api.pickFolder(); if (p) outInput.value = p; } }, 'Browse…')]),
@@ -3929,7 +4033,7 @@ function openSettings() {
       // object which silently dropped `theme` and `styles` on every save.
       const cfg = {
         ...state.config,
-        api_key: apiInput.value.trim(),
+        api_key: apiKeyRow.getValue().trim(),
         output_dir: outInput.value.trim(),
         region: regInput.value || 'global',
       };
@@ -4011,6 +4115,62 @@ function showRealesrganSettings() {
     }
     reBtn.addEventListener('click', () => { refreshStatus(); });
     refreshStatus();
+
+    // One-click install of the Real-ESRGAN binary into ./bin/.
+    // Downloads the latest BSD-3-licensed release from GitHub via
+    // the main process, extracts with PowerShell's Expand-Archive,
+    // then re-probes availability so the status row above flips
+    // from "Not found" → "Detected: .../bin/realesrgan-ncnn-vulkan".
+    const installBtn = el('button', { class: 'btn-mini re-install' }, 'Download Real-ESRGAN');
+    const installProgress = el('div', { class: 're-progress' });
+    installBtn.addEventListener('click', async () => {
+      installBtn.disabled = true;
+      reBtn.disabled = true;
+      installProgress.style.display = '';
+      installProgress.textContent = 'Starting download…';
+      const offProgress = window.api.onRealesrganDownloadProgress((data) => {
+        if (data.phase === 'download') {
+          if (data.total > 0) {
+            const pct = (data.downloaded / data.total) * 100;
+            const mb = (data.downloaded / 1024 / 1024).toFixed(1);
+            const totalMb = (data.total / 1024 / 1024).toFixed(1);
+            installProgress.textContent = `Downloading… ${mb} / ${totalMb} MB (${pct.toFixed(0)}%)`;
+          } else {
+            installProgress.textContent = 'Downloading…';
+          }
+        } else if (data.phase === 'extract') {
+          installProgress.textContent = 'Extracting…';
+        } else if (data.phase === 'done') {
+          installProgress.textContent = 'Done. Refreshing status…';
+        }
+      });
+      try {
+        const r = await window.api.realesrganDownload();
+        offProgress();
+        if (r && r.ok) {
+          installProgress.textContent = 'Installed to ' + (r.binDir || './bin') + '. Re-detecting…';
+          await refreshStatus();
+        } else {
+          installProgress.textContent = 'Download failed: ' + ((r && r.error) || 'unknown');
+          installProgress.style.color = 'var(--danger)';
+        }
+      } catch (e) {
+        offProgress();
+        installProgress.textContent = 'Download failed: ' + (e && e.message || e);
+        installProgress.style.color = 'var(--danger)';
+      } finally {
+        installBtn.disabled = false;
+        reBtn.disabled = false;
+      }
+    });
+    const installRow = el('div', { class: 'row' }, [
+      el('label', {}, 'Install (one-click)'),
+      el('div', { style: 'display: flex; gap: 6px; align-items: center;' }, [installBtn, installProgress]),
+    ]);
+    installProgress.style.display = 'none';
+    installProgress.style.color = 'var(--fg-2)';
+    installProgress.style.fontSize = '12px';
+    m.appendChild(installRow);
 
     m.appendChild(el('div', { class: 'footer' }, [
       el('button', { class: 'primary', onclick: close }, 'Done'),
@@ -4855,7 +5015,7 @@ TABS.video = {
           const prefix = (state.filePrefix || '').trim();
           const outFile = uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.mp4`);
           args.push('--download', outFile);
-          lastCmd.textContent = `mmx ${args.join(' ')}`;
+          lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
           const statusMsg = variantsCount > 1
             ? `Submitting video job… variant ${v}/${variantsCount} (each takes 1-3 min)`
             : 'Submitting video job…';

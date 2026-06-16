@@ -150,4 +150,13 @@ function probeVersion() {
   }
 }
 
-module.exports = { isAvailable, getBinaryPath, run, probeVersion };
+// Forget the cached "is the binary installed?" answer. The main
+// process calls this after a successful in-app install of the
+// binary (upscale:realesrgan:download), so the next probe re-runs
+// the detection and finds the new file.
+function resetCache() {
+  cachedBinaryPath = null;
+  cachedBinaryVersion = null;
+}
+
+module.exports = { isAvailable, getBinaryPath, run, probeVersion, resetCache };

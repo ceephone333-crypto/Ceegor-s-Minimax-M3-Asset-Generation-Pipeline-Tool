@@ -35,6 +35,17 @@ contextBridge.exposeInMainWorld('api', {
   // Spawn the binary. srcPath/dstPath must live under the allowed
   // roots (validated in main.js). opts: { model, scale, gpu? }.
   realesrganRun: (srcPath, dstPath, opts) => ipcRenderer.invoke('upscale:realesrgan:run', srcPath, dstPath, opts),
+  // One-click install of the Real-ESRGAN binary into ./bin/. The
+  // main process streams download + extract progress back to the
+  // renderer through the 'upscale:realesrgan:download:progress'
+  // channel. Returns { ok, binDir } when done, or { ok: false, error }
+  // on failure.
+  realesrganDownload: () => ipcRenderer.invoke('upscale:realesrgan:download'),
+  onRealesrganDownloadProgress: (cb) => {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on('upscale:realesrgan:download:progress', listener);
+    return () => ipcRenderer.removeListener('upscale:realesrgan:download:progress', listener);
+  },
 
   // ---- batches (BatchGen storage) ----
   batchesGet: () => ipcRenderer.invoke('batches:get'),
