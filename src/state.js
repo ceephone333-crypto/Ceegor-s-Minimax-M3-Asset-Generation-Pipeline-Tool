@@ -38,9 +38,26 @@ function write(s) {
     currentTab: (s && typeof s.currentTab === 'string') ? s.currentTab : null,
     fbDirs: (s && s.fbDirs && typeof s.fbDirs === 'object') ? s.fbDirs : {},
     upscaleEnabled: !!(s && s.upscaleEnabled),
+    // The upscale settings now include the auto-crop options. They're
+    // surfaced in ⚙ Settings → Upscale Settings, captured by the
+    // Image tab's "Add" button into the batch queue, and applied
+    // by the image tab's generate handler when state.upscaleEnabled
+    // is on. The renderer whitelists cropAnchorX/Y against the
+    // anchor cell values; we double-check here too in case a
+    // corrupted state.json tries to sneak an arbitrary string
+    // through.
     upscaleSettings: (s && s.upscaleSettings && typeof s.upscaleSettings === 'object')
-      ? { multiplier: parseInt(s.upscaleSettings.multiplier, 10) || 2 }
-      : { multiplier: 2 },
+      ? {
+          multiplier: parseInt(s.upscaleSettings.multiplier, 10) || 2,
+          autoCrop: !!(s.upscaleSettings.autoCrop),
+          cropWidth: Math.max(0, parseInt(s.upscaleSettings.cropWidth, 10) || 0),
+          cropHeight: Math.max(0, parseInt(s.upscaleSettings.cropHeight, 10) || 0),
+          cropAnchorX: ['left', 'center', 'right'].includes(s.upscaleSettings.cropAnchorX)
+            ? s.upscaleSettings.cropAnchorX : 'center',
+          cropAnchorY: ['top', 'center', 'bottom'].includes(s.upscaleSettings.cropAnchorY)
+            ? s.upscaleSettings.cropAnchorY : 'center',
+        }
+      : { multiplier: 2, autoCrop: false, cropWidth: 0, cropHeight: 0, cropAnchorX: 'center', cropAnchorY: 'center' },
     // Real-ESRGAN model name (default: the general-purpose 4× BSD-3
     // model). Whitelisted in app.js to a known set so a corrupted
     // state.json can't inject a path-traversal arg into the spawn.
