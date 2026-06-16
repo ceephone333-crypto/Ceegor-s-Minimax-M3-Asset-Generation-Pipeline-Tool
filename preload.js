@@ -25,6 +25,12 @@ contextBridge.exposeInMainWorld('api', {
   fbCopy: (src, destDir) => ipcRenderer.invoke('fb:copy', src, destDir),
   fbReveal: (path) => ipcRenderer.invoke('fb:reveal', path),
   fbRead: (path) => ipcRenderer.invoke('fb:read', path),
+  // True if the given path exists and is inside the allowed roots.
+  // Used by the upscale/crop pipeline to pick a non-clashing
+  // output path. The async check goes through the same allow-list
+  // the other fb:* handlers use, so a corrupted renderer can't
+  // probe arbitrary paths.
+  fbExists: (path) => ipcRenderer.invoke('fb:exists', path),
   fbWrite: (outPath, base64Data) => ipcRenderer.invoke('fb:write', outPath, base64Data),
 
   // ---- Real-ESRGAN (optional upscaler, BSD-3-Clause) ----

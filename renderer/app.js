@@ -321,7 +321,7 @@ function openFirstTimeSetup() {
       // never accidentally persist the masked version. The helper
       // returns the real current value regardless of whether the
       // field is currently shown or hidden.
-      const api_key = apiKeyRow.getValue().trim();
+      const api_key = apiRow.getValue().trim();
       const output_dir = outInput.value.trim();
       const region = regInput.value || 'global';
       if (!api_key) { toast('API key is required. Edit it now or click "Skip for now" and set it later in ⚙ Settings.', 'err', 5000); return; }
@@ -2145,11 +2145,18 @@ TABS.music = {
 // otherwise have the "#3" parsed as a fragment).
 function fileUrl(p) {
   if (!p) return '';
-  // Use encodeURI on the path part so / and : survive while #, ?, etc. are escaped.
-  // Forward slashes inside the path are valid URL characters and need no encoding.
+  // Normalize Windows backslashes to forward slashes (the file:// URL
+  // scheme uses forward slashes, regardless of OS).
   let normalized = p.replace(/\\/g, '/');
-  // encodeURI keeps / and : intact, encodes everything else. Perfect for file paths.
-  return 'file:///' + encodeURI(normalized);
+  // encodeURI keeps '/' and ':' intact, encodes everything else. That's
+  // almost right but it does NOT escape '#' or '?' — those are reserved
+  // URL characters, so a filename with '#' (e.g. "render#001.png")
+  // would have the URL truncated at the '#', silently loading the
+  // wrong file (or nothing). Manually escape them after encodeURI.
+  const encoded = encodeURI(normalized)
+    .replace(/#/g, '%23')
+    .replace(/\?/g, '%3F');
+  return 'file:///' + encoded;
 }
 
 function showImagePreview(rootEl, file, parsed) {
@@ -2208,10 +2215,24 @@ function showAudioPreview(rootEl, file, parsed) {
 // 1:1 pixel mode by default, with a zoom dropdown (75% / 50% / 25% /
 // Fit-to-window). Used by both the generation preview thumbnail and the
 // file-browser preview pane.
+// Track the most recent overlay's close function so a re-open can
+// dispose the previous one cleanly (removes its document-level
+// keydown listener). Without this, every rapid thumbnail click
+// leaked one Esc listener on `document`, and the user had to
+// press Esc N times to dismiss a single overlay after N re-opens.
+let _openImageOverlayClose = null;
+
 function openImageOverlay(src, filename, naturalWidth, naturalHeight) {
-  // Remove any existing overlay so we never stack them.
-  const existing = document.getElementById('image-overlay');
-  if (existing) existing.remove();
+  // If there's already an overlay open, close it cleanly (this
+  // removes the previous keydown listener before we open a new one).
+  if (_openImageOverlayClose) {
+    try { _openImageOverlayClose(); } catch (_) {}
+    _openImageOverlayClose = null;
+  }
+  // The previous code did `existing.remove()` here, which
+  // removed the DOM but never called close() — so the keydown
+  // listener stayed attached forever. The cleanup is now in
+  // _openImageOverlayClose above.
   const overlay = el('div', { class: 'image-overlay', id: 'image-overlay' });
   // Header
   const fname = el('span', { class: 'image-overlay-filename', title: filename || '' }, filename || '');
@@ -2250,6 +2271,7 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight) {
   const close = () => {
     overlay.remove();
     document.removeEventListener('keydown', onKey);
+    if (_openImageOverlayClose === close) _openImageOverlayClose = null;
   };
   closeBtn.addEventListener('click', close);
   // Close on background click (not on the image)
@@ -2260,6 +2282,9 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight) {
   // Stop propagation on the image so clicking the image doesn't close
   // the overlay (the user is likely trying to interact with the image).
   img.addEventListener('click', (e) => e.stopPropagation());
+  // Hand the close function to the next open call so a re-open
+  // disposes this one cleanly.
+  _openImageOverlayClose = close;
 }
 
 function safeStringify(o) {
@@ -2286,6 +2311,42 @@ function loadImageFromFile(filePath) {
     img.onerror = () => reject(new Error('Failed to load image: ' + filePath));
     img.src = fileUrl(filePath);
   });
+}
+
+// Pick a non-clashing output path for the upscale / crop pipeline.
+// Tries `basePath`, `basePath (2)`, `basePath (3)`, ... via
+// window.api.fbExists. Caps at 1000 attempts (which would only
+// realistically happen if a script is bulk-renaming to the same
+// stem — the user can still rename / move existing files). On
+// exhaustion, falls back to a timestamp suffix so the operation
+// never silently overwrites a file.
+async function uniqueOutputPath(basePath) {
+  const dot = basePath.lastIndexOf('.');
+  const stem = dot > 0 ? basePath.slice(0, dot) : basePath;
+  const ext = dot > 0 ? basePath.slice(dot) : '';
+  for (let i = 1; i < 1000; i++) {
+    const candidate = i === 1 ? basePath : `${stem} (${i})${ext}`;
+    if (!await window.api.fbExists(candidate)) return candidate;
+  }
+  return `${stem}_${Date.now()}${ext}`;
+}
+
+// Module-level re-render of the "🔍 Upscale 2×" label in the image
+// tab. The label is created (and its refreshUpscaleCheckboxUI
+// closure is defined) inside the image tab's build(), so by the
+// time the user opens the ⚙ Settings → Upscale popup, that
+// closure is long gone. This module-level helper re-queries the
+// DOM by class and updates the label + .active class on save
+// and on every render-pass. (For "one-off" upscale/crop flows
+// via the right-click menu, the in-tab function still runs
+// because the build() closure is still in scope at that point.)
+function refreshUpscaleLabel() {
+  const label = document.querySelector('.upscale-checkbox');
+  if (!label) return;
+  const mult = label.querySelector('.upscale-mult');
+  const m = (state.upscaleSettings && state.upscaleSettings.multiplier) || 2;
+  if (mult) mult.textContent = state.upscaleEnabled ? ` (${m}×)` : '';
+  label.classList.toggle('active', !!state.upscaleEnabled);
 }
 
 // Derive the output MIME from a file extension. Used to export the
@@ -2427,7 +2488,10 @@ async function upscaleImageFile(srcPath, multiplier) {
   octx.drawImage(cur, 0, 0);
   const dataUrl = out.toDataURL(mime, 0.95);
   const b64 = dataUrl.split(',')[1];
-  const outPath = derivedOutputPath(srcPath, `_${multiplier}x`);
+  // uniqueOutputPath appends " (2)", " (3)", ... to a clashing
+  // name so re-running the same upscale twice doesn't silently
+  // overwrite the previous output.
+  const outPath = await uniqueOutputPath(derivedOutputPath(srcPath, `_${multiplier}x`));
   const r = await window.api.fbWrite(outPath, b64);
   if (!r.ok) throw new Error(r.error || 'fbWrite failed');
   return r.path;
@@ -2511,7 +2575,7 @@ async function upscaleImageFileRealesrgan(srcPath, multiplier, reStatus) {
     octx.drawImage(cur, 0, 0);
     const dataUrl = out.toDataURL(mime, 0.95);
     const b64 = dataUrl.split(',')[1];
-    const outPath = derivedOutputPath(srcPath, `_${multiplier}x`);
+    const outPath = await uniqueOutputPath(derivedOutputPath(srcPath, `_${multiplier}x`));
     const w = await window.api.fbWrite(outPath, b64);
     if (!w.ok) throw new Error(w.error || 'fbWrite failed');
     return w.path;
@@ -2543,7 +2607,10 @@ async function cropImageFile(srcPath, x, y, w, h) {
   const mime = mimeFromPath(srcPath);
   const dataUrl = canvas.toDataURL(mime);
   const b64 = dataUrl.split(',')[1];
-  const out = derivedOutputPath(srcPath, `_cropped_${w}x${h}`);
+  // Same collision-avoidance as upscale: re-cropping the same file
+  // to the same W × H now produces " (2)" / " (3)" instead of
+  // silently overwriting the previous output.
+  const out = await uniqueOutputPath(derivedOutputPath(srcPath, `_cropped_${w}x${h}`));
   const r = await window.api.fbWrite(out, b64);
   if (!r.ok) throw new Error(r.error || 'fbWrite failed');
   return r.path;
@@ -2688,6 +2755,12 @@ function showUpscaleSettings() {
       await scheduleStateSave();
       if (typeof refreshUpscaleCheckboxUI === 'function') refreshUpscaleCheckboxUI();
       const extra = state.upscaleSettings.autoCrop ? ' + auto-crop' : '';
+      // The "🔍 Upscale 2×" label in the image tab was updated by
+      // a closure inside build(); that closure is long gone by
+      // the time the user opens this modal. refreshUpscaleLabel
+      // is the module-level re-render that picks up the new
+      // multiplier + .active class via DOM query.
+      if (typeof refreshUpscaleLabel === 'function') refreshUpscaleLabel();
       toast(`Upscale settings saved (${state.upscaleSettings.multiplier}×${extra}).`, 'ok', 2000);
       close();
     });
@@ -4390,6 +4463,14 @@ function captureBatchEntry(tabKey) {
   // entry.prompt (in case the user edited it in the popup).
   const settings = Object.assign({}, raw);
   if (promptId) delete settings[promptId];
+  // The "Target file prefix" is shared across all four tabs and
+  // lives in state.filePrefix, not in any per-tab DOM. The
+  // per-tab inputs have class .file-prefix-input but no id, so
+  // captureTabState (which only walks [id] fields) skips them.
+  // We add it to the entry's settings dict here so the snapshot
+  // includes the prefix and the BatchGen popup's summary tag
+  // (which reads settings.filePrefix) shows it.
+  if (state.filePrefix) settings.filePrefix = state.filePrefix;
   const entry = {
     prompt,
     settings,
@@ -4676,7 +4757,12 @@ function _refreshBatchButtons() {
 }
 
 // ----------------- BatchGen Runner -----------------
-let _batchAbort = false;
+// Per-batch abort object. Previously a single module-level boolean
+// was shared across all batches, so a second batch on a different
+// tab would silently un-abort the first one. Each invocation of
+// startBatchGen now creates its own `abort` object; the Stop
+// button closes over `abort` and the per-item polling loop reads
+// `abort.cancel`. Two concurrent batches don't fight each other.
 async function startBatchGen(tabKey) {
   // Normalize every entry to the canonical { prompt, settings, ts,
   // label } shape — legacy plain-text entries become { prompt: text,
@@ -4689,7 +4775,7 @@ async function startBatchGen(tabKey) {
     if (!confirm(`This batch has ${items.length} videos. Your Token Plan includes only 3 free video generations per week — the rest will fail with a quota error. Continue?`)) return;
   }
 
-  _batchAbort = false;
+  const abort = { cancel: false };
   const tabName = tabKey.charAt(0).toUpperCase() + tabKey.slice(1);
   const tabRoot = $(`#tab-${tabKey}`);
   const promptTa = tabRoot.querySelector('textarea');        // first textarea = main prompt
@@ -4736,7 +4822,7 @@ async function startBatchGen(tabKey) {
   let stoppedAt = 0; // 1-based index of the item we stopped on (0 = didn't stop)
   let totalVariants = 0;
   try {
-    for (let i = 0; i < items.length && !_batchAbort; i++) {
+    for (let i = 0; i < items.length && !abort.cancel; i++) {
       const entry = items[i];
       counter.textContent = `${i + 1} / ${items.length}`;
       currentPrompt.textContent = (entry.prompt || '').slice(0, 200) + ((entry.prompt || '').length > 200 ? '…' : '');
@@ -4746,7 +4832,6 @@ async function startBatchGen(tabKey) {
       // in the snapshot (which we deleted in captureBatchEntry)
       // doesn't fight us. suppressStateSave wraps the whole thing
       // so a batch run doesn't blow away the user's saved state.
-      const variantsSel = tabRoot.querySelector('.variants-select');
       suppressStateSave(() => {
         if (entry.settings && typeof entry.settings === 'object') {
           // applyTabState fires input/change on every input it
@@ -4787,29 +4872,29 @@ async function startBatchGen(tabKey) {
 
       // Run N variants for this batch item
       for (let vi = 0; vi < variantsCount; vi++) {
-        if (_batchAbort) break;
+        if (abort.cancel) break;
         // Wait until no other generation is in progress (state.generating is
         // null). armGenBtnWithCancel sets it to the tab key on entry and clears
         // it on cleanup, so this is a reliable signal.
         while (state.generating) {
-          if (_batchAbort) break;
+          if (abort.cancel) break;
           await new Promise((r) => setTimeout(r, 50));
         }
-        if (_batchAbort) break;
+        if (abort.cancel) break;
         // Trigger generation. The click handler is async — we poll state.generating
         // to detect when it has set the busy flag (i.e. the handler started).
         genBtn.click();
         const startDeadline = Date.now() + 8000;
         while (state.generating !== tabKey) {
-          if (_batchAbort) break;
+          if (abort.cancel) break;
           if (Date.now() > startDeadline) { logLine(`✗ Gen did not start for item ${i + 1}.`, 'err'); fail++; break; }
           await new Promise((r) => setTimeout(r, 20));
         }
-        if (_batchAbort || state.generating !== tabKey) break;
+        if (abort.cancel || state.generating !== tabKey) break;
         // Wait for the generation to finish (armGenBtnWithCancel's cleanup
         // resets state.generating to null when the gen handler returns).
         while (state.generating === tabKey) {
-          if (_batchAbort) break;
+          if (abort.cancel) break;
           await new Promise((r) => setTimeout(r, 100));
         }
         // Inspect the preview for success/failure (best-effort: check if it has an image/video)
@@ -4818,7 +4903,7 @@ async function startBatchGen(tabKey) {
         if (looksOk) { ok++; logLine(`✓ ${i + 1}/${items.length}${variantTag} OK`, 'ok'); }
         else { fail++; logLine(`✗ ${i + 1}/${items.length}${variantTag} FAILED`, 'err'); }
       }
-      if (_batchAbort) { stoppedAt = i + 1; logLine(`Aborted at item ${i + 1}.`, 'warn'); break; }
+      if (abort.cancel) { stoppedAt = i + 1; logLine(`Aborted at item ${i + 1}.`, 'warn'); break; }
     }
   } catch (e) {
     batchError = e;
@@ -5271,10 +5356,23 @@ async function init() {
       if (typeof savedState.fbDirs[k] === 'string') state.fbDirs[k] = savedState.fbDirs[k];
     }
   }
-  // Restore the upscale-on-Generate state
+  // Restore the upscale-on-Generate state. We must round-trip the
+  // FULL set of fields (multiplier, autoCrop, cropW, cropH, cropX,
+  // cropY) — src/state.js sanitises all six on write, and the
+  // batch / image-tab generate handlers read all of them. Dropping
+  // any field on restore meant the user's auto-crop configuration
+  // silently reset to defaults on every app restart.
   if (typeof savedState.upscaleEnabled === 'boolean') state.upscaleEnabled = savedState.upscaleEnabled;
-  if (savedState.upscaleSettings && typeof savedState.upscaleSettings === 'object' && savedState.upscaleSettings.multiplier) {
-    state.upscaleSettings = { multiplier: parseInt(savedState.upscaleSettings.multiplier, 10) || 2 };
+  if (savedState.upscaleSettings && typeof savedState.upscaleSettings === 'object') {
+    const u = savedState.upscaleSettings;
+    state.upscaleSettings = {
+      multiplier: parseInt(u.multiplier, 10) || 2,
+      autoCrop: !!u.autoCrop,
+      cropWidth: Math.max(0, parseInt(u.cropWidth, 10) || 0),
+      cropHeight: Math.max(0, parseInt(u.cropHeight, 10) || 0),
+      cropAnchorX: ['left', 'center', 'right'].includes(u.cropAnchorX) ? u.cropAnchorX : 'center',
+      cropAnchorY: ['top', 'center', 'bottom'].includes(u.cropAnchorY) ? u.cropAnchorY : 'center',
+    };
   }
   // Restore the global file-name prefix (mirrored on every tab).
   if (typeof savedState.filePrefix === 'string') state.filePrefix = savedState.filePrefix;
@@ -5441,7 +5539,10 @@ function classifyMmxError(r, msg) {
   const combined = ((msg || '') + ' ' + (r.stderr || '') + ' ' + (r.stdout || '')).toLowerCase();
   if (/401|403|unauthor|forbidden|invalid.api.key|api.key.*invalid|auth.*fail/.test(combined)) return 'auth';
   if (/429|rate|limit|throttl|too many/.test(combined)) return 'rate';
-  if (/quota|not.in.plan|exhaust|insufficient/.test(combined)) return 'quota';
+  // "insufficient" alone is too generic — "Insufficient permissions"
+  // is auth, "Insufficient data" is network. Require a quota
+  // context for the word to count.
+  if (/quota|not in plan|exhausted|out of quota|insufficient.*quota|quota.*insufficient/.test(combined)) return 'quota';
   if (/enotfound|econnrefused|econnreset|etimedout|network|dns/.test(combined)) return 'network';
   if (/500|502|503|504|server.error|system.error|internal/.test(combined)) return 'server';
   return 'unknown';
