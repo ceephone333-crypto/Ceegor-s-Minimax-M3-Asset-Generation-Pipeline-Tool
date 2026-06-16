@@ -99,6 +99,32 @@ button.danger:hover { background: var(--danger); color: #fff; }
 
 .btn-mini { padding: 3px 9px; font-size: 12px; }
 
+/* Modal sizing for the new (wider) settings dialogs. The default
+   .modal is 420px, which is too narrow for the Real-ESRGAN
+   settings (status + model + install button) and the first-time
+   setup (greetings + 3 form fields). */
+.realesrgan-settings-modal, .first-time-setup-modal { width: min(560px, 92vw); }
+
+/* Real-ESRGAN status row in ⚙ Settings. Mono font + small size
+   so the long "Detected: C:\path\realesrgan-ncnn-vulkan.exe
+   (v0.2.5.0)" string fits on one line at this width. */
+.re-status { font-family: var(--font-mono); font-size: 12px; }
+.re-progress { font-size: 11px; color: var(--fg-2); }
+.re-install { font-weight: 500; }
+
+/* Visual delimiter for the auto-crop rows (W / H inputs, 3×3 grid,
+   crop preview) inside the upscale dialog. The .auto-crop-only
+   class is set on the W / H row only (the 3×3 grid is always
+   shown, so it doesn't need the class). The left border in
+   accent-3 gives a clear "this is the auto-crop sub-section"
+   visual hint without adding extra padding. */
+.auto-crop-only {
+  padding-left: 12px;
+  border-left: 2px solid var(--accent-3);
+  margin-top: 4px;
+  margin-left: 4px;
+}
+
 /* ========== Batch controls (in tab action bar) ==========
    Empty queue:   single "Setup Batch Mode" button.
    Has entries:   "Start BatchGen (N)" + a small "✎" edit icon button. */

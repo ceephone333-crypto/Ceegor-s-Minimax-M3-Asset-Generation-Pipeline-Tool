@@ -494,6 +494,17 @@ ipcMain.handle('fb:read', async (_e, p) => {
     return { ok: true, base64: buf.toString('base64') };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
+// True if the given path exists (and is inside the allowed roots).
+// Used by the upscale / crop pipeline to pick a non-clashing
+// output path. The async check goes through the same allow-list
+// the other fb:* handlers use, so a corrupted renderer can't
+// probe arbitrary paths.
+ipcMain.handle('fb:exists', async (_e, p) => {
+  if (!p || typeof p !== 'string') return false;
+  if (!pathUtils.isPathUnderAny(p, allowedRoots())) return false;
+  try { await fsp.access(p, fs.constants.F_OK); return true; }
+  catch { return false; }
+});
 // Write a file from base64 data. Used by the in-app image pipeline
 // (upscaler / cropper / format-converter) which produces a canvas-backed
 // PNG / JPEG / WebP blob in the renderer and needs a way to persist it
