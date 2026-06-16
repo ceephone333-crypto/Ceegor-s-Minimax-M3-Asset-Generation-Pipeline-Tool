@@ -697,6 +697,73 @@ label { color: var(--fg); font-weight: 500; }
   flex-shrink: 0;
 }
 
+/* ========== Multi-image preview (--n > 1, batch variants) ==========
+   When a single Generate click produces more than one image, we
+   divide the preview pane into N equal-width slots so the user can
+   see all of them at once. Each slot is a clickable thumbnail that
+   opens the same image overlay as the single-image case. The grid
+   wraps so very large N (e.g. 5×5=25) doesn't horizontally
+   overflow the pane. */
+.preview-pane-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 6px;
+  width: 100%;
+  align-items: start;
+  justify-items: stretch;
+}
+.preview-pane-thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: zoom-in;
+  overflow: hidden;
+  transition: border-color 0.1s, transform 0.1s;
+  min-width: 0;
+}
+.preview-pane-thumb:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.preview-pane-thumb img {
+  /* The thumbnail is constrained to a square so the grid stays
+     uniform — a 1920×1080 landscape and a 1080×1920 portrait both
+     fill the slot without distorting the row height. object-fit
+     crops to the slot but the underlying image is preserved
+     (clicking opens the full-resolution overlay). */
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  display: block;
+  background: var(--bg-2);
+  max-height: none;
+  flex: 0 0 auto;
+  border-radius: 0;
+  cursor: zoom-in;
+}
+.preview-pane-thumb-caption {
+  font-size: 10px;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  text-align: center;
+  padding: 3px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.preview-pane-summary {
+  font-size: 11px;
+  color: var(--fg-3);
+  text-align: center;
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+
 /* ========== Image overlay (1:1 + zoom dropdown) ==========
    Full-screen modal that opens when the user clicks a thumbnail. Shows
    the image at its natural pixel size (1:1) by default, with a zoom

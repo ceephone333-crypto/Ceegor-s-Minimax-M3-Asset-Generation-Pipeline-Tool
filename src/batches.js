@@ -22,14 +22,30 @@ function normalize(raw) {
   for (const k of Object.keys(out)) {
     const v = raw[k];
     if (Array.isArray(v)) {
-      // Keep only non-empty trimmed strings, cap at 100.
-      // Strict typeof check first — without it, a corrupted batches.json
-      // containing objects would produce entries like "[object Object]"
-      // that get sent to the CLI as prompts.
+      // The renderer now stores two entry shapes per tab:
+      //   1. Legacy: a non-empty trimmed string (the prompt itself).
+      //   2. Snapshot: an object { prompt, settings, ts, label, upscale? }
+      //      captured via the "+ Add" button next to Generate. These
+      //      carry the per-entry form state so the BatchGen runner can
+      //      re-apply the exact settings at run time.
+      // We MUST preserve both shapes — silently dropping objects (the
+      // old behaviour) meant a snapshot entry queued right before the
+      // user closed the app would vanish on next launch, and they'd
+      // have no idea why their batch was suddenly empty.
       out[k] = v
-        .filter((s) => typeof s === 'string')
-        .map((s) => s.trim())
-        .filter(Boolean)
+        .filter((e) => {
+          if (typeof e === 'string') return e.trim().length > 0;
+          if (e && typeof e === 'object' && typeof e.prompt === 'string' && e.prompt.trim().length > 0) return true;
+          return false;
+        })
+        // Cap each string entry at 8000 chars and each object entry's
+        // prompt at the same limit. Defends against a corrupted /
+        // malicious batches.json that tries to inject a multi-MB
+        // prompt into the CLI argv.
+        .map((e) => {
+          if (typeof e === 'string') return e.trim().slice(0, 8000);
+          return Object.assign({}, e, { prompt: e.prompt.trim().slice(0, 8000) });
+        })
         .slice(0, 100);
     }
   }

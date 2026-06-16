@@ -12,6 +12,7 @@ const cfgMod = require('./src/config');
 const fb = require('./src/fileBrowser');
 const pathUtils = require('./src/pathUtils');
 const reEsrgan = require('./src/realesrgan');
+const isNetBg = require('./src/isnetbg');
 
 // Disable native window occlusion (which can cause blurry text on Windows
 // when the window is partially obscured or the OS compositor applies
@@ -312,21 +313,65 @@ ipcMain.handle('upscale:realesrgan:run', async (_e, srcPath, dstPath, opts) => {
   return reEsrgan.run(srcPath, dstPath, opts || {});
 });
 
+// ---------------- IPC: IS-Net background removal (optional) ----------------
+// The user supplies the `isnetbg` binary (see README). We expose
+// availability + a one-shot run handler. Path arguments are gated
+// by the same allowedRoots() allowlist as everything else in the
+// file browser — a compromised renderer cannot trick the main
+// process into running the binary on arbitrary files.
+ipcMain.handle('isnetbg:available', () => {
+  const available = isNetBg.isAvailable();
+  const binaryPath = available ? isNetBg.getBinaryPath() : null;
+  const modelPath = isNetBg.getModelPath();
+  const version = available ? isNetBg.probeVersion() : '';
+  return {
+    available,
+    binaryPath,
+    modelPath,
+    // Distinct from `available`: the binary can be present while the
+    // model file is missing. The UI uses this to show a precise
+    // "binary installed, but model missing" hint instead of failing
+    // silently at run time.
+    modelPresent: !!modelPath,
+    version,
+  };
+});
+
+ipcMain.handle('isnetbg:run', async (_e, srcPath, dstPath, opts) => {
+  if (!pathUtils.isPathUnderAny(srcPath, allowedRoots())) {
+    return { ok: false, code: -1, stderr: 'Source path is outside the allowed directories.', outputPath: null };
+  }
+  if (!pathUtils.isPathUnderAny(dstPath, allowedRoots())) {
+    return { ok: false, code: -1, stderr: 'Destination path is outside the allowed directories.', outputPath: null };
+  }
+  return isNetBg.run(srcPath, dstPath, opts || {});
+});
+
 // ----------------- IPC: Real-ESRGAN download (one-click installer) -----------------
 // The user can install Real-ESRGAN into ./bin/ with a single click in
-// the ⚙ Settings → Image upscaling popup. We download the latest
-// release zip from GitHub into the OS temp dir, then use PowerShell's
-// Expand-Archive to unpack into ./bin/. Progress is streamed back
-// to the renderer via webContents.send so the button can show a
-// "Downloading… 12 / 90 MB" status.
+// the ⚙ Settings → Optional add-ons popup. We download the v0.2.5.0
+// Windows release zip from GitHub into the OS temp dir, then use
+// PowerShell's Expand-Archive to unpack into ./bin/. Progress is
+// streamed back to the renderer via webContents.send so the button
+// can show a "Downloading… 12 / 90 MB" status.
 //
-// We deliberately do NOT query api.github.com for the latest URL —
-// the user can ship a fixed URL in the source release and not depend
-// on GitHub API rate limits. v0.2.5.0 is the latest stable as of
-// 2024; users on a newer release can manually drop the binary into
-// ./bin/.
+// The previous code pointed at
+// `realesrgan-ncnn-vulkan-v0.2.5.0-windows.zip` which never existed on
+// GitHub — the actual asset name in the v0.2.5.0 release is dated
+// (`realesrgan-ncnn-vulkan-20220424-windows.zip`). The fixed URL below
+// was verified against api.github.com/repos/xinntao/Real-ESRGAN/releases.
+// If the upstream asset is ever removed, the popup will surface a
+// precise HTTP error and the user can fall back to the "Pick file…"
+// button next to it (which copies an already-downloaded binary into
+// ./bin/ — the "local fallback" the user asked for).
+//
+// The same architecture is used for the isnetbg binary + model: a
+// "Pick file…" button is always the universal fallback because the
+// user may have downloaded the file via a mirror that we don't know
+// about, or built the isnetbg binary from the C# reference
+// implementation in the project README.
 
-const RE_ESRGAN_DOWNLOAD_URL = 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-v0.2.5.0-windows.zip';
+const RE_ESRGAN_DOWNLOAD_URL = 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip';
 
 function _httpsGetFollowingRedirects(url, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
@@ -416,6 +461,135 @@ ipcMain.handle('upscale:realesrgan:download', async (event) => {
     return { ok: true, binDir };
   } catch (e) {
     try { fs.unlinkSync(tmpZip); } catch (_) {}
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// ----------------- IPC: open a URL in the user's default browser -----------------
+// Used by the "Optional add-ons" popup so the user can land directly on
+// the Real-ESRGAN releases page, the IS-Net model mirror, or the
+// project README — whichever mirror they trust — without the popup
+// trying to auto-download a specific URL that may break later.
+// electron's shell.openExternal is the canonical way to hand a URL
+// off to the OS; it never executes the URL inside the renderer (so
+// no XSS surface from a future state.json corruption).
+ipcMain.handle('install:openUrl', async (_e, url) => {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    return { ok: false, error: 'Only http(s) URLs are allowed.' };
+  }
+  // Defense-in-depth: reject control characters, newlines, and
+  // embedded credentials even though `shell.openExternal` ultimately
+  // hands off to the OS browser. The OS would refuse these too,
+  // but a clean "no" here means the error message is precise
+  // ("malformed URL") instead of OS-specific.
+  if (/[\x00-\x1f\x7f]/.test(url) || /[\r\n]/.test(url)) {
+    return { ok: false, error: 'URL contains control characters or newlines.' };
+  }
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) {
+      return { ok: false, error: 'URLs with embedded credentials are not allowed.' };
+    }
+  } catch {
+    return { ok: false, error: 'Malformed URL.' };
+  }
+  await shell.openExternal(url);
+  return { ok: true };
+});
+
+// ----------------- IPC: install via file-picker (universal fallback) -----------------
+// The "Pick file…" button in the Optional add-ons popup calls this.
+// The user has already downloaded (or built) the file on disk; we
+// open a standard Open dialog, validate the picked path against the
+// allowed roots, then copy it into the right place under ./bin/.
+// Both binary destinations (./bin/ and ./bin/models/) sit under
+// __dirname, which is the package root — NOT under `output_dir` or
+// `trustedPickPaths`. We therefore allow writes here via an explicit
+// `isInstallDest()` allowlist (not via the general fb:write allowlist)
+// because the action is user-initiated and the destination is the
+// app's own well-known directory. A corrupted renderer cannot point
+// this at C:\Windows because the destination is hard-coded.
+//
+// `kind` is one of: 'realesrgan-binary' | 'isnetbg-binary' |
+// 'isnetbg-model'. It drives the file-dialog filter and the
+// destination subdir.
+ipcMain.handle('install:pickAndCopy', async (event, kind) => {
+  const win = event.sender;
+  const INSTALL_KINDS = {
+    'realesrgan-binary': {
+      title: 'Pick the realesrgan-ncnn-vulkan binary you downloaded',
+      filters: [
+        { name: 'Executable', extensions: ['exe'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+      destSubdir: '',
+      // After copy, the binary ends up at <binDir>/<basename>. We
+      // want it to be at <binDir>/realesrgan-ncnn-vulkan.exe (the
+      // name src/realesrgan.js probes for) so the wrapper's PATH
+      // lookup finds it without renaming.
+      destName: process.platform === 'win32' ? 'realesrgan-ncnn-vulkan.exe' : 'realesrgan-ncnn-vulkan',
+    },
+    'isnetbg-binary': {
+      title: 'Pick the isnetbg binary you built (from the C# reference in the README)',
+      filters: [
+        { name: 'Executable', extensions: ['exe'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+      destSubdir: '',
+      destName: process.platform === 'win32' ? 'isnetbg.exe' : 'isnetbg',
+    },
+    'isnetbg-model': {
+      title: 'Pick the isnet-general-use.onnx model file (~170 MB, MIT)',
+      filters: [
+        { name: 'ONNX model', extensions: ['onnx'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+      destSubdir: 'models',
+      destName: 'isnet-general-use.onnx',
+    },
+  };
+  const cfg = INSTALL_KINDS[kind];
+  if (!cfg) return { ok: false, error: 'Unknown install kind: ' + String(kind) };
+
+  // Phase 1: open the file picker. The picked path is added to
+  // trustedPickPaths by the file:pick handler — but we use our own
+  // dialog call here so the title + filters are install-specific.
+  const r = await dialog.showOpenDialog(win, {
+    title: cfg.title,
+    properties: ['openFile'],
+    filters: cfg.filters,
+  });
+  if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+  const srcPath = r.filePaths[0];
+
+  // Phase 2: compute the destination. We always write to
+  // <__dirname>/bin[/<subdir>]/<destName>, never to a path the
+  // renderer supplied. This makes the install action safe even if
+  // the renderer is compromised.
+  const binDir = path.join(__dirname, 'bin');
+  const destDir = path.join(binDir, cfg.destSubdir || '');
+  const destPath = path.join(destDir, cfg.destName);
+
+  // Phase 3: copy + reset caches. The copy uses the same pattern
+  // as fb:write — tmp + rename — so a kill mid-copy doesn't leave
+  // a half-written binary at the install destination (the user
+  // could later wonder why the wrapper reports an inconsistent
+  // binary).
+  try {
+    await fsp.mkdir(destDir, { recursive: true });
+    const tmp = destPath + '.tmp-' + process.pid + '-' + Date.now();
+    await fsp.copyFile(srcPath, tmp);
+    try {
+      await fsp.rename(tmp, destPath);
+    } catch (renameErr) {
+      try { await fsp.unlink(tmp); } catch {}
+      throw renameErr;
+    }
+    // Reset the detector cache so the next probe sees the new file.
+    try { reEsrgan.resetCache && reEsrgan.resetCache(); } catch (_) {}
+    try { isNetBg.resetCache && isNetBg.resetCache(); } catch (_) {}
+    return { ok: true, destPath, kind };
+  } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
 });

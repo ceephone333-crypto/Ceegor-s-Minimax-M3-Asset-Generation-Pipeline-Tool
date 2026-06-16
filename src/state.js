@@ -64,6 +64,31 @@ function write(s) {
     realesrganModel: (typeof s?.realesrganModel === 'string' && s.realesrganModel.trim())
       ? s.realesrganModel.trim().slice(0, 64)
       : 'realesrgan-x4plus',
+    // IS-Net background removal toggle. When true, the image tab's
+    // generation handler and the right-click "Upscale" dialog will
+    // run the optional isnetbg binary on the output. The standalone
+    // right-click "Remove background" action does NOT depend on this
+    // flag — it's an explicit user gesture every time.
+    removeBackgroundEnabled: !!(s && s.removeBackgroundEnabled),
+    // True = ask the binary to use the GPU (DirectML / CUDA / Vulkan,
+    // whatever the binary supports); false = CPU. We coerce to a
+    // boolean so a corrupted state.json can't sneak a string that
+    // would be passed to --use-gpu as-is.
+    removeBackgroundUseGpu: s?.removeBackgroundUseGpu === false ? false : true,
+    // Global "Target file prefix" — prepended to every generated file's
+    // name on all four tabs. Capped at 64 chars so a corrupted state.json
+    // can't inject a long prefix. The renderer mirrors this string into
+    // four inputs (one per tab) on every change. Without this field, the
+    // user's prefix silently reset to "" on every app restart.
+    filePrefix: (typeof s?.filePrefix === 'string')
+      ? s.filePrefix.slice(0, 64)
+      : '',
+    // First-run prompt for the optional Real-ESRGAN binary. The
+    // built-in multi-step canvas pipeline is always available, so the
+    // prompt is informational only — but if the user dismisses it
+    // once, we honour that and don't re-ask on every launch. Stored
+    // here so the dismissal survives restarts.
+    realesrganFirstRunDismissed: s?.realesrganFirstRunDismissed === true,
   };
   // Atomic write: write to a temp file then rename. Avoids a corrupt
   // state.json if the process is killed mid-write.

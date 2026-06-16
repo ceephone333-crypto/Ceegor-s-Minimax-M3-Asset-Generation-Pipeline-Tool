@@ -1,11 +1,15 @@
 {
   "name": "ceegor-minimax-m3-asset-generation-pipeline-tool",
-  "version": "1.0.0",
-  "description": "Cross-modal asset generation GUI for the MiniMax Token Plan — image, speech, music, and video, with a local image pipeline (upscale / crop / format conversion).",
+  "version": "1.1.0",
+  "description": "Cross-modal asset generation GUI for the MiniMax Token Plan — image, speech, music, and video, with a local image pipeline (upscale / crop / format conversion / background removal).",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win portable --x64",
+    "setup": "node scripts/setup.js",
+    "check": "node scripts/check.js",
+    "prebuild": "node scripts/check.js",
+    "build": "node scripts/zip-portable.js",
+    "enable-devmode": "node scripts/enable-devmode.js",
     "build:dir": "electron-builder --win --dir"
   },
   "keywords": [
@@ -16,10 +20,16 @@
     "image-pipeline",
     "upscale",
     "crop",
-    "format-conversion"
+    "format-conversion",
+    "background-removal",
+    "isnet"
   ],
   "author": "Ceegor",
   "license": "MIT",
+  "dependencies": {
+    "onnxruntime-node": "^1.18.0",
+    "sharp": "^0.33.0"
+  },
   "devDependencies": {
     "electron": "^32.0.0",
     "electron-builder": "^25.0.0"
@@ -35,19 +45,23 @@
       "preload.js",
       "src/**/*",
       "renderer/**/*",
-      "voices.json"
+      "voices.json",
+      "node_modules/onnxruntime-node/**/*",
+      "node_modules/sharp/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/onnxruntime-node/bin/native/onnxruntime_binding.node",
+      "node_modules/sharp/build/Release/*.node",
+      "node_modules/@img/**/*"
     ],
     "win": {
       "target": [
         {
-          "target": "portable",
+          "target": "dir",
           "arch": ["x64"]
         }
       ],
-      "artifactName": "MiniMaxAssetTool.exe"
-    },
-    "portable": {
-      "artifactName": "MiniMaxAssetTool.exe"
+      "artifactName": "MiniMaxAssetTool-${version}-${arch}.${ext}"
     }
   }
 }

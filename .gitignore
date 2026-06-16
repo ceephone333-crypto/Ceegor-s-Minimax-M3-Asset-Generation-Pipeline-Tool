@@ -5,6 +5,16 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# ---- runtime assets (downloaded by `npm run setup`) ----
+# `bin/` is the runtime-asset directory the wrappers look up at
+# startup (IS-Net model, Real-ESRGAN binary, VC++ runtime). The
+# contents are large (~200 MB) and platform-specific, so we
+# populate them locally via `npm run setup` and never commit
+# them. The .zip shipped to end users is built FROM this dir
+# (see scripts/zip-portable.js), so the build picks up the
+# downloaded assets.
+bin/
+
 # ---- runtime state (per-user, never commit) ----
 # API key lives in config.txt; reset on install.
 config.txt
