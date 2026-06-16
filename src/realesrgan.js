@@ -44,8 +44,18 @@ function findBinary() {
     }
   } catch { /* ignore */ }
 
-  // 2. ./bin/ next to the package root (works for both dev and
-  // packaged-electron layouts because __dirname points at src/).
+  // 2. Production: <resourcesPath>/bin/<BINARY_NAME>
+  // (the build script copies ./bin/ here in dist/win-unpacked/resources/bin/).
+  if (process.resourcesPath) {
+    const resBundled = path.join(process.resourcesPath, 'bin', BINARY_NAME);
+    if (fs.existsSync(resBundled)) {
+      cachedBinaryPath = resBundled;
+      return resBundled;
+    }
+  }
+
+  // 3. ./bin/ next to the package root (works for dev and the
+  //     packaged-electron layout that copies bin/ there directly).
   const bundled = path.join(__dirname, '..', 'bin', BINARY_NAME);
   if (fs.existsSync(bundled)) {
     cachedBinaryPath = bundled;

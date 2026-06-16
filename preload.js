@@ -45,13 +45,41 @@ contextBridge.exposeInMainWorld('api', {
   // main process streams download + extract progress back to the
   // renderer through the 'upscale:realesrgan:download:progress'
   // channel. Returns { ok, binDir } when done, or { ok: false, error }
-  // on failure.
+  // on failure. The fixed GitHub URL is documented in main.js; the
+  // "Pick file…" button (installPickAndCopy) is the universal
+  // fallback if the upstream asset is ever removed.
   realesrganDownload: () => ipcRenderer.invoke('upscale:realesrgan:download'),
   onRealesrganDownloadProgress: (cb) => {
     const listener = (_e, data) => cb(data);
     ipcRenderer.on('upscale:realesrgan:download:progress', listener);
     return () => ipcRenderer.removeListener('upscale:realesrgan:download:progress', listener);
   },
+
+  // ---- Optional add-ons install (unified popup) ----
+  // Open a URL in the user's default browser. Used by the popup
+  // to send the user to the Real-ESRGAN releases page, the IS-Net
+  // model mirror, or the project README without us trying to
+  // auto-download a specific URL that may break later.
+  installOpenUrl: (url) => ipcRenderer.invoke('install:openUrl', url),
+  // Universal fallback: open a file picker and copy the picked
+  // file into ./bin/ (or ./bin/models/) at the name the wrapper
+  // probes for. `kind` is one of: 'realesrgan-binary' |
+  // 'isnetbg-binary' | 'isnetbg-model'. Returns { ok, destPath, kind }
+  // on success, { ok: false, canceled: true } if the user cancelled,
+  // or { ok: false, error } on copy failure. Resets the binary
+  // detector cache so the next probe sees the new file.
+  installPickAndCopy: (kind) => ipcRenderer.invoke('install:pickAndCopy', kind),
+
+  // ---- IS-Net background removal (optional, user-supplied binary) ----
+  // Returns { available, binaryPath, modelPath, modelPresent, version }.
+  // When unavailable (no binary, no model), the renderer's
+  // "Remove background" actions show a clear install hint instead of
+  // silently failing.
+  isnetbgAvailable: () => ipcRenderer.invoke('isnetbg:available'),
+  // Spawn the binary. srcPath/dstPath are validated against the
+  // allowedRoots() allowlist in main.js. opts: { useGpu?: boolean }.
+  // On success the binary writes a transparent PNG to dstPath.
+  isnetbgRun: (srcPath, dstPath, opts) => ipcRenderer.invoke('isnetbg:run', srcPath, dstPath, opts),
 
   // ---- batches (BatchGen storage) ----
   batchesGet: () => ipcRenderer.invoke('batches:get'),

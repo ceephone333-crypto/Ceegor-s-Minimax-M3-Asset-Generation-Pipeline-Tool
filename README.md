@@ -25,6 +25,7 @@ Built on Electron. Ships as a portable Windows .exe or as a runnable source tree
 - **🔍 Upscale** — toggle in the image tab to upscale every generated image locally (2× / 3× / 4× / 8×) using the Canvas API. Output keeps the input extension and lands next to the original as `<name>_Nx.png`. The renderer walks the source up to the target in 2× steps and uses `createImageBitmap` with `resizeQuality: 'high'` (Lanczos-style) for each step, so the result is noticeably sharper than a single-shot N× canvas resize.
 - **✂ Crop** — right-click any image → fullscreen crop overlay with W × H inputs, green draggable frame (see-through middle), writes `<name>_cropped_WxH.<ext>`. New "auto-size" checkbox on by default scales the image and the frame to fit the stage so a 4K source no longer overflows the modal.
 - **⇄ Convert format** — right-click any image → convert between **PNG / JPEG / WebP** natively via `canvas.toDataURL`. JPEG is flattened onto white.
+- **✨ Remove background** — right-click any image for a one-shot "drop the alpha, write `<name>_nobg.png` next to it". A checkbox in the Upscale Settings popup chains the same step onto the generate / upscale / crop pipeline, so every generated image can end up transparent without an extra click. Uses an optional local IS-Net binary (see below) — no API call, no cloud upload, fully offline.
 
 ### File browser
 - Single-click on an image opens it in the bottom-right **Picture preview** pane (fit-to-content, click for 1:1 + zoom).
@@ -50,7 +51,16 @@ Detection order (first hit wins, cached after first success):
 If none of those are present, the upscale function uses the built-in multi-step pipeline and a one-time toast reminds the user that the upgrade is available. If Real-ESRGAN is available but fails (corrupt model, GPU OOM, etc.), the tool logs the error and falls back to the built-in path so the user still gets a result.
 
 #### Install
-1. Download the latest **`realesrgan-ncnn-vulkan`** portable for your OS from the [Real-ESRGAN releases page](https://github.com/xinntao/Real-ESRGAN/releases) (BSD-3-Clause).
+
+The single "Optional add-ons" popup (shown as a first-run prompt and re-openable from ⚙ Settings → Image upscaling → "Re-open add-ons") handles every Real-ESRGAN install path:
+
+- **One-click download** — fetches the v0.2.5.0 Windows release from GitHub and extracts it into `./bin/`. (The asset name in that release is dated, e.g. `realesrgan-ncnn-vulkan-20220424-windows.zip`; the previous code pointed at a non-existent asset name which 404'd.)
+- **Open releases page** — drops the user on the GitHub releases page so they can pick a different version themselves.
+- **Pick file…** — file-picker copies an already-downloaded binary into `./bin/`. Universal fallback for when the upstream URL is moved or the user has the file on a different drive.
+
+For pre-bundled portable builds, place the files manually:
+
+1. Download the **`realesrgan-ncnn-vulkan`** portable for your OS from the [Real-ESRGAN releases page](https://github.com/xinntao/Real-ESRGAN/releases) (BSD-3-Clause).
 2. Extract the archive.
 3. Drop the binary + the `models/` folder into `./bin/` next to the package root (or anywhere on `PATH`):
    ```
@@ -61,10 +71,67 @@ If none of those are present, the upscale function uses the built-in multi-step 
        ├── realesrgan-x4plus.bin
        └── …
    ```
-4. Restart the app. The ⚙ Settings popup will show "Real-ESRGAN vX.Y.Z detected" under the **Image upscaling** section. Use the **Re-detect** button there if you installed it after launch.
+4. Restart the app. The ⚙ Settings popup will show "Real-ESRGAN vX.Y.Z detected" under the **Image upscaling** section. Use the **Re-detect** button there (or "Re-open add-ons") if you installed it after launch.
 
 #### Model
 The default model is **`realesrgan-x4plus`** (general-purpose, BSD-3-Clause). The x4plus model always outputs at 4×; the renderer resizes the result to the requested multiplier — 2× / 3× are downscales from the 4× (super-sampling, very high quality), 4× is used as-is, 8× is a 2× step on top. You can pick a different model in ⚙ Settings → Image upscaling → Model if you have a more specialised `.param` + `.bin` pair installed.
+
+---
+
+### Optional: IS-Net background removal (MIT)
+
+The in-app image pipeline can also run a local background-removal pass so generated assets are ready to drop onto other graphics without an alpha-channel round-trip. The same opt-in model applies: the tool ships with the runtime, but the model file and the optional Real-ESRGAN binary live in `./bin/`. Running `npm run setup` once before the first release downloads them from verified URLs.
+
+#### Two backends, same flag contract
+
+The wrapper at `src/isnetbg.js` supports two interchangeable backends, identical from the UI's point of view:
+
+| Backend | When it's used | How you ship it |
+| --- | --- | --- |
+| **Pure-Node.js** (`src/isnetbg_node.js` + `onnxruntime-node` + `sharp`) | **Default.** No extra toolchain. | Already in the source tree; nothing to build. |
+| **External binary** (`./bin/isnetbg.exe`, the C# / .NET 6+ reference) | Faster GPU inference on a developer's box. | Build once with `dotnet publish` (optional). |
+
+Both backends share the same CLI contract and the same model file:
+
+```
+isnetbg --input <path> --output <path> [--use-gpu <0|1>]
+```
+
+On success: exit code `0`, a PNG with a transparent alpha channel at `<output>`. The same 4-step pipeline (1024×1024 Bicubic pre-resize, ONNX inference with DirectML/CPU fallback, Bicubic mask upsample, transparent PNG export) — the Node.js implementation follows the C# reference byte-for-byte at the algorithm level.
+
+#### Install (before the first release)
+
+```sh
+npm install          # picks up onnxruntime-node + sharp
+npm run setup        # downloads Real-ESRGAN + isnet-general-use.onnx into ./bin/
+npm run check        # confirms everything the runtime needs is in place
+npm run build        # packages the portable .exe with the .bin/ + the model baked in
+```
+
+End users who download the resulting .zip run the .exe directly — no install prompts, no downloads, the "Optional add-ons" popup auto-dismisses because everything is already there.
+
+If the end user has the same setup on a fresh install (no `./bin/`), the popup re-appears with three buttons per component (Download / Open page / Pick file) — see the **Install** matrix in the *Optional: Real-ESRGAN upscaling* section above.
+
+#### Manual install (skip `npm run setup`)
+
+1. **Real-ESRGAN binary** — download the Windows release from [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0) and place `realesrgan-ncnn-vulkan.exe` + the `models/` folder under `./bin/`.
+2. **isnet-general-use.onnx model** — download from the verified HuggingFace mirror `https://huggingface.co/x-Liola-x/isnet-general-use-onnx/resolve/main/isnet-general-use.onnx` (~170 MB) and place it at `./bin/models/isnet-general-use.onnx`.
+3. (Optional) **isnetbg C# binary** — if you want the faster GPU path, build a C# console program against the contract above (Microsoft.ML.OnnxRuntime + SixLabors.ImageSharp) and place the result at `./bin/isnetbg.exe`. The Node.js backend already covers the same use case without this step.
+4. Restart the app. The ⚙ Settings → Upscale Settings popup will show "isnetbg node-onnxruntime detected" (or the C# binary version) under the **Remove background** section. The right-click "Remove background" item in the folder browser becomes a real action.
+
+#### Detected model behaviour
+- **Binary missing** → "not installed — see README" hint in the popup, the right-click action shows an error toast with the same hint. The Upscale pipeline silently skips the background-removal step.
+- **Binary present, model missing** → "binary installed, model missing — see README" hint, action shows "model file missing — drop isnet-general-use.onnx into ./bin/models/."
+- **Binary + model present** → the Upscale Settings popup and the right-click Upscale dialog both gain a "✨ Remove background" checkbox. The right-click "Remove background" item in the folder browser becomes fully functional.
+
+#### GPU
+The popup exposes a "use GPU acceleration" sub-toggle that forwards `--use-gpu 1|0` to the binary. Default is `1` (DirectML / CUDA / Vulkan, whatever the binary supports). On a CPU-only run, IS-Net at 1024×1024 takes a few seconds; GPU acceleration brings this down to under a second on most modern cards.
+
+#### Why IS-Net
+IS-Net (isnet-general-use) is the sweet spot for a desktop image tool: very high segmentation quality on portraits, objects, and general scenes, MIT-licensed, single ONNX file, runs offline. Comparable alternatives that also work as a drop-in for the same binary contract (only the model file changes):
+- **BRIA RMBG-2.0** (Apache 2.0) — strong on portraits, slightly faster.
+- **InSPyReNet** (Apache 2.0) — very high quality, slower.
+- **MODNet** (Apache 2.0) — fastest of the four, lower quality on complex scenes.
 
 ---
 
@@ -88,9 +155,44 @@ start.bat                          REM first run: installs electron + launches
 
 `start.bat` will:
 1. Check Node.js is on `PATH`.
-2. Run `npm install --omit=dev` on the first run (downloads Electron).
+2. Run `npm install` on the first run (downloads Electron + the optional add-on runtime deps `onnxruntime-node` and `sharp`).
 3. Copy `config.txt.example` → `config.txt` if missing.
 4. Launch the app via `node_modules\.bin\electron.cmd .`
+
+### Before the first release
+
+If you're a developer shipping a portable .zip that should work **without** any post-install downloads, run these once before `npm run build`:
+
+```sh
+npm install
+npm run setup        # downloads Real-ESRGAN + isnet-general-use.onnx into ./bin/
+npm run check        # preflight: confirms every required file is in place
+npm run build        # packages the portable .exe with ./bin/ + node_modules/ baked in
+```
+
+The resulting `.zip` contains every file the user needs to use the optional quality upgrades (Real-ESRGAN upscaler, IS-Net background removal) with zero install steps on their end. See the *Optional: IS-Net background removal* section below for the architecture details.
+
+#### Build on Windows accounts without `SeCreateSymbolicLinkPrivilege`
+
+If `npm run build` aborts during the winCodeSign extraction with `ERROR: Cannot create symbolic link : Dem Client fehlt ein erforderliches Recht.` (or the English equivalent "A required privilege is not held by the client"), the 7-Zip binary can't recreate the macOS code-signing symlinks inside the winCodeSign archive. The Windows portable build never uses those macOS files, but electron-builder's 7-Zip extraction is hardcoded with the symlink-creating flag and there's no build-config workaround.
+
+The build wrapper detects this exact failure and prints a clear fix message. The one-time fix on the dev box is:
+
+```sh
+npm run enable-devmode
+```
+
+This re-launches PowerShell as admin (UAC prompt) and sets the `AllowDevelopmentWithoutDevLicense` registry value to `1`, which is the same key that "Developer Mode" toggles in the Windows Settings UI. After it runs, `SeCreateSymbolicLinkPrivilege` is granted to your user and `npm run build` works without admin elevation.
+
+If you'd rather do it manually:
+1. **Settings → Privacy & security → For developers → Developer Mode → On** (Settings UI, 30s, recommended).
+2. From an admin PowerShell:
+   ```powershell
+   reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
+   ```
+3. Just run `npm run build` from an elevated PowerShell each time.
+
+After enabling Developer Mode, no other changes are needed — `npm run build` produces a self-contained `MiniMaxAssetTool-x.y.z-x64.zip` in `dist/`.
 
 ### Run the portable .exe
 
@@ -130,6 +232,7 @@ The same `mmx-cli` requirement applies.
 │   ├── fileBrowser.js       # list / mkdir / rename / move / copy / delete / read
 │   ├── batches.js           # BatchGen batch-list persistence
 │   ├── realesrgan.js        # optional Real-ESRGAN upscaler wrapper
+│   ├── isnetbg.js           # optional IS-Net background-removal wrapper
 │   ├── pathUtils.js         # safe path checks (the fb:* allowlist helpers)
 │   └── voices.json          # bundled voice catalog (300+ entries)
 └── renderer/
@@ -188,11 +291,12 @@ Everything else (per-tab form values, batch lists, current folder) is auto-manag
 - **[mmx-cli](https://www.npmjs.com/package/mmx-cli)** — the official MiniMax CLI; we shell out to it.
 - **HTML5 Canvas API + `createImageBitmap`** — all image pipeline operations (upscale, crop, format conversion) run locally. The upscale path walks the source up to the target in 2× steps using `createImageBitmap` with `resizeQuality: 'high'` (Lanczos-style). No `sharp`, no `jimp`, no other image lib.
 - **[Real-ESRGAN ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN) (optional, BSD-3-Clause)** — when the binary is installed, the upscale path shells out to it for noticeably higher-quality output (especially 2× / 3× / 4×). Detected automatically; the source release works without it.
+- **IS-Net `isnet-general-use` (optional, MIT)** — when the `isnetbg` CLI is installed, the right-click "Remove background" item and the "✨ Remove background" checkbox in the Upscale Settings popup shell out to it for a transparent PNG. The same opt-in model: source release works without it, and the UI shows a precise "binary / model missing" hint when the tool is partially installed.
 - **Node.js `fs` + `path`** — the only Node modules used by the in-app image pipeline.
 
 ### Licensing & open-source
 
-This project is MIT licensed. Every dependency in the build chain is also MIT-licensed (Electron, electron-builder) or permissive. The image pipeline is Canvas-only by default. The optional Real-ESRGAN upgrade is BSD-3-Clause (commercial use is fine) — attribution to [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) is appreciated if you ship a release with the binary bundled.
+This project is MIT licensed. Every dependency in the build chain is also MIT-licensed (Electron, electron-builder) or permissive. The image pipeline is Canvas-only by default. The optional Real-ESRGAN upgrade is BSD-3-Clause (commercial use is fine) — attribution to [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) is appreciated if you ship a release with the binary bundled. The optional IS-Net background-removal upgrade is MIT-licensed — attribution to [xuebinqin/DIS](https://github.com/xuebinqin/DIS) is appreciated if you ship a release with the binary + model bundled.
 
 ---
 

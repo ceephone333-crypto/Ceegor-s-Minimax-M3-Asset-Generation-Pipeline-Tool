@@ -37,6 +37,14 @@ const state = {
   // short known set so a corrupted state.json can't inject an
   // arbitrary model name (or argv flag) into the binary.
   realesrganModel: 'realesrgan-x4plus',
+  // First-run dismissal for the optional Real-ESRGAN install
+  // popup. Set to true by the popup's "Don't ask again" / "Skip"
+  // / successful install paths. Persisted to state.json so a user
+  // who already saw the popup on a previous launch isn't
+  // re-prompted. Initialised here so the first read isn't
+  // `undefined` (the truthy check would still work, but the
+  // implicit shape change is harder to grep for).
+  realesrganFirstRunDismissed: false,
   // Upscale-on-Generate: when true, every newly generated image is
   // upscaled locally (Canvas API) after the mmx call returns, using the
   // settings below. Persisted to state.json so it survives restarts.
@@ -49,6 +57,20 @@ const state = {
   // autoCrop, cropWidth, cropHeight, cropAnchorX/Y) so the user can
   // configure everything in one place.
   upscaleSettings: { multiplier: 2, autoCrop: false, cropWidth: 0, cropHeight: 0, cropAnchorX: 'center', cropAnchorY: 'center' },
+  // When the upscale is on, also remove the background from the
+  // (optionally upscaled + cropped) output via the optional isnetbg
+  // binary. Persisted to state.json so the user's "yes, always
+  // free up my generated assets" choice survives restarts. The
+  // standalone right-click "Remove background" action does NOT
+  // depend on this flag — it's an explicit user gesture every
+  // time, so accidental turn-on here is contained to the
+  // generation pipeline.
+  removeBackgroundEnabled: false,
+  // Whether to ask the isnetbg binary to use GPU acceleration.
+  // We default to true (DirectML / CUDA / Vulkan whatever the
+  // binary supports) because IS-Net on a CPU is slow; the user
+  // can opt out if the GPU path is misbehaving on their box.
+  removeBackgroundUseGpu: true,
   // Per-tab generation state used for status dots and the batch runner.
   // "running" while mmx is in flight, "done" after success, "idle" otherwise.
   // Green dot is only shown when the tab is not the active one.
@@ -57,6 +79,26 @@ const state = {
   // armGenBtnWithCancel's cleanup. Used by startBatchGen to wait for
   // completion between batch entries.
   generating: null,
+  // Per-tab generation queue progress. genQueueSize is the total number
+  // of items the current run will produce (variants × --n). genQueueDone
+  // is how many items have finished. The tab's ETA timer reads both
+  // values to compute a "remaining time for the whole queue" estimate.
+  // Cleared by armGenBtnWithCancel's cleanup. Without these, the ETA
+  // only ever showed the time for the CURRENT item — useless when the
+  // user is running a 5-variant batch and wants to know when the whole
+  // batch will be done.
+  genQueueSize: { image: 0, speech: 0, music: 0, video: 0 },
+  genQueueDone: { image: 0, speech: 0, music: 0, video: 0 },
+  // The path of the image currently shown in the right-side preview
+  // pane. Used by previewImageFromFile to short-circuit "click the
+  // same file twice" and avoid a re-decode + flicker. Cleared when
+  // the preview is reset to the empty state (e.g. after a file is
+  // deleted or moved out from under the pane). Initialized here so
+  // the first read doesn't see "undefined" — the comparison would
+  // still work, but writing to it via a property assignment on
+  // `state` would silently create the key on first use, which is
+  // the kind of implicit shape change that's hard to grep for.
+  _lastPreviewPath: null,
 };
 
 // ----------------- Utilities -----------------
@@ -250,8 +292,14 @@ function showStartupPopup() {
         // essential settings (api_key, output_dir) are still empty, walk
         // them through the first-time setup form. The folder field uses
         // the standard Windows folder-selection dialog via pickFolder.
+        // Otherwise (config already valid), skip straight to the
+        // unified "Optional add-ons" popup so a user with a fresh
+        // ./bin/ also discovers the one-click installers for
+        // Real-ESRGAN, the IS-Net binary, and the IS-Net model.
         if (!state.config.api_key || !state.config.output_dir) {
           openFirstTimeSetup();
+        } else if (!state.realesrganFirstRunDismissed) {
+          openOptionalAddons({ autoOpened: true }).catch(() => {});
         }
       } }, 'OK'),
     ]));
@@ -344,6 +392,308 @@ function openFirstTimeSetup() {
       else if (!cfg.output_dir) outInput.focus();
       else apiInput.focus();
     }, 0);
+  });
+
+  // After the first-time setup popup (Save or Skip), walk the user
+  // through the optional Real-ESRGAN install. Without this, a user
+  // who picked the built-in upscaler without ever opening ⚙
+  // Settings would never see the one-click installer, and would
+  // wonder "why doesn't this upscale as well as the screenshots
+  // show?" later. The install IS automated (one click) — the issue
+  // is purely discoverability. The popup is gated on
+  //   - Real-ESRGAN binary not present
+  //   - user hasn't already dismissed it
+  // so it never nags. It is intentionally NOT gated on
+  // "config was just set on this launch" — a user who already had a
+  // valid config but a fresh install (no ./bin/) should still see
+  // it on first launch.
+  if (!state.realesrganFirstRunDismissed) {
+    openOptionalAddons({ autoOpened: true }).catch(() => {});
+  }
+}
+
+// ----------------- Real-ESRGAN first-run popup -----------------
+// Surfaces the one-click Real-ESRGAN installer on the very first
+// launch (after the first-time setup popup) so the user doesn't
+// have to dig through ⚙ Settings to discover it. If the binary is
+// already present (e.g. the user copied it in themselves), the
+// popup auto-closes without bothering them. The "Don't ask again"
+// button persists a flag in state.json so this never re-appears
+// after dismissal.
+// ----------------- Optional add-ons popup (unified) -----------------
+// The single place where the user installs every optional component
+// the tool supports: Real-ESRGAN upscaler, isnetbg binary, and the
+// IS-Net ONNX model. Designed to be shown both as a first-run
+// prompt (when nothing is installed) and as a re-openable manager
+// from ⚙ Settings (the "Re-open add-ons" link in the Upscale
+// Settings section re-invokes it).
+//
+// Per-component install options:
+//   1. "Download" (Real-ESRGAN only) — fixed GitHub URL in main.js.
+//      Streams progress via the existing realesrganDownload IPC.
+//   2. "Open download page" (Real-ESRGAN + model) — opens the
+//      upstream release page / HuggingFace mirror in the user's
+//      default browser. The user then downloads the file
+//      themselves and uses the file-picker. This is the universal
+//      "no auto-download breakage" path.
+//   3. "Pick file…" (all three) — file-picker copies the picked
+//      file into ./bin/ (or ./bin/models/) under the name the
+//      wrapper probes for. This is the universal fallback for
+//      when neither auto-download nor the upstream URL is
+//      available (e.g. the user built the isnetbg binary from
+//      the C# reference in the README).
+//
+// A single "Re-detect" button at the bottom re-probes both
+// Real-ESRGAN and isnetbg so the user sees the status reflect
+// their latest install attempt. The popup itself can stay open
+// across multiple install attempts (it doesn't auto-close on
+// success) so the user can install all three components in one
+// sitting.
+async function openOptionalAddons({ autoOpened = false } = {}) {
+  // Probe both backends BEFORE opening the modal. If everything
+  // is already installed (e.g. the developer pre-bundled the
+  // files in ./bin/ before building the portable .exe), skip the
+  // popup entirely on first run — the same "don't nag" logic the
+  // previous Real-ESRGAN-only popup had.
+  const probeAll = async () => {
+    let reSt = null, isSt = null;
+    try { reSt = await window.api.realesrganAvailable(); } catch (_) {}
+    try { isSt = await window.api.isnetbgAvailable(); } catch (_) {}
+    return { reSt, isSt };
+  };
+  // If this is the first-run auto-open, AND everything is
+  // installed, AND the user hasn't explicitly opened the popup
+  // via the ⚙ Settings link, silently dismiss.
+  if (autoOpened) {
+    const { reSt, isSt } = await probeAll();
+    const reOk = reSt && reSt.available;
+    const isOk = isSt && isSt.available && isSt.modelPresent;
+    if (reOk && isOk) {
+      state.realesrganFirstRunDismissed = true;
+      scheduleStateSave();
+      return;
+    }
+  }
+
+  showModal((m, close) => {
+    m.classList.add('optional-addons-modal');
+    m.appendChild(el('h2', {}, '🧩 Optional add-ons'));
+    m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+      'The tool ships with built-in defaults that work without any extra software. The components below are optional quality upgrades — install them if you want sharper upscale, transparent backgrounds, or both. You can re-open this popup any time from ⚙ Settings → Image upscaling → "Re-open add-ons".'));
+
+    // ---- Section 1: Real-ESRGAN upscaler ----
+    const reCard = el('div', { class: 'addon-card' });
+    reCard.appendChild(el('h3', {}, '🔍 Real-ESRGAN upscaler (BSD-3-Clause)'));
+    reCard.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
+      'Drop-in upgrade for the built-in multi-step upscaler. Noticeably more detail on 4× upscale, and the only way to use the official 4× BSD-3 model.'));
+    const reStatus = el('div', { class: 'addon-status' }, 'Detecting…');
+    reCard.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Status'), reStatus]));
+    const reProgress = el('div', { class: 'addon-progress' });
+    reProgress.style.display = 'none';
+    reProgress.style.color = 'var(--fg-2)';
+    reProgress.style.fontSize = '12px';
+    reCard.appendChild(reProgress);
+    const reActions = el('div', { class: 'addon-actions' });
+    const reDownload = el('button', { class: 'primary' }, 'Download from GitHub');
+    const rePick = el('button', {}, 'Pick file…');
+    const reOpenPage = el('button', { class: 'btn-mini' }, 'Open releases page');
+    reActions.append(reOpenPage, rePick, reDownload);
+    reCard.appendChild(reActions);
+    m.appendChild(reCard);
+
+    // ---- Section 2: IS-Net background-removal binary ----
+    const isBinCard = el('div', { class: 'addon-card' });
+    isBinCard.appendChild(el('h3', {}, '✨ IS-Net background removal — binary (MIT)'));
+    isBinCard.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
+      'The local ONNX-driven background-removal engine. Build the binary from the C# reference in the project README (Microsoft.ML.OnnxRuntime + SixLabors.ImageSharp), then point this popup at the resulting .exe.'));
+    const isBinStatus = el('div', { class: 'addon-status' }, 'Detecting…');
+    isBinCard.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Status'), isBinStatus]));
+    const isBinActions = el('div', { class: 'addon-actions' });
+    const isBinPick = el('button', { class: 'primary' }, 'Pick binary…');
+    const isBinOpenReadme = el('button', { class: 'btn-mini' }, 'Open README');
+    isBinActions.append(isBinOpenReadme, isBinPick);
+    isBinCard.appendChild(isBinActions);
+    m.appendChild(isBinCard);
+
+    // ---- Section 3: IS-Net model file ----
+    const isModelCard = el('div', { class: 'addon-card' });
+    isModelCard.appendChild(el('h3', {}, '✨ IS-Net model — isnet-general-use.onnx (MIT, ~170 MB)'));
+    isModelCard.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
+      'The ONNX model the isnetbg binary loads at startup. Download from a HuggingFace mirror of your choice, or any of the official IS-Net model repos, then point this popup at the file.'));
+    const isModelStatus = el('div', { class: 'addon-status' }, 'Detecting…');
+    isModelCard.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Status'), isModelStatus]));
+    const isModelActions = el('div', { class: 'addon-actions' });
+    const isModelPick = el('button', { class: 'primary' }, 'Pick model…');
+    const isModelOpenPage = el('button', { class: 'btn-mini' }, 'Open HuggingFace');
+    isModelActions.append(isModelOpenPage, isModelPick);
+    isModelCard.appendChild(isModelActions);
+    m.appendChild(isModelCard);
+
+    // ---- Footer: Re-detect + Dismiss + Don't-ask-again ----
+    const footer = el('div', { class: 'footer' });
+    const redetect = el('button', { class: 'btn-mini' }, '🔄 Re-detect');
+    const skipBtn = el('button', { onclick: close }, 'Skip for now');
+    const neverBtn = el('button', { class: 'btn-mini' }, "Don't ask again");
+    footer.append(neverBtn, skipBtn, redetect);
+    m.appendChild(footer);
+
+    // ---- Wiring ----
+    function setStatus(node, text, color) {
+      node.textContent = text;
+      if (color) node.style.color = color;
+    }
+
+    async function refreshAll() {
+      setStatus(reStatus, 'Detecting…');
+      setStatus(isBinStatus, 'Detecting…');
+      setStatus(isModelStatus, 'Detecting…');
+      const { reSt, isSt } = await probeAll();
+      if (reSt && reSt.available) {
+        const v = reSt.version ? ` v${reSt.version}` : '';
+        setStatus(reStatus, 'Detected: ' + (reSt.binaryPath || '') + v, 'var(--success)');
+      } else {
+        setStatus(reStatus, 'Not found — choose an install method below.', 'var(--fg-2)');
+      }
+      if (isSt && isSt.available && isSt.modelPresent) {
+        // Differentiate the Node.js backend from a hand-built C#
+        // binary. The `version` field returned by probeVersion()
+        // is the string 'node-onnxruntime' for the Node backend
+        // and a semver for the C# binary; for the binary path we
+        // also display the resolved binaryPath so the user can
+        // see WHICH binary was detected.
+        const isNode = isSt.version === 'node-onnxruntime';
+        if (isNode) {
+          setStatus(isBinStatus, 'IS-Net Node.js wrapper (onnxruntime-node) + model detected.', 'var(--success)');
+        } else {
+          const v = isSt.version ? ` v${isSt.version}` : '';
+          setStatus(isBinStatus, 'IS-Net binary' + v + ' + model detected.', 'var(--success)');
+        }
+        setStatus(isModelStatus, 'Detected: ' + (isSt.modelPath || ''), 'var(--success)');
+      } else if (isSt && isSt.available && !isSt.modelPresent) {
+        setStatus(isBinStatus, 'Binary detected — model file missing.', 'var(--warn, #d9a300)');
+        setStatus(isModelStatus, 'Not found — pick the .onnx file below.', 'var(--fg-2)');
+      } else {
+        setStatus(isBinStatus, 'Not found — pick the binary you built.', 'var(--fg-2)');
+        setStatus(isModelStatus, 'Not found — pick the .onnx file below.', 'var(--fg-2)');
+      }
+    }
+    refreshAll();
+
+    // Re-detect button — single place to refresh after any install.
+    redetect.addEventListener('click', () => refreshAll());
+
+    // Don't-ask-again: persist dismissal and close. We use the
+    // same state flag the old Real-ESRGAN popup used so existing
+    // state.json files still work.
+    neverBtn.addEventListener('click', async () => {
+      state.realesrganFirstRunDismissed = true;
+      try { await scheduleStateSave(); } catch (_) {}
+      close();
+    });
+
+    // Real-ESRGAN: download (with progress) + open releases page + pick file.
+    reDownload.addEventListener('click', async () => {
+      reDownload.disabled = true; rePick.disabled = true; reOpenPage.disabled = true;
+      reProgress.style.display = '';
+      reProgress.style.color = 'var(--fg-2)';
+      reProgress.textContent = 'Starting download…';
+      const off = window.api.onRealesrganDownloadProgress((data) => {
+        if (data.phase === 'download') {
+          if (data.total > 0) {
+            const pct = (data.downloaded / data.total) * 100;
+            const mb = (data.downloaded / 1024 / 1024).toFixed(1);
+            const totalMb = (data.total / 1024 / 1024).toFixed(1);
+            reProgress.textContent = `Downloading… ${mb} / ${totalMb} MB (${pct.toFixed(0)}%)`;
+          } else {
+            reProgress.textContent = 'Downloading…';
+          }
+        } else if (data.phase === 'extract') {
+          reProgress.textContent = 'Extracting…';
+        } else if (data.phase === 'done') {
+          reProgress.textContent = 'Done. Refreshing status…';
+        }
+      });
+      try {
+        const r = await window.api.realesrganDownload();
+        off();
+        if (r && r.ok) {
+          reProgress.textContent = 'Installed to ' + (r.binDir || './bin') + '.';
+          await refreshAll();
+          state.realesrganFirstRunDismissed = true;
+          try { await scheduleStateSave(); } catch (_) {}
+        } else {
+          reProgress.textContent = 'Download failed: ' + ((r && r.error) || 'unknown') +
+            ' — try "Pick file…" or "Open releases page" instead.';
+          reProgress.style.color = 'var(--danger)';
+        }
+      } catch (e) {
+        off();
+        reProgress.textContent = 'Download failed: ' + (e && e.message || e) +
+          ' — try "Pick file…" or "Open releases page" instead.';
+        reProgress.style.color = 'var(--danger)';
+      } finally {
+        reDownload.disabled = false; rePick.disabled = false; reOpenPage.disabled = false;
+      }
+    });
+    reOpenPage.addEventListener('click', () => {
+      window.api.installOpenUrl('https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0');
+    });
+    rePick.addEventListener('click', async () => {
+      const r = await window.api.installPickAndCopy('realesrgan-binary');
+      if (r && r.ok) {
+        toast('Real-ESRGAN binary installed.', 'ok', 2500);
+        await refreshAll();
+      } else if (r && r.canceled) {
+        // Silent — user just cancelled the dialog.
+      } else {
+        toast('Install failed: ' + ((r && r.error) || 'unknown'), 'err', 6000);
+      }
+    });
+
+    // IS-Net binary: pick file (user built it from the README's C# ref) + open README.
+    isBinPick.addEventListener('click', async () => {
+      const r = await window.api.installPickAndCopy('isnetbg-binary');
+      if (r && r.ok) {
+        toast('isnetbg binary installed.', 'ok', 2500);
+        await refreshAll();
+      } else if (r && r.canceled) {
+        // Silent.
+      } else {
+        toast('Install failed: ' + ((r && r.error) || 'unknown'), 'err', 6000);
+      }
+    });
+    isBinOpenReadme.addEventListener('click', () => {
+      // Open the upstream IS-Net project page (DIS on GitHub) —
+      // the README there links to every current ONNX mirror +
+      // a C# reference implementation the user can build their
+      // isnetbg binary from. We don't try to ship a bundled
+      // build script because the binary has to be compiled on
+      // the user's machine (OS + ONNX runtime + ImageSharp),
+      // and a one-click compile cross-platform from Electron
+      // is its own can of worms.
+      window.api.installOpenUrl('https://github.com/xuebinqin/DIS');
+    });
+
+    // IS-Net model: pick file + open HuggingFace mirror.
+    isModelPick.addEventListener('click', async () => {
+      const r = await window.api.installPickAndCopy('isnetbg-model');
+      if (r && r.ok) {
+        toast('isnet-general-use.onnx installed.', 'ok', 2500);
+        await refreshAll();
+      } else if (r && r.canceled) {
+        // Silent.
+      } else {
+        toast('Install failed: ' + ((r && r.error) || 'unknown'), 'err', 6000);
+      }
+    });
+    isModelOpenPage.addEventListener('click', () => {
+      // The IS-Net ONNX model is hosted on several HuggingFace
+      // mirrors. We open the DIS project README on GitHub
+      // (which links to all current mirrors + a C# reference
+      // implementation) instead of hard-coding a single mirror
+      // that may go stale.
+      window.api.installOpenUrl('https://github.com/xuebinqin/DIS');
+    });
   });
 }
 
@@ -461,7 +811,9 @@ function buildParamRow(label, def, id) {
       const combo = el('div', { class: 'combo' }, [inp, browse]);
       input = inp;  // raw element; arg builder uses inp.value
       const row = el('div', { class: 'row' }, [lbl, combo]);
-      return { row, input };
+      // Same top-level `.el` / `.getValue` aliases as the main
+      // return below — see comment there for the rationale.
+      return { row, input, el: inp, getValue: () => inp.value };
     }
     input = inp;
   } else if (def.kind === 'textarea') {
@@ -479,7 +831,19 @@ function buildParamRow(label, def, id) {
   }
 
   const row = el('div', { class: 'row' }, [lbl, input.el || input]);
-  return { row, input };
+  // Expose `el` and `getValue` at the top level too. The legacy
+  // return shape was `{ row, input }` only, but two call sites —
+  // attachImageDimGuards() and attachSubjectRefGuard() in the
+  // image tab's build() — read `width.el.addEventListener(...)`
+  // and `subjRef.el` directly on the returned param. Without the
+  // top-level aliases those read `undefined.el` and crashed
+  // "Cannot read properties of undefined (reading
+  // 'addEventListener')" on every startup. The `.input` property
+  // is kept for backwards-compat with the existing call sites
+  // that read `width.input.getValue()` and `subjRef.input.value`.
+  const elAlias = input.el || input;
+  const getValueAlias = input.getValue || (() => input.value);
+  return { row, input, el: elAlias, getValue: getValueAlias };
 }
 
 // Extract the --flag from a param's enclosing .row label (e.g. "--model (hd)"
@@ -820,9 +1184,12 @@ function refreshTabStatusDots() {
 
 // Per-tab ETA timer. While a generation is running, show a small mm:ss
 // countdown next to the tab label, based on the average time of the last
-// successful generation in that tab. The countdown is an estimate, not a
-// guarantee — but it gives the user a sense of how long the current call
-// will still take.
+// successful generation in that tab. For batch runs (variants, --n > 1),
+// the countdown reflects the TOTAL remaining time for all items in the
+// queue (current item + future items). As each item completes, the
+// running average is updated and the ETA is recomputed on the next
+// 1-second tick. The countdown is an estimate, not a guarantee — but it
+// gives the user a sense of how long the current call will still take.
 function refreshTabEtas() {
   for (const tabKey of ['image', 'speech', 'music', 'video']) {
     const t = $(`.tab[data-tab="${tabKey}"]`);
@@ -844,13 +1211,38 @@ function _formatTabEta(tabKey) {
   // Use the running average if we have one; otherwise a sensible per-tab
   // default so the user always sees an estimate even on the very first
   // generation. (If they only see "...", the timer looks broken.)
-  let total = (state.genAvgSec && state.genAvgSec[tabKey]) || 0;
-  if (!total) {
+  let avg = (state.genAvgSec && state.genAvgSec[tabKey]) || 0;
+  if (!avg) {
     const defaults = { image: 35, speech: 12, music: 75, video: 90 };
-    total = defaults[tabKey] || 30;
+    avg = defaults[tabKey] || 30;
   }
-  const elapsed = Math.max(0, (Date.now() - start) / 1000);
-  const remaining = Math.max(0, Math.round(total - elapsed));
+  // Total queue size for the current run (variants × n, where n is the
+  // --n count). When the gen handler kicks off, it sets
+  // state.genQueueSize[tabKey] and increments state.genQueueDone[tabKey]
+  // after each completed item. -1 for "the item currently in flight".
+  const queueSize = Math.max(1, (state.genQueueSize && state.genQueueSize[tabKey]) || 1);
+  const queueDone = Math.max(0, (state.genQueueDone && state.genQueueDone[tabKey]) || 0);
+  const itemsLeft = Math.max(1, queueSize - queueDone);
+  // How much of the CURRENT item is still pending. When the user just
+  // kicked off the run, genStartMs is the start of the whole run (not
+  // the current item), so we approximate per-item elapsed as
+  // (now - runStart) / itemsLeft. This is a slight underestimate for
+  // the first few items (a long first item pushes the per-item avg up),
+  // but it's the best we can do without per-item timestamps and it
+  // self-corrects as soon as the first item finishes. Clamp to [0, avg]
+  // so a race condition (e.g. startMs=0 right after arm) can't produce
+  // a negative remaining time.
+  const runElapsed = Math.max(0, (Date.now() - start) / 1000);
+  const rawPerItem = runElapsed / itemsLeft;
+  const currentItemElapsed = Math.max(0, Math.min(avg, rawPerItem));
+  const currentItemRemaining = Math.max(0, avg - currentItemElapsed);
+  const futureItems = Math.max(0, itemsLeft - 1);
+  const futureTime = futureItems * avg;
+  const totalRemaining = currentItemRemaining + futureTime;
+  // If the user just kicked off the run and genQueueSize hasn't been
+  // written yet (race during the first tick), itemsLeft === 1 so we
+  // fall back to the old "remaining for the current item only" math.
+  const remaining = Math.max(0, Math.round(totalRemaining));
   const m = Math.floor(remaining / 60);
   const s = remaining % 60;
   return `- ${m}:${String(s).padStart(2, '0')}`;
@@ -1111,6 +1503,14 @@ TABS.image = {
       let allOk = true;
       let lastPreview = null;
       let lastOutFile = null;
+      // outFiles tracks every image file we know about after generation
+      // completes. For variants without --out-dir, each variant produces
+      // one known file we push here. For --out-dir, the per-call output
+      // files are unknown at gen time, so we scan the directory at the
+      // end of the loop (see resolveOutDirFiles). After the upscale +
+      // crop step, the original file is replaced by the upscaled (and
+      // optionally cropped) one — we update the list in place.
+      const outFiles = [];
       // lastFailedR captures the most recent failed mmxRun result so the
       // error UI (preview + toast) can surface its full details, including
       // the classified type and a copy-paste blob for support.
@@ -1123,6 +1523,15 @@ TABS.image = {
       const nRaw = n.input.getValue();
       const nCount = nRaw === '' || nRaw == null ? 1 : Math.max(1, parseInt(String(nRaw), 10) || 1);
       const useOutDir = nCount > 1;
+      // Total images this run will produce. The per-tab ETA timer reads
+      // this from state.genQueueSize[tabKey] to compute a "remaining
+      // time for the whole batch" estimate that ticks down as each
+      // variant completes.
+      const totalImages = variantsCount * nCount;
+      if (!state.genQueueSize) state.genQueueSize = { image: 0, speech: 0, music: 0, video: 0 };
+      if (!state.genQueueDone) state.genQueueDone = { image: 0, speech: 0, music: 0, video: 0 };
+      state.genQueueSize.image = totalImages;
+      state.genQueueDone.image = 0;
       // Validate width/height pairing once (would otherwise warn on every variant).
       const wv0 = width.input.getValue();
       const hv0 = height.input.getValue();
@@ -1174,6 +1583,10 @@ TABS.image = {
           if (!useOutDir) args.push('--out', outFile);
           lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
 
+          // Per-variant start time. We use this (not the whole-run start
+          // time) to update the per-item average as each item finishes,
+          // so the ETA ticks down more accurately as the run progresses.
+          const itemStart = Date.now();
           const statusMsg = variantsCount > 1
             ? `Generating image… variant ${v}/${variantsCount}`
             : (useOutDir ? `Generating image… (${nCount} images to ${outDir})` : 'Generating image…');
@@ -1215,10 +1628,39 @@ TABS.image = {
             allOk = false;
             lastFailedR = r;
             preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}). Continuing with next variant…</div><div class="meta">${escapeHtml(formatMmxError(r))}</div>`;
+            // Advance the queue counter even on failure so the ETA
+            // doesn't keep counting this variant as "still in flight"
+            // for the rest of the run. Failed variants still consume
+            // wall-clock time, so we add their elapsed time to the
+            // per-item average (so the ETA reflects the real pace of
+            // the call, not just the successful ones — otherwise a
+            // string of slow failures would under-estimate the time
+            // for the remaining variants).
+            const failDur = (Date.now() - itemStart) / 1000;
+            if (!state.genAvgSec) state.genAvgSec = {};
+            const prevAvgFail = state.genAvgSec.image || 0;
+            state.genAvgSec.image = prevAvgFail === 0 ? failDur : (prevAvgFail * 0.6 + failDur * 0.4);
+            state.genQueueDone.image = (state.genQueueDone.image || 0) + nCount;
+            refreshTabEtas();
             continue;
           }
+          // Update the per-item average so the ETA improves with each
+          // completion. The previous version only updated the avg in
+          // armGenBtnWithCancel's cleanup (i.e. once at the end of the
+          // whole run), so for a 5-variant batch the ETA stayed pinned
+          // to the default for the first 4 items.
+          const itemDur = (Date.now() - itemStart) / 1000;
+          if (!state.genAvgSec) state.genAvgSec = {};
+          const prevAvg = state.genAvgSec.image || 0;
+          state.genAvgSec.image = prevAvg === 0 ? itemDur : (prevAvg * 0.6 + itemDur * 0.4);
+          // Each mmx call with --n > 1 produces nCount images, so
+          // queueDone advances by nCount for those calls. For single
+          // images (useOutDir=false) it's 1.
+          state.genQueueDone.image = (state.genQueueDone.image || 0) + nCount;
+          refreshTabEtas();
           lastPreview = r.parsed;
           lastOutFile = outFile;
+          if (!useOutDir) outFiles.push(outFile);
         }
       } catch (e) {
         threw = e;
@@ -1288,24 +1730,96 @@ TABS.image = {
             displayFile = lastOutFile;
           }
         }
-        // The per-tab preview used to render a 400×400 thumbnail
-        // here (showImagePreview). Per the user's request, the
-        // generated image now lives in the right-side
-        // folder-explorer's preview pane — the left-side area
-        // only carries a short "Image ready, see preview on the
-        // right" message so the layout doesn't collapse.
+        // "Remove background" stage — runs after upscale (if any) so
+        // the user gets the transparent version of their final
+        // image, not the raw generated file. Sits OUTSIDE the
+        // upscale try/catch because the user may want the
+        // background removed even when Upscale is off; in that case
+        // we run on lastOutFile directly. A failure here is
+        // non-fatal — we keep the (possibly upscaled) displayFile
+        // and surface a warning, so the user never loses the image
+        // they just paid API credits to generate.
+        if (state.removeBackgroundEnabled && displayFile) {
+          try {
+            setStatus('Removing background…', true);
+            preview.innerHTML = `<div class="empty"><span class="spinner"></span> Removing background…</div>`;
+            const noBg = await removeBackgroundFile(displayFile);
+            // The intermediate (upscaled / cropped / raw) is now
+            // redundant — the transparent version is the user's
+            // actual deliverable. Delete the intermediate to keep
+            // the output folder tidy; the user can still find it
+            // in the file browser's lastN listing if they need it
+            // back, and the original API-generated file is
+            // untouched.
+            if (noBg !== displayFile) {
+              window.api.fbDelete(displayFile).catch(() => {});
+              displayFile = noBg;
+            }
+            toast(`Background removed → ${displayFile}`, 'ok', 4000);
+            try { await refreshBrowser(); } catch (_) {}
+          } catch (e) {
+            console.error('Remove background failed:', e);
+            toast('Background removal failed (kept image): ' + (e && e.message || e), 'warn', 5000);
+          }
+        }
+        // Build the final list of files to display in the preview pane.
+        // For --out-dir runs, the per-call output filenames are unknown
+        // to the renderer (mmx writes them with its own naming scheme),
+        // so we resolve them by scanning outDir for files that were
+        // created during this run. We use the run start time + a small
+        // 1.5s pre-roll (to catch files written just before the gen
+        // handler set genStartMs) as the lower bound, and "now" as the
+        // upper bound (to avoid picking up files a future run might
+        // write after the scan).
+        let displayFiles = outFiles.slice();
+        if (useOutDir) {
+          try {
+            const dirList = await window.api.fbList(outDir);
+            if (dirList && dirList.ok && Array.isArray(dirList.items)) {
+              const startMs = (state.genStartMs && state.genStartMs.image) || (Date.now() - 600000);
+              const nowMs = Date.now();
+              const matches = dirList.items
+                .filter((it) => !it.isDir && ['.png', '.jpg', '.jpeg', '.webp'].includes(it.ext))
+                .filter((it) => {
+                  const m = it.mtimeMs || 0;
+                  return m >= startMs - 1500 && m <= nowMs + 5000;
+                })
+                .sort((a, b) => (a.mtimeMs || 0) - (b.mtimeMs || 0));
+              if (matches.length) displayFiles = matches.map((m) => m.path);
+            }
+          } catch (_) { /* fall back to whatever we have */ }
+        }
+        // If only one file ends up in the list (the typical case), fall
+        // back to displayFile (the upscale-aware result) so we don't
+        // accidentally show the pre-upscale file in the preview pane.
+        if (displayFiles.length === 1 && displayFile) {
+          displayFiles = [displayFile];
+        } else if (displayFile && displayFiles.includes(lastOutFile)) {
+          // Replace the lastOutFile entry with the (possibly upscaled
+          // and cropped) displayFile. The user expects the preview to
+          // show the final image, not the intermediate.
+          const idx = displayFiles.indexOf(lastOutFile);
+          if (idx >= 0) displayFiles[idx] = displayFile;
+          else if (!displayFiles.includes(displayFile)) displayFiles.push(displayFile);
+        }
+        // The image tab's left-side preview no longer shows the
+        // generated image — per the user's request, the picture
+        // preview lives in the right-side folder-explorer's preview
+        // pane (which subdivides into N thumbnails for N images).
+        // The left-side area only carries a short status line so the
+        // layout doesn't collapse but the prompt / parameter inputs
+        // are no longer obscured.
         preview.innerHTML = '';
         preview.appendChild(el('div', { class: 'empty' },
           el('div', { class: 'preview-ready-msg' }, [
-            '✅ Image ready — ',
-            el('strong', {}, 'preview on the right'),
-            '. Click the filename in the file browser or ',
-            el('strong', {}, 'the image in the preview pane'),
-            ' to open at 1:1.',
+            '✅ ',
+            String(displayFiles.length),
+            (displayFiles.length === 1 ? ' image' : ' images'),
+            ' ready — see the preview pane on the right. Click any thumbnail to open it at 1:1.',
           ]),
         ));
-        try { previewImageFromFile(displayFile); } catch (_) {}
-        bumpGenerationCounter('image', variantsCount);
+        try { previewImagesFromFiles(displayFiles); } catch (_) {}
+        bumpGenerationCounter('image', totalImages);
       } else if (!allOk) {
         // Build a detailed, actionable error block. The user has been
         // hitting "API error: system error (HTTP 200)" which is opaque —
@@ -1577,6 +2091,14 @@ TABS.speech = {
       catch (e) { toast('No output directory set. Open Settings.', 'err'); return; }
       const slug = slugify(txt).slice(0, 60) || 'speech';
       const ext = (format.input.value || 'mp3').split('_')[0];
+      // Total assets this run will produce. The per-tab ETA timer reads
+      // this from state.genQueueSize[tabKey] to compute a "remaining
+      // time for the whole batch" estimate that ticks down as each
+      // variant completes.
+      if (!state.genQueueSize) state.genQueueSize = { image: 0, speech: 0, music: 0, video: 0 };
+      if (!state.genQueueDone) state.genQueueDone = { image: 0, speech: 0, music: 0, video: 0 };
+      state.genQueueSize.speech = variantsCount;
+      state.genQueueDone.speech = 0;
       const cancel = armGenBtnWithCancel(genBtn, 'Generate');
       let allOk = true;
       let lastPreview = null;
@@ -1585,6 +2107,7 @@ TABS.speech = {
       try {
         for (let v = 1; v <= variantsCount; v++) {
           if (cancel.wasCancelled()) break;
+          const itemStart = Date.now();
           const args = ['speech', 'synthesize'];
           args.push('--text', txt);
           appendFlag(args, model.input);
@@ -1624,6 +2147,15 @@ TABS.speech = {
             allOk = false;
             break;
           }
+          // Update the per-item average + advance the queue counter so
+          // the ETA ticks down per item. See the image-tab comment
+          // for the full rationale.
+          const itemDur = (Date.now() - itemStart) / 1000;
+          if (!state.genAvgSec) state.genAvgSec = {};
+          const prevAvg = state.genAvgSec.speech || 0;
+          state.genAvgSec.speech = prevAvg === 0 ? itemDur : (prevAvg * 0.6 + itemDur * 0.4);
+          state.genQueueDone.speech = (state.genQueueDone.speech || 0) + 1;
+          refreshTabEtas();
           lastPreview = r.parsed;
           lastOutFile = outFile;
         }
@@ -2048,6 +2580,14 @@ TABS.music = {
       catch (e) { toast('No output directory set. Open Settings.', 'err'); return; }
       const slug = slugify(promptText).slice(0, 60) || 'music';
       const ext = (audioFormat.input.value || 'mp3');
+      // Total assets this run will produce. The per-tab ETA timer reads
+      // this from state.genQueueSize[tabKey] to compute a "remaining
+      // time for the whole batch" estimate that ticks down as each
+      // variant completes.
+      if (!state.genQueueSize) state.genQueueSize = { image: 0, speech: 0, music: 0, video: 0 };
+      if (!state.genQueueDone) state.genQueueDone = { image: 0, speech: 0, music: 0, video: 0 };
+      state.genQueueSize.music = variantsCount;
+      state.genQueueDone.music = 0;
       const cancel = armGenBtnWithCancel(genBtn, 'Generate');
       let allOk = true;
       let lastPreview = null;
@@ -2056,6 +2596,7 @@ TABS.music = {
       try {
         for (let v = 1; v <= variantsCount; v++) {
           if (cancel.wasCancelled()) break;
+          const itemStart = Date.now();
           const args = ['music', 'generate'];
           args.push('--prompt', promptText);
           // Mode
@@ -2105,6 +2646,15 @@ TABS.music = {
             allOk = false;
             break;
           }
+          // Update the per-item average + advance the queue counter so
+          // the ETA ticks down per item. See the image-tab comment
+          // for the full rationale.
+          const itemDur = (Date.now() - itemStart) / 1000;
+          if (!state.genAvgSec) state.genAvgSec = {};
+          const prevAvg = state.genAvgSec.music || 0;
+          state.genAvgSec.music = prevAvg === 0 ? itemDur : (prevAvg * 0.6 + itemDur * 0.4);
+          state.genQueueDone.music = (state.genQueueDone.music || 0) + 1;
+          refreshTabEtas();
           lastPreview = r.parsed;
           lastOutFile = outFile;
         }
@@ -2421,6 +2971,59 @@ async function upscaleStep(src, w, h) {
 // of the app, which is what we want — a single reminder per session
 // is enough.
 let _reEsrganNotified = false;
+
+// Cache the isnetbg availability probe. The IPC is cheap (just a
+// `which` + an fs.stat on the binary + model) but the right-click
+// context menu re-asks the main process every time it's opened, and
+// probing 5 times / second when the user is hammering the menu adds
+// up. One probe per session, refreshed only on user request
+// (e.g. after a future "install isnetbg" flow that calls
+// `resetCache()` on the main side).
+let _isnetbgStatusCache = null;
+async function probeIsnetbgStatus(forceRefresh = false) {
+  if (!forceRefresh && _isnetbgStatusCache) return _isnetbgStatusCache;
+  let st = { available: false, binaryPath: null, modelPath: null, modelPresent: false, version: '', checked: true };
+  try { st = await window.api.isnetbgAvailable(); st.checked = true; }
+  catch (_) { st.checked = false; }
+  _isnetbgStatusCache = st;
+  return st;
+}
+
+// Run the optional isnetbg binary on a local image and return the
+// path to the transparent PNG it wrote. Refuses to do anything when
+// the binary / model is missing — the caller is expected to probe
+// via `probeIsnetbgStatus()` first and show a precise error.
+//
+// We never overwrite the source: the output is written to
+// `<stem>_nobg.png` next to the input (with a numeric suffix on
+// collision). The caller can then delete / rename the source or
+// hand the new path to the preview pane.
+async function removeBackgroundFile(srcPath, opts = {}) {
+  const st = await probeIsnetbgStatus();
+  if (!st.checked) throw new Error('Could not contact background-removal backend.');
+  if (!st.available) {
+    throw new Error('Background removal is not set up. Run `npm run setup` in the project root to download the IS-Net model into ./bin/models/. The Optional add-ons popup (⚙ Settings → Image upscaling → "Re-open add-ons") walks you through every install path.');
+  }
+  if (!st.modelPresent) throw new Error('Background-removal model file missing. Run `npm run setup` (or place isnet-general-use.onnx in ./bin/models/ by hand).');
+
+  const useGpu = (opts.useGpu !== undefined) ? !!opts.useGpu : (state.removeBackgroundUseGpu !== false);
+  const sep = srcPath.includes('\\') ? '\\' : '/';
+  const lastSep = srcPath.lastIndexOf(sep);
+  const dir = lastSep >= 0 ? srcPath.slice(0, lastSep) : '';
+  const lastDot = srcPath.lastIndexOf('.');
+  // Same infix pattern as upscale (`_2x` → `_nobg`). PNG is the
+  // only sensible output for a transparent image; we keep the
+  // input extension only for human-readability (the actual file is
+  // always PNG inside, since the isnetbg binary writes a PNG).
+  const baseName = lastDot > lastSep ? srcPath.slice(lastSep + 1, lastDot) : srcPath.slice(lastSep + 1);
+  const target = await uniqueOutputPath(`${dir}${sep}${baseName}_nobg.png`);
+  const r = await window.api.isnetbgRun(srcPath, target, { useGpu });
+  if (!r || !r.ok) {
+    const msg = (r && r.stderr) || (r && ('isnetbg exited with code ' + r.code)) || 'isnetbg failed';
+    throw new Error(msg);
+  }
+  return r.outputPath || target;
+}
 
 // Upscale an image to multiplier× its original size. If the
 // realesrgan-ncnn-vulkan binary is installed (PATH or ./bin/), we
@@ -2739,6 +3342,77 @@ function showUpscaleSettings() {
     }
     autoCropCb.addEventListener('change', () => setAutoCropVisible(autoCropCb.checked));
 
+    // ---- "Remove background" sub-section ----
+    // Sits BELOW the upscale + auto-crop controls because it's the
+    // last step in the pipeline (generate → upscale → crop →
+    // background removal). The checkbox only saves the boolean
+    // (and gates the whole section); the right-click "Remove
+    // background" item still works regardless of this toggle.
+    // We probe the isnetbg binary in the background so the UI can
+    // show a precise "not installed" hint when needed (rather than
+    // letting the user enable the toggle and only discover the
+    // missing binary at generation time).
+    const removeBgCb = el('input', { type: 'checkbox' });
+    removeBgCb.checked = !!state.removeBackgroundEnabled;
+    const removeBgStatus = el('span', { class: 'meta', style: 'color: var(--fg-2); font-size: 11px; margin-left: 8px;' }, '');
+    const removeBgRow = el('div', { class: 'row' }, [
+      el('label', { class: 'auto-crop-label' }, [removeBgCb, ' ✨ Remove background after upscale']),
+      removeBgStatus,
+    ]);
+    m.appendChild(removeBgRow);
+    m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 11px; margin: 2px 0 0;' },
+      'Runs the optional isnetbg binary on the upscaled (and optionally cropped) image and writes a transparent PNG. The original file is preserved as the input to this step.'));
+    // GPU sub-toggle. Visible only when the main checkbox is on, so
+    // we don't tease a knob the user can't currently act on.
+    const useGpuCb = el('input', { type: 'checkbox' });
+    useGpuCb.checked = state.removeBackgroundUseGpu !== false;
+    const useGpuRow = el('div', { class: 'row auto-crop-only' }, [
+      el('label', { class: 'auto-crop-label' }, [useGpuCb, ' use GPU acceleration (DirectML / CUDA)']),
+    ]);
+    useGpuRow.style.display = removeBgCb.checked ? '' : 'none';
+    m.appendChild(useGpuRow);
+    function setRemoveBgVisible(on) {
+      useGpuRow.style.display = on ? '' : 'none';
+    }
+    removeBgCb.addEventListener('change', () => setRemoveBgVisible(removeBgCb.checked));
+    // Probe the binary in the background and surface a precise
+    // status. We use a small helper so the right-click "Remove
+    // background" action can reuse the same probe + status text.
+    probeIsnetbgStatus().then((st) => {
+      if (!st.checked) return;
+      if (st.available && st.modelPresent) {
+        // Same binary/node disambiguation as the add-ons popup.
+        const isNode = st.version === 'node-onnxruntime';
+        if (isNode) {
+          removeBgStatus.textContent = '(IS-Net Node.js wrapper + model detected)';
+        } else {
+          const v = st.version ? ` v${st.version}` : '';
+          removeBgStatus.textContent = `(isnetbg binary${v} + model detected)`;
+        }
+        removeBgStatus.style.color = 'var(--fg-2)';
+      } else if (st.available && !st.modelPresent) {
+        removeBgStatus.textContent = '(binary installed, model missing — see README)';
+        removeBgStatus.style.color = 'var(--warn, #d9a300)';
+      } else {
+        removeBgStatus.textContent = '(not installed — see README)';
+        removeBgStatus.style.color = 'var(--warn, #d9a300)';
+      }
+    });
+
+    // "Re-open add-ons" link. The full install UI lives in
+    // openOptionalAddons() and is shown as a first-run popup;
+    // this link gives the user a one-click re-entry from the
+    // settings popup without having to dig through the README.
+    // Cached probe is invalidated inside openOptionalAddons
+    // after every install, so the next time the user opens
+    // THIS popup the new status is reflected.
+    const reopenLink = el('button', {
+      class: 'btn-mini',
+      style: 'margin-top: 6px;',
+      onclick: () => openOptionalAddons({ autoOpened: false }),
+    }, '🧩 Re-open add-ons manager…');
+    m.appendChild(reopenLink);
+
     // Save
     const saveBtn = el('button', { class: 'primary' }, 'Save');
     const cancelBtn = el('button', { onclick: close }, 'Cancel');
@@ -2751,10 +3425,15 @@ function showUpscaleSettings() {
         cropAnchorX: anchor.x,
         cropAnchorY: anchor.y,
       };
+      state.removeBackgroundEnabled = !!removeBgCb.checked;
+      state.removeBackgroundUseGpu = !!useGpuCb.checked;
       state.upscaleEnabled = true;
       await scheduleStateSave();
       if (typeof refreshUpscaleCheckboxUI === 'function') refreshUpscaleCheckboxUI();
-      const extra = state.upscaleSettings.autoCrop ? ' + auto-crop' : '';
+      const extras = [];
+      if (state.upscaleSettings.autoCrop) extras.push('auto-crop');
+      if (state.removeBackgroundEnabled) extras.push('remove-background');
+      const extra = extras.length ? ' + ' + extras.join(' + ') : '';
       // The "🔍 Upscale 2×" label in the image tab was updated by
       // a closure inside build(); that closure is long gone by
       // the time the user opens this modal. refreshUpscaleLabel
@@ -3024,6 +3703,41 @@ async function showUpscaleDirect(srcPath) {
     setAutoCropVisible(!!us.autoCrop); // also primes the W/H inputs + target text
     if (us.autoCrop) refreshCropPreview();
 
+    // ---- "Remove background" sub-section for the right-click dialog ----
+    // Pre-checked from state.removeBackgroundEnabled (same default as
+    // the in-tab flow). Lives BELOW the upscale + crop UI so it reads
+    // as the final pipeline step. A status badge next to the checkbox
+    // tells the user whether the binary + model are installed, so they
+    // don't click "Upscale" expecting a transparent result and only
+    // discover the missing binary halfway through.
+    const noBgCb = el('input', { type: 'checkbox' });
+    noBgCb.checked = !!state.removeBackgroundEnabled;
+    const noBgStatus = el('span', { class: 'meta', style: 'color: var(--fg-2); font-size: 11px; margin-left: 8px;' }, '');
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', { class: 'auto-crop-label' }, [noBgCb, ' ✨ Remove background after upscale']),
+      noBgStatus,
+    ]));
+    probeIsnetbgStatus().then((st) => {
+      if (!st.checked) return;
+      if (st.available && st.modelPresent) {
+        // Same binary/node disambiguation as the add-ons popup.
+        const isNode = st.version === 'node-onnxruntime';
+        if (isNode) {
+          noBgStatus.textContent = '(IS-Net Node.js wrapper + model detected)';
+        } else {
+          const v = st.version ? ` v${st.version}` : '';
+          noBgStatus.textContent = `(isnetbg binary${v} + model detected)`;
+        }
+        noBgStatus.style.color = 'var(--fg-2)';
+      } else if (st.available && !st.modelPresent) {
+        noBgStatus.textContent = '(model missing — see README)';
+        noBgStatus.style.color = 'var(--warn, #d9a300)';
+      } else {
+        noBgStatus.textContent = '(not installed)';
+        noBgStatus.style.color = 'var(--warn, #d9a300)';
+      }
+    });
+
     const upscaleBtn = el('button', { class: 'primary' }, 'Upscale');
     const cancelBtn = el('button', { onclick: close }, 'Cancel');
     upscaleBtn.addEventListener('click', async () => {
@@ -3041,8 +3755,18 @@ async function showUpscaleDirect(srcPath) {
         cropAnchorX: anchor.x,
         cropAnchorY: anchor.y,
       };
+      // Persist the background-removal toggle too. The right-click
+      // dialog is the natural place for users to flip this on /
+      // off; making it sticky avoids re-checking the same box on
+      // the next image.
+      state.removeBackgroundEnabled = !!noBgCb.checked;
       state.upscaleEnabled = true;
       upscaleBtn.disabled = true; upscaleBtn.textContent = 'Upscaling…';
+      // `final` is the path to the file we want to preview at the
+      // end of the pipeline. It gets reassigned by the optional
+      // crop + background-removal steps, and is the only file
+      // that should be left on disk for the user to see.
+      let final = null;
       try {
         // Step 1: upscale.
         const upscaled = await upscaleImageFile(srcPath, multiplier);
@@ -3067,21 +3791,38 @@ async function showUpscaleDirect(srcPath) {
           if (anchor.y === 'top')         y = 0;
           else if (anchor.y === 'bottom') y = maxY;
           else                            y = Math.floor(maxY / 2);
-          const final = await cropImageFile(upscaled, x, y, w, h);
+          const cropped = await cropImageFile(upscaled, x, y, w, h);
           // Drop the intermediate (full-upscaled) file — the user
           // asked for the cropped one, not the raw intermediate.
           window.api.fbDelete(upscaled).catch(() => {});
-          toast(`Upscaled ${multiplier}× and cropped to ${w} × ${h} px → ${final}`, 'ok', 4000);
-          await refreshBrowser();
-          if (typeof updatePreviewPane === 'function') {
-            try { previewImageFromFile(final); } catch (_) {}
+          final = cropped;
+        } else {
+          final = upscaled;
+        }
+        // Step 3: optionally remove the background. Non-fatal: a
+        // missing / failed binary keeps the upscaled (or cropped)
+        // file as the deliverable and surfaces a warning toast,
+        // so the user never loses the image they already paid
+        // API credits to generate.
+        if (noBgCb.checked) {
+          upscaleBtn.textContent = 'Removing background…';
+          try {
+            const noBg = await removeBackgroundFile(final);
+            if (noBg !== final) {
+              window.api.fbDelete(final).catch(() => {});
+              final = noBg;
+            }
+            toast(`Upscaled ${multiplier}× + background removed → ${final}`, 'ok', 4500);
+          } catch (e) {
+            console.error('Remove background failed:', e);
+            toast('Background removal failed (kept upscaled image): ' + (e && e.message || e), 'warn', 5000);
           }
         } else {
-          toast(`Upscaled to ${multiplier}× → ${upscaled}`, 'ok', 4000);
-          await refreshBrowser();
-          if (typeof updatePreviewPane === 'function') {
-            try { previewImageFromFile(upscaled); } catch (_) {}
-          }
+          toast(`Upscaled to ${multiplier}× → ${final}`, 'ok', 4000);
+        }
+        await refreshBrowser();
+        if (typeof updatePreviewPane === 'function' && final) {
+          try { previewImageFromFile(final); } catch (_) {}
         }
         // Persist the new upscale settings now that we know the
         // upscale succeeded. (The setting is also updated in-place
@@ -3645,12 +4386,103 @@ function previewImageFromFile(p) {
   // The tab's generation preview is reserved for content that the user
   // just generated. We pre-load the image to grab the natural dimensions
   // so the overlay has the right size info, and so the title hint shows.
+  if (!p) {
+    // Defensive: a null/empty path used to silently render a broken
+    // img with src="" (the <img> onerror fired and the pane got a
+    // tiny invisible placeholder). Reset to the empty state instead
+    // so the user sees the "Click an image" hint again.
+    const content = $('#fb-preview-content');
+    if (content) content.innerHTML = '<div class="preview-pane-empty">Click an image in the file browser to preview it here.</div>';
+    state._lastPreviewPath = null;
+    return;
+  }
+  // If the user clicks the same file twice, the preview is already
+  // showing it — don't waste a re-decode + flicker on the redundant
+  // click. We compare on the file path (the naturalWidth wouldn't
+  // have changed since the file didn't change).
+  if (state._lastPreviewPath === p) return;
+  state._lastPreviewPath = p;
   const url = fileUrl(p);
   const filename = (p || '').split(/[\\/]/).pop() || 'image';
   const preLoad = new Image();
   preLoad.onload = () => updatePreviewPane(url, filename, preLoad.naturalWidth, preLoad.naturalHeight);
   preLoad.onerror = () => updatePreviewPane(url, filename, 0, 0);
   preLoad.src = url;
+}
+
+// Multi-file variant of previewImageFromFile. Used by the image tab's
+// generate handler after a batch (or --n > 1) run completes, so the
+// user can see ALL the generated images at once in the right-side
+// folder-explorer's preview pane. Single-file runs delegate to
+// previewImageFromFile (the one big image looks the same as before).
+//
+// For 1 file: show a single fit-to-pane image (no behaviour change).
+// For N files: divide the pane into N equal-width slots. Each slot
+// shows a small thumbnail + the filename; clicking any thumbnail
+// opens the image overlay at 1:1 mode (same flow as the file browser).
+// The pane scrolls horizontally if there are too many thumbs to fit
+// at the current pane width.
+function previewImagesFromFiles(paths) {
+  const content = $('#fb-preview-content');
+  if (!content) return;
+  if (!Array.isArray(paths) || !paths.length) {
+    previewImageFromFile(null);
+    return;
+  }
+  // Filter out null / empty paths so a single bad file in a batch
+  // doesn't break the whole preview pane.
+  const valid = paths.filter((p) => p && typeof p === 'string');
+  if (!valid.length) {
+    previewImageFromFile(null);
+    return;
+  }
+  if (valid.length === 1) {
+    // Single image → the old behaviour, no subdivision needed.
+    return previewImageFromFile(valid[0]);
+  }
+  // N > 1 → grid of thumbnails. Build the container once, then async-
+  // resolve each path's natural dimensions for the title hint.
+  content.innerHTML = '';
+  const grid = el('div', { class: 'preview-pane-grid' });
+  for (const p of valid) {
+    const filename = (p || '').split(/[\\/]/).pop() || 'image';
+    const url = fileUrl(p) + '?t=' + Date.now();
+    const slot = el('div', { class: 'preview-pane-thumb', title: filename + ' — click to view 1:1' });
+    const img = el('img', { src: url, alt: filename, loading: 'lazy' });
+    const caption = el('div', { class: 'preview-pane-thumb-caption' }, filename);
+    slot.append(img, caption);
+    // Flag the click handler attachment so the slow-disk fallback
+    // below doesn't double-bind (the previous code used
+    // `if (!slot.onclick)`, but addEventListener doesn't write to
+    // `.onclick` — so both the onload path and the setTimeout path
+    // attached a listener, and a single click opened the overlay
+    // twice in a row).
+    let clickBound = false;
+    const bind = (w, h) => {
+      if (clickBound) return;
+      clickBound = true;
+      if (w && h) slot.addEventListener('click', () => openImageOverlay(url, filename, w, h), { once: true });
+      else slot.addEventListener('click', () => openImageOverlay(url, filename), { once: true });
+    };
+    // Resolve the natural size async so the overlay can show it.
+    const probe = new Image();
+    probe.onload = () => {
+      slot.title = `${filename} (${probe.naturalWidth}×${probe.naturalHeight}) — click to view 1:1`;
+      bind(probe.naturalWidth, probe.naturalHeight);
+    };
+    probe.onerror = () => bind(0, 0);
+    probe.src = url;
+    // Fallback: if the probe never resolves (slow disk), still allow a
+    // click so the user isn't locked out of the overlay.
+    setTimeout(() => bind(0, 0), 3000);
+    grid.appendChild(slot);
+  }
+  content.appendChild(grid);
+  // Below the grid, a small summary line so the user knows how many
+  // images they got (and the click hint).
+  const summary = el('div', { class: 'preview-pane-summary' },
+    `${valid.length} image${valid.length === 1 ? '' : 's'} — click any thumbnail to open at 1:1.`);
+  content.appendChild(summary);
 }
 
 // Render the file-browser image into the new Picture preview pane.
@@ -3817,16 +4649,20 @@ function showItemContextMenu(it, x, y) {
 
     const row1 = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => { close(); await openItem(it); } }, 'Open / Preview'))]);
     const row2 = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => { close(); await window.api.fbReveal(it.path); } }, 'Reveal in Explorer'))]);
-    // Image-pipeline items: Upscale / Crop / Convert. Only show for
-    // supported image types, in the order the user expects (transform
-    // first, then format).
+    // Image-pipeline items: Upscale / Crop / Convert / Remove
+    // background. Only show for supported image types, in the order
+    // the user expects (transform first, then format, then the
+    // transparency tool). The "Remove background" action is always
+    // shown when the binary is available, and surfaces a precise
+    // install hint when it isn't (no silent no-op).
     let nextRow = 3;
     const rows = [];
     if (isImage) {
       const rU = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); showUpscaleDirect(it.path); } }, '🔍 Upscale…'))]);
       const rC = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); showCropOverlay(it.path); } }, '✂ Crop…'))]);
       const rF = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); showConvertOverlay(it.path); } }, '⇄ Convert format…'))]);
-      rows.push(rU, rC, rF);
+      const rB = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); runRemoveBackgroundOnItem(it); } }, '✨ Remove background'))]);
+      rows.push(rU, rC, rF, rB);
     }
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); fbClipboardCopy([it.path]); } }, 'Copy'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); fbClipboardCut([it.path]); } }, 'Cut'))]));
@@ -3838,6 +4674,54 @@ function showItemContextMenu(it, x, y) {
     const footer = el('div', { class: 'footer' }, el('button', { class: 'btn-mini', onclick: close }, 'Close'));
     m.appendChild(footer);
   });
+}
+
+// Standalone "Remove background" action triggered by the folder
+// browser's right-click context menu. Unlike the in-tab flow
+// (which is gated on the upscaling popup's checkbox) and the
+// right-click "Upscale" dialog (which can chain upscale →
+// crop → background removal in one step), this is a single-shot
+// "drop the alpha, write <name>_nobg.png next to it" — the user
+// picks an existing image, the wrapper runs, the result appears
+// in the preview pane + the file browser.
+//
+// We pre-flight the binary / model probe so the user sees a
+// precise error message ("binary not installed" vs "model
+// missing") instead of a generic failure toast.
+async function runRemoveBackgroundOnItem(it) {
+  let st = await probeIsnetbgStatus();
+  if (!st.checked) {
+    toast('Could not contact background-removal backend.', 'err', 5000);
+    return;
+  }
+  if (!st.available) {
+    toast('Background removal not set up. Run "npm run setup" to download the IS-Net model, or open the add-ons manager (⚙ Settings → Image upscaling → Re-open add-ons).', 'err', 8000);
+    return;
+  }
+  if (!st.modelPresent) {
+    toast('isnetbg model file missing — drop isnet-general-use.onnx into ./bin/models/.', 'err', 6000);
+    return;
+  }
+  // Show a brief progress toast so the user knows the action was
+  // received. The actual binary run can take a few seconds on CPU
+  // (longer on large images), and the binary doesn't stream
+  // progress — so we rely on a single "Working…" toast and then a
+  // final success / failure toast.
+  setStatus('Removing background…', true);
+  toast('Removing background…', 'info', 2000);
+  try {
+    const out = await removeBackgroundFile(it.path);
+    setStatus('Background removed.', false);
+    toast(`Background removed → ${out}`, 'ok', 4000);
+    try { await refreshBrowser(); } catch (_) {}
+    if (typeof previewImageFromFile === 'function') {
+      try { previewImageFromFile(out); } catch (_) {}
+    }
+  } catch (e) {
+    console.error('Remove background failed:', e);
+    setStatus('Background removal failed.', false);
+    toast('Background removal failed: ' + (e && e.message || e), 'err', 6000);
+  }
 }
 
 // Format a mtimeMs timestamp as a human-readable local string.
@@ -3880,7 +4764,15 @@ async function promptMove(it) {
   const dest = await window.api.pickFolder();
   if (!dest) return;
   const r = await window.api.fbMove(it.path, dest);
-  if (!r.ok) toast(r.error, 'err'); else { toast('Moved.', 'ok'); await refreshBrowser(); }
+  if (!r.ok) toast(r.error, 'err'); else {
+    toast('Moved.', 'ok');
+    // Same as confirmDelete: if the moved file was being previewed,
+    // the preview pane now has a broken file:// URL. Clear it.
+    if (!it.isDir && state._selected && state._selected.path === it.path) {
+      previewImageFromFile(null);
+    }
+    await refreshBrowser();
+  }
 }
 
 async function confirmDelete(it) {
@@ -3893,6 +4785,13 @@ async function confirmDelete(it) {
     ok.addEventListener('click', async () => {
       const r = await window.api.fbDelete(it.path);
       if (!r.ok) toast(r.error, 'err'); else { toast('Deleted.', 'ok'); await refreshBrowser(); }
+      // If the deleted file was the one being previewed, clear the
+      // preview pane — the previous code left a broken <img> with an
+      // invalid file:// URL, which Chromium would log as a console
+      // error every time the user opened a different file.
+      if (!it.isDir && state._selected && state._selected.path === it.path) {
+        previewImageFromFile(null);
+      }
       close();
     });
     m.appendChild(el('div', { class: 'footer' }, [cancel, ok]));
@@ -4144,8 +5043,14 @@ function showRealesrganSettings() {
     // re-runs the probe.
     const statusText = el('div', { class: 're-status' }, 'Detecting…');
     const reBtn = el('button', { class: 'btn-mini' }, 'Re-detect');
+    // Status row also carries a "Download & install" button so the
+    // "Not found" branch is one click away, not a README round-trip.
+    // We keep the button hidden once the binary is detected (no point
+    // offering a re-download) but visible otherwise.
+    const installBtnStatus = el('button', { class: 'btn-mini re-install re-install-inline' }, 'Download & install');
+    installBtnStatus.style.display = 'none';
     m.appendChild(el('div', { class: 'row' }, [
-      el('label', {}, 'Real-ESRGAN status'), statusText, reBtn,
+      el('label', {}, 'Real-ESRGAN status'), statusText, installBtnStatus, reBtn,
     ]));
 
     // Model selector — same four canonical model names as the
@@ -4177,13 +5082,22 @@ function showRealesrganSettings() {
           statusText.textContent = 'Detected: ' + (r.binaryPath || '') +
             (r.version ? '  (v' + r.version + ')' : '');
           statusText.style.color = 'var(--success)';
+          // Binary is already present — no point offering another
+          // download. Re-detect is still available.
+          installBtnStatus.style.display = 'none';
         } else {
-          statusText.textContent = 'Not found. Download realesrgan-ncnn-vulkan and drop the binary into ./bin/ (or onto PATH). See README for the link.';
+          // The install path is one click away — say so. Telling the
+          // user to "see the README" made the previous version feel
+          // like a dead end, even though the button was on the same
+          // screen.
+          statusText.textContent = 'Not found. Click "Download & install" to add it to ./bin/ automatically.';
           statusText.style.color = 'var(--fg-2)';
+          installBtnStatus.style.display = '';
         }
       } catch (e) {
         statusText.textContent = 'Probe failed: ' + (e.message || e);
         statusText.style.color = 'var(--danger)';
+        installBtnStatus.style.display = '';
       }
     }
     reBtn.addEventListener('click', () => { refreshStatus(); });
@@ -4196,9 +5110,17 @@ function showRealesrganSettings() {
     // from "Not found" → "Detected: .../bin/realesrgan-ncnn-vulkan".
     const installBtn = el('button', { class: 'btn-mini re-install' }, 'Download Real-ESRGAN');
     const installProgress = el('div', { class: 're-progress' });
-    installBtn.addEventListener('click', async () => {
+    installProgress.style.display = 'none';
+    installProgress.style.color = 'var(--fg-2)';
+    installProgress.style.fontSize = '12px';
+    // Shared install handler so the inline button next to the status
+    // row AND the row below both trigger the same flow. Without this
+    // the two buttons would have to duplicate the progress-wiring
+    // code, and a future bug-fix to one wouldn't reach the other.
+    async function runInstall() {
       installBtn.disabled = true;
       reBtn.disabled = true;
+      installBtnStatus.disabled = true;
       installProgress.style.display = '';
       installProgress.textContent = 'Starting download…';
       const offProgress = window.api.onRealesrganDownloadProgress((data) => {
@@ -4223,6 +5145,10 @@ function showRealesrganSettings() {
         if (r && r.ok) {
           installProgress.textContent = 'Installed to ' + (r.binDir || './bin') + '. Re-detecting…';
           await refreshStatus();
+          // After success, the inline button hides itself (handled
+          // by refreshStatus). The dedicated row below can stay
+          // around as a "reinstall" affordance in case the user
+          // later deletes ./bin/realesrgan-ncnn-vulkan manually.
         } else {
           installProgress.textContent = 'Download failed: ' + ((r && r.error) || 'unknown');
           installProgress.style.color = 'var(--danger)';
@@ -4234,15 +5160,15 @@ function showRealesrganSettings() {
       } finally {
         installBtn.disabled = false;
         reBtn.disabled = false;
+        installBtnStatus.disabled = false;
       }
-    });
+    }
+    installBtn.addEventListener('click', runInstall);
+    installBtnStatus.addEventListener('click', runInstall);
     const installRow = el('div', { class: 'row' }, [
       el('label', {}, 'Install (one-click)'),
       el('div', { style: 'display: flex; gap: 6px; align-items: center;' }, [installBtn, installProgress]),
     ]);
-    installProgress.style.display = 'none';
-    installProgress.style.color = 'var(--fg-2)';
-    installProgress.style.fontSize = '12px';
     m.appendChild(installRow);
 
     m.appendChild(el('div', { class: 'footer' }, [
@@ -4803,7 +5729,7 @@ async function startBatchGen(tabKey) {
   const elapsed = el('div', { class: 'batch-overlay-elapsed' }, '');
   const log = el('div', { class: 'batch-overlay-log' });
   const stopBtn = el('button', { class: 'danger' }, '■ Stop batch');
-  stopBtn.addEventListener('click', () => { _batchAbort = true; stopBtn.disabled = true; stopBtn.textContent = 'Stopping…'; });
+  stopBtn.addEventListener('click', () => { abort.cancel = true; stopBtn.disabled = true; stopBtn.textContent = 'Stopping…'; });
   overlay.append(counter, currentPrompt, elapsed, log, stopBtn);
   preview.appendChild(overlay);
   const t0 = Date.now();
@@ -5076,6 +6002,14 @@ TABS.video = {
       try { outDir = await ensureSubDir('video'); }
       catch (e) { toast('No output directory set. Open Settings.', 'err'); return; }
       const slug = slugify(promptText).slice(0, 60) || 'video';
+      // Total assets this run will produce. The per-tab ETA timer reads
+      // this from state.genQueueSize[tabKey] to compute a "remaining
+      // time for the whole batch" estimate that ticks down as each
+      // variant completes.
+      if (!state.genQueueSize) state.genQueueSize = { image: 0, speech: 0, music: 0, video: 0 };
+      if (!state.genQueueDone) state.genQueueDone = { image: 0, speech: 0, music: 0, video: 0 };
+      state.genQueueSize.video = variantsCount;
+      state.genQueueDone.video = 0;
       const cancel = armGenBtnWithCancel(genBtn, 'Generate');
       let allOk = true;
       let lastPreview = null;
@@ -5084,6 +6018,7 @@ TABS.video = {
       try {
         for (let v = 1; v <= variantsCount; v++) {
           if (cancel.wasCancelled()) break;
+          const itemStart = Date.now();
           const args = ['video', 'generate'];
           args.push('--prompt', promptText);
           appendFlag(args, model.input);
@@ -5122,6 +6057,15 @@ TABS.video = {
             allOk = false;
             break;
           }
+          // Update the per-item average + advance the queue counter so
+          // the ETA ticks down per item. See the image-tab comment
+          // for the full rationale.
+          const itemDur = (Date.now() - itemStart) / 1000;
+          if (!state.genAvgSec) state.genAvgSec = {};
+          const prevAvg = state.genAvgSec.video || 0;
+          state.genAvgSec.video = prevAvg === 0 ? itemDur : (prevAvg * 0.6 + itemDur * 0.4);
+          state.genQueueDone.video = (state.genQueueDone.video || 0) + 1;
+          refreshTabEtas();
           lastPreview = r.parsed;
           lastOutFile = outFile;
         }
@@ -5330,9 +6274,12 @@ async function init() {
     previewClearBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const content = $('#fb-preview-content');
-      if (!content) return;
-      content.innerHTML = '<div class="preview-pane-empty">Click an image in the file browser to preview it here.</div>';
+      // Use the same path as previewImageFromFile(null) so the
+      // _lastPreviewPath cache is reset and the next click on the
+      // same file re-renders the preview (otherwise the dedup in
+      // previewImageFromFile would skip the re-render and the pane
+      // would stay empty after the user toggled clear → click).
+      previewImageFromFile(null);
     });
   }
 
@@ -5382,6 +6329,22 @@ async function init() {
   if (typeof savedState.realesrganModel === 'string' && savedState.realesrganModel.trim()) {
     state.realesrganModel = savedState.realesrganModel.trim().slice(0, 64);
   }
+  // Restore the "don't ask about Real-ESRGAN again" flag. Without
+  // this restore, a user who clicked "Don't ask again" yesterday
+  // would be re-prompted on every launch.
+  if (savedState.realesrganFirstRunDismissed === true) {
+    state.realesrganFirstRunDismissed = true;
+  }
+  // Restore the "remove background on generate" toggle + GPU
+  // preference. Both are booleans; src/state.js sanitises them on
+  // write so a corrupted state.json cannot turn them into strings
+  // that would later get concatenated into the binary's argv.
+  if (typeof savedState.removeBackgroundEnabled === 'boolean') {
+    state.removeBackgroundEnabled = savedState.removeBackgroundEnabled;
+  }
+  if (typeof savedState.removeBackgroundUseGpu === 'boolean') {
+    state.removeBackgroundUseGpu = savedState.removeBackgroundUseGpu;
+  }
   const startTab = (savedState.currentTab && ['image','speech','music','video'].includes(savedState.currentTab))
     ? savedState.currentTab : 'image';
   for (const tabKey of ['image', 'speech', 'music', 'video']) {
@@ -5390,6 +6353,19 @@ async function init() {
     applyTabState(tabKey, state.tabSettings[tabKey] || {});
     setupTabAutosave(tabKey);
   }
+  // Sync every per-tab "Target file prefix" input to the global
+  // state.filePrefix. The per-tab saved value (in state.tabSettings)
+  // can be stale if the user changed the prefix on one tab without
+  // re-saving all four, or if a previous app version didn't persist
+  // the global filePrefix at all. The global is the source of truth,
+  // so we always re-apply it after every tab has been built. We do
+  // this OUTSIDE the per-tab applyTabState so the per-tab value can't
+  // race-override the global on the next input event.
+  suppressStateSave(() => {
+    for (const inp of document.querySelectorAll('input.file-prefix-input')) {
+      inp.value = state.filePrefix || '';
+    }
+  });
 
   // Load batches
   state.batches = await window.api.batchesGet();
@@ -5475,20 +6451,25 @@ function armGenBtnWithCancel(genBtn, label) {
       genBtn.classList.remove('danger');
       genBtn.textContent = origLabel;
       genBtn.disabled = false;
-      // Update the per-tab average (only on successful, non-cancelled runs).
-      // Always clear the start time so a later ETA tick doesn't read a
-      // stale value (the previous code only nulled it on success, which
-      // meant a cancelled run kept its start timestamp and the ETA timer
-      // would briefly show "elapsed: 999s" until it auto-cleared).
-      if (tabKey && state.genStartMs && state.genStartMs[tabKey]) {
-        if (!cancelled) {
-          const dur = (Date.now() - state.genStartMs[tabKey]) / 1000;
-          if (!state.genAvgSec) state.genAvgSec = {};
-          const prev = state.genAvgSec[tabKey] || 0;
-          // Exponential moving average, alpha=0.4 — recent runs weighted higher.
-          state.genAvgSec[tabKey] = prev === 0 ? dur : (prev * 0.6 + dur * 0.4);
-        }
+      // Clear the start time so a later ETA tick doesn't read a stale
+      // value. The per-tab average is now updated PER ITEM inside the
+      // gen handler's variants loop (so the ETA ticks down more
+      // accurately as the run progresses). The previous behaviour of
+      // writing the total run duration into the EMA here was wrong
+      // for batch runs: a 5-variant run with 30s items would compute
+      // dur=150 and then merge it as if it were a single item's time,
+      // so the EMA would spike to 78s (0.6*30 + 0.4*150) at the end
+      // of every batch and only slowly recover over the next few runs.
+      if (tabKey && state.genStartMs) {
         state.genStartMs[tabKey] = null;
+      }
+      // Clear the queue progress so a later ETA tick (or the next
+      // generation's first tick) doesn't read a stale "0/5 done" from
+      // a previous batch. _formatTabEta treats missing values as 0
+      // and falls back to the old single-item math — safe.
+      if (tabKey) {
+        if (state.genQueueSize) state.genQueueSize[tabKey] = 0;
+        if (state.genQueueDone) state.genQueueDone[tabKey] = 0;
       }
       // Only clear the busy flag if it still points to this tab.
       if (state.generating === tabKey) state.generating = null;
@@ -5548,7 +6529,12 @@ function classifyMmxError(r, msg) {
   return 'unknown';
 }
 function installKeyboardShortcuts() {
-  document.addEventListener('keydown', (e) => {
+  // The keydown handler is async because the Ctrl+R branch awaits
+  // refreshQuota() so the toast reflects success / failure. Keeping
+  // the rest of the handler non-async would silently swallow the
+  // await (a SyntaxError at parse time), so we mark the whole
+  // listener async.
+  document.addEventListener('keydown', async (e) => {
     // Skip when typing in a non-textarea field (so Ctrl+A etc. works in inputs)
     const inField = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT');
     const cmd = e.ctrlKey || e.metaKey;
@@ -5586,9 +6572,22 @@ function installKeyboardShortcuts() {
       if (s) { s.focus(); s.select(); e.preventDefault(); }
       return;
     }
-    if (cmd && (e.key === 'r' || e.key === 'R')) {
-      // Refresh quota
-      refreshQuota(); toast('Quota refreshed.', 'ok', 1500); e.preventDefault(); return;
+    if (cmd && (e.key === 'r' || e.key === 'R') && !inField) {
+      // Refresh quota. Don't fire from inside an input (the user is
+      // probably editing a prompt, not asking for a quota refresh).
+      // Await the result so the toast reflects success / failure —
+      // the previous code always toasted "Quota refreshed." which
+      // lied when the API was down.
+      e.preventDefault();
+      const quotaValue = $('#quota-value');
+      if (quotaValue) quotaValue.innerHTML = '<span class="spinner"></span>';
+      try {
+        await refreshQuota();
+        toast('Quota refreshed.', 'ok', 1500);
+      } catch (e) {
+        toast('Quota refresh failed: ' + (e && e.message || e), 'err', 4000);
+      }
+      return;
     }
   });
 }
@@ -5677,6 +6676,15 @@ async function saveAllStates() {
     // Real-ESRGAN model name (defaults to the general-purpose 4×
     // BSD-3 model).
     realesrganModel: state.realesrganModel || 'realesrgan-x4plus',
+    // "Don't ask about Real-ESRGAN again" — set by the first-run
+    // popup so the dismissal survives a restart.
+    realesrganFirstRunDismissed: !!state.realesrganFirstRunDismissed,
+    // "Remove background on generate" toggle + GPU preference. Both
+    // are plain booleans; the actual binary spawn happens in
+    // upscaleImageFile (when enabled) or via the explicit
+    // right-click "Remove background" action.
+    removeBackgroundEnabled: !!state.removeBackgroundEnabled,
+    removeBackgroundUseGpu: state.removeBackgroundUseGpu !== false,
   }).catch(() => {});
 }
 function setupTabAutosave(tabKey) {
