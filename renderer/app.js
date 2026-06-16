@@ -722,16 +722,51 @@ function buildFilePrefixRow() {
     }
     scheduleStateSave();
   });
+  // +1 button: scan the input value for the rightmost run of digits
+  // and increment it by 1, padding with leading zeros to preserve
+  // the original width. The rightmost match (not necessarily at the
+  // end of the string) means the user can use prefixes like
+  // "BildserieFürSpiel_Reihe1_" and have the trailing series counter
+  // bump. The regex `(\d+)(?=\D*$)` matches the last digit run that
+  // is followed by zero or more non-digits to the end-of-string
+  // anchor; e.g. for "Reihe10_v2" it matches "10", for "abc" nothing.
+  // When no number is present we surface a hint toast rather than
+  // silently doing nothing.
+  const plusOneBtn = el('button', {
+    class: 'btn-mini plus-one-btn',
+    type: 'button',
+    title: 'Increment the rightmost number in the prefix by 1',
+  }, '+1');
+  plusOneBtn.addEventListener('click', () => {
+    const val = input.value;
+    const match = val.match(/(\d+)(?=\D*$)/);
+    if (!match) {
+      toast('No number in the prefix to increment. Add a number (e.g. "..._Reihe1_") first.', 'warn', 3500);
+      return;
+    }
+    const numStr = match[1];
+    const num = parseInt(numStr, 10);
+    const newNum = num + 1;
+    // Keep the leading-zero padding so "001" → "002", not "2".
+    const newNumStr = String(newNum).padStart(numStr.length, '0');
+    const newVal = val.substring(0, match.index) + newNumStr + val.substring(match.index + numStr.length);
+    input.value = newVal;
+    // Re-fire the input event so the four mirrored inputs across the
+    // tabs stay in sync AND state.filePrefix + state.json are updated
+    // (the input listener above does both).
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
   return el('div', { class: 'row file-prefix-row' }, [
     el('label', {}, [
       'Target file prefix',
       el('span', {
         class: 'help',
-        'data-help': 'Prepended to every generated file name. Empty = original name. Example: prefix "ZYX" turns abc123.jpg into ZYXabc123.jpg.',
-        title: 'Prepended to every generated file name. Empty = original name. Example: prefix "ZYX" turns abc123.jpg into ZYXabc123.jpg.',
+        'data-help': 'Prepended to every generated file name. Empty = original name. Example: prefix "ZYX" turns abc123.jpg into ZYXabc.jpg.',
+        title: 'Prepended to every generated file name. Empty = original name. Example: prefix "ZYX" turns abc123.jpg into ZYXabc.jpg.',
       }, '?'),
     ]),
     input,
+    plusOneBtn,
   ]);
 }
 
@@ -1307,7 +1342,7 @@ TABS.image = {
       { kind: 'textarea', value: this.prefilled, help: 'The description of the image to generate. Sent as --prompt. Max ~1500 chars (mmx image API limit).' });
     const styleRow = buildStyleRow('image', 'Select a style preset. Its value is prepended (with a comma) to your manual prompt before being sent to mmx.');
     const stylePreview = buildStylePreviewBlock();
-    const tabState = { previewEl: stylePreview, selEl: styleRow.sel, manualEl: prompt.input };
+    const tabState = { previewEl: stylePreview._previewEl, selEl: styleRow.sel, manualEl: prompt.input };
     const updatePreview = () => updateStylePreview(tabState);
     styleRow.sel.addEventListener('change', updatePreview);
     prompt.input.addEventListener('input', updatePreview);
@@ -1662,26 +1697,18 @@ TABS.image = {
           lastOutFile = outFile;
           if (!useOutDir) outFiles.push(outFile);
         }
-      } catch (e) {
-        threw = e;
-        allOk = false;
-        console.error('Image generation threw:', e);
-        toast('Generation error: ' + (e && e.message || String(e)), 'err', 6000);
-      } finally {
-        cancel.cleanup();
-        setStatus('Ready', false);
-        // Always refresh — even on cancel/failure, partial files may exist
-        // on disk and the user should see them.
-        try { await refreshBrowser(); } catch {}
-        try { await refreshQuota(); } catch {}
-      }
-      if (threw) return;
-      if (cancel.wasCancelled()) {
-        preview.innerHTML = '<div class="empty">Generation cancelled.</div>';
-        toast('Cancelled.', 'warn');
-        return;
-      }
-      if (allOk && lastOutFile) {
+        // Post-processing INSIDE the try block — the previous layout ran
+        // the upscale + crop + background-removal AFTER the finally, which
+        // meant cancel.cleanup() had already restored the Generate button
+        // to its idle state and cleared state.generating. The post-
+        // processing then ran for several seconds under a "Generate"
+        // button that the user could click again, racing the still-
+        // running upscale and — when they did — the new click would
+        // arm another cancel handler while the old run's pending
+        // promises leaked. Now the button stays as "Cancel" and the
+        // state.generating guard stays set until every post-processing
+        // step has completed, matching what the UI promises.
+        if (allOk && lastOutFile && !cancel.wasCancelled()) {
         // If the Upscale checkbox is on, run the generated image through
         // the local upscaler after the mmx call returns. The preview then
         // shows the upscaled version, and the file browser gets the
@@ -1922,6 +1949,25 @@ TABS.image = {
               : 'Generation failed. See preview for details.';
         toast(shortMsg, 'warn', 4000);
       }
+      } catch (e) {
+        threw = e;
+        allOk = false;
+        console.error('Image generation threw:', e);
+        toast('Generation error: ' + (e && e.message || String(e)), 'err', 6000);
+      } finally {
+        cancel.cleanup();
+        setStatus('Ready', false);
+        // Always refresh — even on cancel/failure, partial files may exist
+        // on disk and the user should see them.
+        try { await refreshBrowser(); } catch {}
+        try { await refreshQuota(); } catch {}
+      }
+      if (threw) return;
+      if (cancel.wasCancelled()) {
+        preview.innerHTML = '<div class="empty">Generation cancelled.</div>';
+        toast('Cancelled.', 'warn');
+        return;
+      }
       if (allOk) {
         toast(variantsCount > 1
           ? `Image generated. ${variantsCount} variants saved.`
@@ -1942,7 +1988,7 @@ TABS.speech = {
       { kind: 'textarea', value: this.prefilled, help: 'What the voice will say. Max 10 000 chars.' });
     const styleRow = buildStyleRow('speech', 'Select a style preset. Its value is prepended (with a comma) to your text before being sent to mmx. Useful for narration tone, language hints, etc.');
     const stylePreview = buildStylePreviewBlock();
-    const tabState = { previewEl: stylePreview, selEl: styleRow.sel, manualEl: text.input };
+    const tabState = { previewEl: stylePreview._previewEl, selEl: styleRow.sel, manualEl: text.input };
     const update = () => updateStylePreview(tabState);
     styleRow.sel.addEventListener('change', update);
     text.input.addEventListener('input', update);
@@ -2215,7 +2261,7 @@ TABS.music = {
       { kind: 'textarea', value: this.prefilled, help: 'Style/genre/mood description. Set length here (e.g. "30 seconds", "2 minutes"). Max 5 min. Max 2000 chars combined with structured flags.' });
     const styleRow = buildStyleRow('music', 'Select a style preset. Its value is prepended (with a comma) to your music prompt before being sent to mmx. Use it for repeated genre/mood tags.');
     const stylePreview = buildStylePreviewBlock();
-    const tabState = { previewEl: stylePreview, selEl: styleRow.sel, manualEl: prompt.input };
+    const tabState = { previewEl: stylePreview._previewEl, selEl: styleRow.sel, manualEl: prompt.input };
     // extraPrefix is filled in AFTER the vocal-mode `mode` row is defined below.
     let extraPrefix = () => '';
     const updatePreview = () => updateStylePreview(tabState, extraPrefix());
@@ -5885,7 +5931,7 @@ TABS.video = {
       { kind: 'textarea', value: this.prefilled, help: 'Describe the scene + motion. Up to 2000 chars. Use [Push in], [Pan left], [Static shot] etc. to control camera (15 commands supported).' });
     const styleRow = buildStyleRow('video', 'Select a style preset. Its value is prepended (with a comma) to your video prompt before being sent to mmx.');
     const stylePreview = buildStylePreviewBlock();
-    const tabState = { previewEl: stylePreview, selEl: styleRow.sel, manualEl: prompt.input };
+    const tabState = { previewEl: stylePreview._previewEl, selEl: styleRow.sel, manualEl: prompt.input };
     const updatePreview = () => updateStylePreview(tabState);
     styleRow.sel.addEventListener('change', updatePreview);
     prompt.input.addEventListener('input', updatePreview);
@@ -6739,7 +6785,17 @@ function buildStyleRow(tabKey, helpText) {
   return { row, sel };
 }
 function buildStylePreviewBlock() {
-  return el('div', { class: 'style-preview' });
+  // Returns the outer <details> wrapper. The inner div is what
+  // updateStylePreview() writes into — callers must use the inner
+  // div as `previewEl` so the summary label doesn't get clobbered
+  // when the prompt changes.
+  const inner = el('div', { class: 'style-preview' });
+  const wrap = el('details', { class: 'style-preview-details' }, [
+    el('summary', {}, 'Full prompt preview'),
+    inner,
+  ]);
+  wrap._previewEl = inner;
+  return wrap;
 }
 function updateStylePreview(tab, extraPrefix = '') {
   // tab = { previewEl, selEl, manualEl }

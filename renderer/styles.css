@@ -338,8 +338,10 @@ label { color: var(--fg); font-weight: 500; }
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
-.row { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px; }
+.row { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.row > label { font-size: 11px; }
+.row input[type="text"], .row input[type="number"], .row select { font-size: 12px; padding: 3px 6px; }
 /* The "Target file prefix" row is shown on every tab's Parameters
    section above the per-field grid. Give it a faint background and a
    little extra padding so it reads as a "this is a global setting,
@@ -365,8 +367,16 @@ label { color: var(--fg); font-weight: 500; }
   flex: 1;
   min-width: 0;
 }
+.row.file-prefix-row > .plus-one-btn {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  padding: 2px 8px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
 .row > label {
-  font-size: 12px; color: var(--fg);
+  font-size: 11px; color: var(--fg);
   display: flex; align-items: center; gap: 5px;
   font-weight: 600;
 }
@@ -405,22 +415,35 @@ label { color: var(--fg); font-weight: 500; }
 .batch-start:hover { background: var(--accent-2); border-color: var(--accent-2); }
 
 /* ========== Style-preview ========== */
-.style-preview {
-  margin-top: 8px;
-  padding: 8px 10px;
-  background: var(--bg-2);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  color: var(--fg-2);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 160px;
-  overflow: auto;
-  line-height: 1.5;
-}
+.style-preview { margin-top: 8px; padding: 8px 10px; background: var(--bg-2); border: 1px solid var(--border-2); border-radius: var(--radius-sm); font-size: 12px; color: var(--fg-2); white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; line-height: 1.5; }
 .style-preview .prefix { color: var(--accent); font-weight: 600; }
 .style-preview .empty { color: var(--fg-3); font-style: italic; }
+/* Collapsible wrapper around .style-preview. Default: collapsed — the
+   full prompt preview takes vertical space the user doesn't always
+   want, so they expand the details element on demand. The summary
+   label is muted to read as a "click to inspect" affordance, not
+   an active button. */
+.style-preview-details { margin-top: 6px; }
+.style-preview-details > summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--fg-3);
+  padding: 2px 4px;
+  user-select: none;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.style-preview-details > summary::before {
+  content: '▸';
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 0.12s;
+}
+.style-preview-details[open] > summary::before { transform: rotate(90deg); }
+.style-preview-details[open] > summary { color: var(--fg-2); }
+.style-preview-details > summary:hover { color: var(--fg); }
 
 /* ========== Prompt character counter ==========
    Small "X / 2000" readout placed right under the prompt + style preview.
@@ -477,13 +500,20 @@ label { color: var(--fg); font-weight: 500; }
   color: var(--fg-3);
 }
 
-/* ========== Preview area ========== */
+/* ========== Preview area ==========
+   The left-side preview used to hold the generated image (now lives
+   in the right-side folder-explorer's preview pane), so this
+   element only needs to carry a short status line during a run.
+   Compact, one-line, aligned to the bottom of the action row.
+*/
 .preview {
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px 14px;
-  min-height: 200px;
+  padding: 4px 10px;
+  min-height: 0;
+  font-size: 12px;
+  line-height: 1.4;
 }
 .preview img, .preview video {
   max-width: 100%; max-height: 60vh; display: block; margin: 0 auto;
@@ -505,7 +535,7 @@ label { color: var(--fg); font-weight: 500; }
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 .preview audio { width: 100%; }
-.preview .empty { color: var(--fg-2); text-align: center; padding: 24px; }
+.preview .empty { color: var(--fg-2); text-align: left; padding: 2px 0; }
 /* Error preview (generation failed): show the message + a Retry button
    so the user can re-trigger the same generation without re-entering
    parameters. */
