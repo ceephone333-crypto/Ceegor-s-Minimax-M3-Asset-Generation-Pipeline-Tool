@@ -41,7 +41,14 @@ const state = {
   // upscaled locally (Canvas API) after the mmx call returns, using the
   // settings below. Persisted to state.json so it survives restarts.
   upscaleEnabled: false,
-  upscaleSettings: { multiplier: 2 },
+  // The auto-crop options are now part of the upscale settings — they
+  // live here so the Add button in the image tab can capture them as
+  // part of the batch entry snapshot, and the image tab's generate
+  // handler can apply them after the upscale. The ⚙ Settings →
+  // Upscale Settings popup exposes all five fields (multiplier,
+  // autoCrop, cropWidth, cropHeight, cropAnchorX/Y) so the user can
+  // configure everything in one place.
+  upscaleSettings: { multiplier: 2, autoCrop: false, cropWidth: 0, cropHeight: 0, cropAnchorX: 'center', cropAnchorY: 'center' },
   // Per-tab generation state used for status dots and the batch runner.
   // "running" while mmx is in flight, "done" after success, "idle" otherwise.
   // Green dot is only shown when the tab is not the active one.
@@ -953,6 +960,36 @@ TABS.image = {
             preview.innerHTML = `<div class="empty"><span class="spinner"></span> Upscaling ${state.upscaleSettings.multiplier}×…</div>`;
             displayFile = await upscaleImageFile(lastOutFile, state.upscaleSettings.multiplier);
             toast(`Upscaled to ${state.upscaleSettings.multiplier}× → ${displayFile}`, 'ok', 3000);
+            // If auto-crop is also on, apply it now. The flow mirrors
+            // showUpscaleDirect: load the upscaled file, compute the
+            // crop frame at the chosen anchor, write the cropped file
+            // and delete the intermediate.
+            if (state.upscaleSettings.autoCrop) {
+              const a = state.upscaleSettings;
+              const upImg = await loadImageFromFile(displayFile);
+              const uW = upImg.naturalWidth;
+              const uH = upImg.naturalHeight;
+              const wantW = a.cropWidth || uW;
+              const wantH = a.cropHeight || uH;
+              const w = Math.min(wantW, uW);
+              const h = Math.min(wantH, uH);
+              const maxX = uW - w;
+              const maxY = uH - h;
+              let x, y;
+              if (a.cropAnchorX === 'left')        x = 0;
+              else if (a.cropAnchorX === 'right') x = maxX;
+              else                                x = Math.floor(maxX / 2);
+              if (a.cropAnchorY === 'top')         y = 0;
+              else if (a.cropAnchorY === 'bottom') y = maxY;
+              else                                y = Math.floor(maxY / 2);
+              setStatus(`Cropping to ${w} × ${h}…`, true);
+              preview.innerHTML = `<div class="empty"><span class="spinner"></span> Cropping to ${w} × ${h}…</div>`;
+              const cropped = await cropImageFile(displayFile, x, y, w, h);
+              // Drop the intermediate (full-upscaled) file.
+              window.api.fbDelete(displayFile).catch(() => {});
+              displayFile = cropped;
+              toast(`Upscaled ${state.upscaleSettings.multiplier}× and cropped to ${w} × ${h} → ${cropped}`, 'ok', 4000);
+            }
             try { await refreshBrowser(); } catch (_) {}
           } catch (e) {
             console.error('Upscale failed:', e);
@@ -2244,28 +2281,107 @@ async function convertImageFile(srcPath, targetFormat) {
 // Saves the chosen multiplier to state.upscaleSettings and closes; the
 // checkbox stays checked so the next generation is upscaled.
 function showUpscaleSettings() {
-  if (!state.upscaleSettings) state.upscaleSettings = { multiplier: 2 };
+  if (!state.upscaleSettings) {
+    state.upscaleSettings = { multiplier: 2, autoCrop: false, cropWidth: 0, cropHeight: 0, cropAnchorX: 'center', cropAnchorY: 'center' };
+  }
+  // Defensive: also fill in any missing fields on old state.js that
+  // pre-dated the auto-crop support.
+  const s = state.upscaleSettings;
+  if (typeof s.autoCrop !== 'boolean') s.autoCrop = false;
+  if (typeof s.cropWidth !== 'number') s.cropWidth = 0;
+  if (typeof s.cropHeight !== 'number') s.cropHeight = 0;
+  if (typeof s.cropAnchorX !== 'string') s.cropAnchorX = 'center';
+  if (typeof s.cropAnchorY !== 'string') s.cropAnchorY = 'center';
+
   showModal((m, close) => {
     m.appendChild(el('h2', {}, '🔍 Upscale settings'));
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-      'When the Upscale checkbox is on, every generated image is upscaled locally with the settings below before being shown. Pure browser Canvas — no API call, no network.'));
+      'When the Upscale checkbox is on, every generated image is upscaled locally with the settings below before being shown. Pure browser Canvas — no API call, no network. The "auto-crop" options here are also picked up by the "Add" button on the image tab and applied to every entry in a batch.'));
+
+    // Multiplier
     const multSel = el('select', {});
     for (const m2 of [2, 3, 4]) {
       const opt = el('option', { value: String(m2) }, `${m2}× (larger)`);
-      if (m2 === state.upscaleSettings.multiplier) opt.selected = true;
+      if (m2 === s.multiplier) opt.selected = true;
       multSel.appendChild(opt);
     }
     m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Multiplier'), multSel]));
+
+    // auto-crop checkbox
+    const autoCropCb = el('input', { type: 'checkbox', class: 'auto-crop-cb' });
+    autoCropCb.checked = !!s.autoCrop;
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', { class: 'auto-crop-label' }, [autoCropCb, ' auto-crop to resolution']),
+    ]));
+
+    // crop W/H inputs (hidden by default)
+    const cropWInput = el('input', { type: 'number', min: '0', value: String(s.cropWidth || 0) });
+    const cropHInput = el('input', { type: 'number', min: '0', value: String(s.cropHeight || 0) });
+    const cropSizeRow = el('div', { class: 'row auto-crop-only' }, [
+      el('label', {}, 'Crop target W × H (0 = use post-upscale target)'),
+      cropWInput, el('span', {}, ' × '), cropHInput,
+    ]);
+    cropSizeRow.style.display = s.autoCrop ? '' : 'none';
+    m.appendChild(cropSizeRow);
+
+    // 3×3 anchor grid (hidden by default)
+    const anchor = { x: s.cropAnchorX, y: s.cropAnchorY };
+    const anchorGrid = el('div', { class: 'anchor-grid' });
+    const cells = [];
+    const GLYPHS = [
+      ['↖', 'top-left',     'left',    'top'],
+      ['↑', 'top-center',   'center',  'top'],
+      ['↗', 'top-right',    'right',   'top'],
+      ['←', 'middle-left',  'left',    'center'],
+      ['·', 'center',       'center',  'center'],
+      ['→', 'middle-right', 'right',   'center'],
+      ['↙', 'bottom-left',  'left',    'bottom'],
+      ['↓', 'bottom-center','center',  'bottom'],
+      ['↘', 'bottom-right', 'right',   'bottom'],
+    ];
+    for (let i = 0; i < GLYPHS.length; i++) {
+      const [glyph, name, x, y] = GLYPHS[i];
+      const cell = el('button', {
+        type: 'button',
+        class: 'anchor-cell' + (x === anchor.x && y === anchor.y ? ' selected' : ''),
+        title: `Anchor: ${name} (crop keeps the ${name} corner)`,
+        'data-x': x, 'data-y': y,
+      }, glyph);
+      cell.addEventListener('click', () => {
+        for (const c of cells) c.classList.remove('selected');
+        cell.classList.add('selected');
+        anchor.x = x;
+        anchor.y = y;
+      });
+      cells.push(cell);
+      anchorGrid.appendChild(cell);
+    }
+    anchorGrid.style.display = s.autoCrop ? '' : 'none';
+    m.appendChild(anchorGrid);
+
+    function setAutoCropVisible(on) {
+      cropSizeRow.style.display = on ? '' : 'none';
+      anchorGrid.style.display = on ? '' : 'none';
+    }
+    autoCropCb.addEventListener('change', () => setAutoCropVisible(autoCropCb.checked));
+
+    // Save
     const saveBtn = el('button', { class: 'primary' }, 'Save');
     const cancelBtn = el('button', { onclick: close }, 'Cancel');
     saveBtn.addEventListener('click', async () => {
-      state.upscaleSettings = { multiplier: parseInt(multSel.value, 10) || 2 };
+      state.upscaleSettings = {
+        multiplier: parseInt(multSel.value, 10) || 2,
+        autoCrop: autoCropCb.checked,
+        cropWidth: Math.max(0, parseInt(cropWInput.value, 10) || 0),
+        cropHeight: Math.max(0, parseInt(cropHInput.value, 10) || 0),
+        cropAnchorX: anchor.x,
+        cropAnchorY: anchor.y,
+      };
       state.upscaleEnabled = true;
       await scheduleStateSave();
-      // Re-render the upscaler checkbox UI so the label reflects the
-      // saved multiplier.
       if (typeof refreshUpscaleCheckboxUI === 'function') refreshUpscaleCheckboxUI();
-      toast(`Upscale settings saved (${state.upscaleSettings.multiplier}×).`, 'ok', 2000);
+      const extra = state.upscaleSettings.autoCrop ? ' + auto-crop' : '';
+      toast(`Upscale settings saved (${state.upscaleSettings.multiplier}×${extra}).`, 'ok', 2000);
       close();
     });
     m.appendChild(el('div', { class: 'footer' }, [cancelBtn, saveBtn]));
@@ -2297,6 +2413,13 @@ async function showUpscaleDirect(srcPath) {
     toast('Failed to load image: ' + (e && e.message || e), 'err', 6000);
     return;
   }
+  // Pull defaults from the global upscale settings so the
+  // right-click "Upscale" dialog and the tab's "Upscale Settings"
+  // dialog are in sync. The user can still change anything for
+  // this one-off run; the Save below updates state.upscaleSettings
+  // if they do, so the next right-click / next generation sees
+  // the new values.
+  const us = state.upscaleSettings || { multiplier: 2, autoCrop: false, cropWidth: 0, cropHeight: 0, cropAnchorX: 'center', cropAnchorY: 'center' };
   showModal((m, close) => {
     m.appendChild(el('h2', {}, '🔍 Upscale image'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
@@ -2309,8 +2432,12 @@ async function showUpscaleDirect(srcPath) {
       const mult = parseInt(multSel.value, 10) || 2;
       const tW = srcW * mult;
       const tH = srcH * mult;
-      const cropW = parseInt(cropWInput.value, 10) || tW;
-      const cropH = parseInt(cropHInput.value, 10) || tH;
+      // 0 = use post-upscale target. Negative is impossible (the
+      // min="0" attribute + Math.max in the save handler guard it).
+      const wantCropW = parseInt(cropWInput.value, 10);
+      const wantCropH = parseInt(cropHInput.value, 10);
+      const cropW = (isNaN(wantCropW) || wantCropW <= 0) ? tW : wantCropW;
+      const cropH = (isNaN(wantCropH) || wantCropH <= 0) ? tH : wantCropH;
       const w = Math.min(cropW, tW);
       const h = Math.min(cropH, tH);
       const cropNote = autoCropCb.checked ? ` · after auto-crop: ${w} × ${h} px` : '';
@@ -2323,54 +2450,43 @@ async function showUpscaleDirect(srcPath) {
     const multSel = el('select', {});
     for (const m2 of [2, 3, 4, 8]) {
       const opt = el('option', { value: String(m2) }, `${m2}×`);
-      if (m2 === (state.upscaleSettings && state.upscaleSettings.multiplier || 2)) opt.selected = true;
+      if (m2 === (us.multiplier || 2)) opt.selected = true;
       multSel.appendChild(opt);
     }
     m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Multiplier'), multSel]));
 
-    // auto-crop checkbox. Off by default — keeps the dialog backwards-
-    // compatible (just upscale, like before).
+    // auto-crop checkbox. Pre-checked from state.upscaleSettings.
     const autoCropCb = el('input', { type: 'checkbox', class: 'auto-crop-cb' });
-    autoCropCb.checked = false;
+    autoCropCb.checked = !!us.autoCrop;
     m.appendChild(el('div', { class: 'row' }, [
       el('label', { class: 'auto-crop-label' }, [autoCropCb, ' auto-crop to resolution']),
     ]));
 
     // Crop W / H inputs. Hidden by default; revealed when auto-crop
-    // is checked. Pre-filled with the post-upscale target so the
-    // common case is "use the full upscaled result".
-    const cropWInput = el('input', { type: 'number', min: '1', value: '0' });
-    const cropHInput = el('input', { type: 'number', min: '1', value: '0' });
+    // is checked. Pre-filled from state.upscaleSettings (or 0 = use
+    // post-upscale target).
+    const cropWInput = el('input', { type: 'number', min: '0', value: String(us.cropWidth || 0) });
+    const cropHInput = el('input', { type: 'number', min: '0', value: String(us.cropHeight || 0) });
     const cropSizeRow = el('div', { class: 'row auto-crop-only' }, [
-      el('label', {}, 'Crop target W × H'),
+      el('label', {}, 'Crop target W × H (0 = use post-upscale target)'),
       cropWInput, el('span', {}, ' × '), cropHInput,
     ]);
-    cropSizeRow.style.display = 'none';
+    cropSizeRow.style.display = us.autoCrop ? '' : 'none';
     m.appendChild(cropSizeRow);
 
     // 3×3 anchor grid. Each cell = an (x, y) anchor in {left,
-    // center, right} × {top, center, bottom}. The center cell (the
-    // "·" dot, idx 4) is the default — it places the crop frame
-    // with equal borders on all four sides. Selecting a corner cell
-    // pushes the frame to that corner, which "cuts the opposite
-    // sides" of the image (e.g. top-left keeps the top-left, cuts
-    // the right + bottom). Hidden by default.
-    const anchor = { x: 'center', y: 'center' };
+    // center, right} × {top, center, bottom}. The selected cell
+    // comes from state.upscaleSettings.
+    const anchor = { x: us.cropAnchorX || 'center', y: us.cropAnchorY || 'center' };
     const anchorGrid = el('div', { class: 'anchor-grid' });
     const cells = [];
-    // Glyph for each (yi, xi) — uses arrow characters so the
-    // direction is unmistakable. The middle cell gets a dot to
-    // signal "centered, equal borders".
     const GLYPHS = [
-      // top row
       ['↖', 'top-left',     'left',    'top'],
       ['↑', 'top-center',   'center',  'top'],
       ['↗', 'top-right',    'right',   'top'],
-      // middle row
       ['←', 'middle-left',  'left',    'center'],
       ['·', 'center',       'center',  'center'],
       ['→', 'middle-right', 'right',   'center'],
-      // bottom row
       ['↙', 'bottom-left',  'left',    'bottom'],
       ['↓', 'bottom-center','center',  'bottom'],
       ['↘', 'bottom-right', 'right',   'bottom'],
@@ -2379,7 +2495,7 @@ async function showUpscaleDirect(srcPath) {
       const [glyph, name, x, y] = GLYPHS[i];
       const cell = el('button', {
         type: 'button',
-        class: 'anchor-cell' + (i === 4 ? ' selected' : ''),
+        class: 'anchor-cell' + (x === anchor.x && y === anchor.y ? ' selected' : ''),
         title: `Anchor: ${name} (crop keeps the ${name} corner)`,
         'data-x': x, 'data-y': y,
       }, glyph);
@@ -2392,7 +2508,7 @@ async function showUpscaleDirect(srcPath) {
       cells.push(cell);
       anchorGrid.appendChild(cell);
     }
-    anchorGrid.style.display = 'none';
+    anchorGrid.style.display = us.autoCrop ? '' : 'none';
     m.appendChild(anchorGrid);
 
     // Toggle the auto-crop sub-UI. We do this in a single place so
@@ -2407,12 +2523,26 @@ async function showUpscaleDirect(srcPath) {
     multSel.addEventListener('change', refreshTarget);
     cropWInput.addEventListener('input', refreshTarget);
     cropHInput.addEventListener('input', refreshTarget);
-    setAutoCropVisible(false); // also primes the W/H inputs + target text
+    setAutoCropVisible(!!us.autoCrop); // also primes the W/H inputs + target text
 
     const upscaleBtn = el('button', { class: 'primary' }, 'Upscale');
     const cancelBtn = el('button', { onclick: close }, 'Cancel');
     upscaleBtn.addEventListener('click', async () => {
       const multiplier = parseInt(multSel.value, 10) || 2;
+      // Persist whatever the user just configured so the next
+      // right-click / next batch / next ⚙ Settings visit sees
+      // the same values. We don't scheduleStateSave() here
+      // (the action is fire-and-forget and the user can cancel);
+      // scheduleStateSave() is called below on success.
+      state.upscaleSettings = {
+        multiplier,
+        autoCrop: !!autoCropCb.checked,
+        cropWidth: Math.max(0, parseInt(cropWInput.value, 10) || 0),
+        cropHeight: Math.max(0, parseInt(cropHInput.value, 10) || 0),
+        cropAnchorX: anchor.x,
+        cropAnchorY: anchor.y,
+      };
+      state.upscaleEnabled = true;
       upscaleBtn.disabled = true; upscaleBtn.textContent = 'Upscaling…';
       try {
         // Step 1: upscale.
@@ -2454,6 +2584,12 @@ async function showUpscaleDirect(srcPath) {
             try { previewImageFromFile(upscaled); } catch (_) {}
           }
         }
+        // Persist the new upscale settings now that we know the
+        // upscale succeeded. (The setting is also updated in-place
+        // by the input listeners, but a state.json round-trip
+        // through the debounced scheduleStateSave isn't guaranteed
+        // to have fired yet.)
+        try { await scheduleStateSave(); } catch (_) {}
         close();
       } catch (e) {
         toast('Upscale' + (autoCropCb.checked ? '+crop' : '') + ' failed: ' + (e && e.message || e), 'err', 6000);
@@ -3763,28 +3899,55 @@ function captureBatchEntry(tabKey) {
   // entry.prompt (in case the user edited it in the popup).
   const settings = Object.assign({}, raw);
   if (promptId) delete settings[promptId];
-  return {
+  const entry = {
     prompt,
     settings,
     ts: Date.now(),
     label: summarizeEntrySettings(settings, tabKey),
   };
+  // If the upscale-on-Generate flag is on, capture the full upscale
+  // settings (incl. the auto-crop options) so the batch runner
+  // applies the same upscale + crop pipeline per entry. The deep
+  // clone is so a future mutate of state.upscaleSettings doesn't
+  // retroactively change already-queued entries.
+  if (state.upscaleEnabled && state.upscaleSettings) {
+    entry.upscale = JSON.parse(JSON.stringify(state.upscaleSettings));
+  }
+  return entry;
 }
 
 // Normalize a batch entry to the canonical { prompt, settings,
-// ts, label } shape. Accepts the legacy string form (prompt only)
-// for backwards compat with old batches.json files.
+// ts, label, upscale? } shape. Accepts the legacy string form
+// (prompt only) for backwards compat with old batches.json files.
 function normalizeBatchEntry(e) {
   if (e == null) return null;
   if (typeof e === 'string') {
-    return { prompt: e, settings: null, ts: 0, label: '' };
+    return { prompt: e, settings: null, ts: 0, label: '', upscale: null };
   }
   if (typeof e === 'object' && typeof e.prompt === 'string') {
+    // Deep-validate the upscale snapshot. A corrupted state.json
+    // could try to inject anything here; we whitelist the keys
+    // and clamp the values to safe defaults. The batch runner
+    // also re-clamps, but doing it here means the popup's
+    // summary tag is accurate.
+    let up = null;
+    if (e.upscale && typeof e.upscale === 'object') {
+      const u = e.upscale;
+      up = {
+        multiplier: Math.max(1, Math.min(8, parseInt(u.multiplier, 10) || 2)),
+        autoCrop: !!(u.autoCrop),
+        cropWidth: Math.max(0, parseInt(u.cropWidth, 10) || 0),
+        cropHeight: Math.max(0, parseInt(u.cropHeight, 10) || 0),
+        cropAnchorX: ['left', 'center', 'right'].includes(u.cropAnchorX) ? u.cropAnchorX : 'center',
+        cropAnchorY: ['top', 'center', 'bottom'].includes(u.cropAnchorY) ? u.cropAnchorY : 'center',
+      };
+    }
     return {
       prompt: e.prompt,
       settings: e.settings && typeof e.settings === 'object' ? e.settings : null,
       ts: typeof e.ts === 'number' ? e.ts : 0,
       label: typeof e.label === 'string' ? e.label : summarizeEntrySettings(e.settings || {}, ''),
+      upscale: up,
     };
   }
   return null;
@@ -3896,12 +4059,23 @@ function openBatchManager(tabKey) {
       current.forEach((entry, i) => {
         const row = el('div', { class: 'batch-row' });
         const num = el('div', { class: 'batch-num' }, String(i + 1));
-        // Vertical stack: textarea on top, snapshot tag below.
+        // Vertical stack: textarea on top, snapshot tags below.
         const editor = el('div', { class: 'batch-row-editor' });
         const ta = el('textarea', {}, entry.prompt);
         ta.placeholder = tabKey === 'speech' ? 'Text to read…' : 'Prompt for asset…';
         ta.addEventListener('input', () => { entry.prompt = ta.value; });
         editor.appendChild(ta);
+        if (entry.upscale && tabKey === 'image') {
+          // Image-only — upscale only makes sense for the image tab.
+          const a = entry.upscale;
+          const autoCropStr = a.autoCrop ? ' · auto-crop' : '';
+          const cropStr = a.autoCrop
+            ? ` (${a.cropWidth || `${a.multiplier}× post-upscale W`} × ${a.cropHeight || `${a.multiplier}× post-upscale H`} @ ${a.cropAnchorX}-${a.cropAnchorY})`
+            : '';
+          const tag = el('div', { class: 'batch-snapshot-tag', title: 'Upscale + auto-crop options captured when this entry was queued. Applied to the generated image after every generation.' },
+            [`🔍 upscale ${a.multiplier}×${autoCropStr}${cropStr}`]);
+          editor.appendChild(tag);
+        }
         if (entry.label) {
           const tag = el('div', { class: 'batch-snapshot-tag', title: 'This entry was captured from the current tab state. The form fields will be restored to these values before this entry is generated.' },
             ['📸 snapshot · ' + entry.label]);
@@ -3919,7 +4093,7 @@ function openBatchManager(tabKey) {
 
     // Add / Clear / Paste-many controls
     const ctrls = el('div', { class: 'row', style: 'margin-top: 8px; flex-direction: row; gap: 6px; align-items: center;' });
-    const addBtn = el('button', { class: 'btn-mini', onclick: () => { if (current.length >= 100) { toast('Max 100 entries.', 'warn'); return; } current.push({ prompt: '', settings: null, ts: Date.now(), label: '' }); renderList(); setTimeout(() => { const tas = list.querySelectorAll('textarea'); tas[tas.length-1]?.focus(); }, 0); } }, '+ Add prompt');
+    const addBtn = el('button', { class: 'btn-mini', onclick: () => { if (current.length >= 100) { toast('Max 100 entries.', 'warn'); return; } current.push({ prompt: '', settings: null, ts: Date.now(), label: '', upscale: null }); renderList(); setTimeout(() => { const tas = list.querySelectorAll('textarea'); tas[tas.length-1]?.focus(); }, 0); } }, '+ Add prompt');
     const clearBtn = el('button', { class: 'btn-mini', onclick: () => { if (current.length && !confirm('Clear all ' + current.length + ' entries?')) return; current.length = 0; renderList(); } }, 'Clear all');
     const pasteBtn = el('button', { class: 'btn-mini', onclick: () => {
       const ta = el('textarea', { placeholder: 'Paste one prompt per line, then click Import.' });
@@ -3934,7 +4108,7 @@ function openBatchManager(tabKey) {
           const lines = ta.value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
           const room = 100 - current.length;
           const toAdd = lines.slice(0, room);
-          for (const l of toAdd) current.push({ prompt: l, settings: null, ts: Date.now(), label: '' });
+          for (const l of toAdd) current.push({ prompt: l, settings: null, ts: Date.now(), label: '', upscale: null });
           dclose();
           renderList();
           if (lines.length > room) toast(`Imported ${room} (skipped ${lines.length - room} to stay under 100).`, 'warn');
@@ -3952,7 +4126,13 @@ function openBatchManager(tabKey) {
       // Normalize + drop empties + cap at 100. Preserves the
       // object shape so the per-entry settings survive the round-trip.
       const cleaned = current
-        .map((e) => ({ prompt: String(e.prompt || '').trim(), settings: (e.settings && typeof e.settings === 'object') ? e.settings : null, ts: typeof e.ts === 'number' ? e.ts : 0, label: typeof e.label === 'string' ? e.label : '' }))
+        .map((e) => ({
+          prompt: String(e.prompt || '').trim(),
+          settings: (e.settings && typeof e.settings === 'object') ? e.settings : null,
+          ts: typeof e.ts === 'number' ? e.ts : 0,
+          label: typeof e.label === 'string' ? e.label : '',
+          upscale: (e.upscale && typeof e.upscale === 'object') ? e.upscale : null,
+        }))
         .filter((e) => e.prompt.length > 0)
         .slice(0, 100);
       if (cleaned.length === 0) {
@@ -4032,6 +4212,11 @@ async function startBatchGen(tabKey) {
   // We don't include the prompt here because the per-entry
   // snapshot's prompt overrides it below.
   const savedSnapshot = captureTabState(tabKey);
+  // Also save the user's actual upscale + auto-crop state so we
+  // can restore it after the batch (the per-entry upscale is
+  // applied on top of this for each entry).
+  const savedUpscaleEnabled = state.upscaleEnabled;
+  const savedUpscaleSettings = state.upscaleSettings ? JSON.parse(JSON.stringify(state.upscaleSettings)) : null;
 
   // Show progress overlay
   const overlay = el('div', { class: 'batch-overlay' });
@@ -4094,6 +4279,21 @@ async function startBatchGen(tabKey) {
       const variantsCount = Math.max(1, Math.min(5, parseInt(variantsSel2 ? variantsSel2.value : '1', 10) || 1));
       totalVariants += variantsCount;
 
+      // Apply the per-entry upscale snapshot (if any). The image
+      // tab's generate handler reads state.upscaleSettings /
+      // state.upscaleEnabled to decide whether to upscale + crop
+      // after the mmx call, so flipping these flags here is all
+      // we need to do.
+      if (entry.upscale && typeof entry.upscale === 'object') {
+        state.upscaleSettings = JSON.parse(JSON.stringify(entry.upscale));
+        state.upscaleEnabled = true;
+      } else {
+        // No upscale snapshot in this entry: temporarily disable
+        // upscale so the user's saved upscale state doesn't leak
+        // into a batch entry that was queued without it.
+        state.upscaleEnabled = false;
+      }
+
       // Run N variants for this batch item
       for (let vi = 0; vi < variantsCount; vi++) {
         if (_batchAbort) break;
@@ -4150,6 +4350,14 @@ async function startBatchGen(tabKey) {
   suppressStateSave(() => {
     applyTabState(tabKey, savedSnapshot);
   });
+  // Restore the user's actual upscale + auto-crop state too (the
+  // per-entry snapshots may have overwritten state.upscaleSettings
+  // for individual entries). Outside suppressStateSave so a
+  // scheduleStateSave() from the input events doesn't get
+  // re-suppressed at the wrong time — we want the user's
+  // settings to land in state.json.
+  state.upscaleEnabled = !!savedUpscaleEnabled;
+  if (savedUpscaleSettings) state.upscaleSettings = savedUpscaleSettings;
   // Distinguish a user-stopped batch from a completed one — previously
   // both said "done", which was confusing.
   const summary = stoppedAt
