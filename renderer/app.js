@@ -418,6 +418,192 @@ function appendBoolFlag(args, param, flag) {
   if (v === 'on' || v === true) args.push(flag);
 }
 
+// ----------------- Image-dim guards -----------------
+// Three live warnings below the image tab's W × H row:
+//   1. "W × H doesn't match aspect ratio 1:1" — when the user
+//      has an aspect ratio selected AND has manually entered both
+//      W and H such that their ratio is off by more than 1%.
+//      "Correct" auto-fills the offending dimension (W is the
+//      source of truth, per the user's spec).
+//   2. "W must be a multiple of 8" / "H must be a multiple of
+//      8" — mmx rejects non-multiple-of-8 dimensions with a
+//      cryptic 400. "Correct" rounds to the nearest multiple.
+//   3. Same for the subject-ref field — it must be a valid
+//      filesystem path or http(s) URL; mmx rejects everything
+//      else.
+//
+// All three are wired to the param objects returned by
+// buildParamRow() so they read the current value via getValue()
+// and write back via the underlying input/select (which also
+// fires 'input' / 'change' for the per-tab state autosave).
+function attachImageDimGuards(aspect, width, height) {
+  const warning = el('div', { class: 'image-dim-warning', style: 'display: none;' });
+  // We insert the warning into the .section that owns the W × H
+  // row, right after the .grid. The caller is responsible for
+  // appending the warning element to the right parent.
+  // (We return the element so the caller can do that.)
+  function setValue(param, v) {
+    // Write a numeric value into a buildParamRow number param.
+    // The combo (sel + num input) has a "Custom…" option that
+    // reveals the num input; we select it, set the value, and
+    // dispatch the input event so has-custom class flips.
+    const combo = param.el;
+    const sel = combo.querySelector('select');
+    const num = combo.querySelector('input[type="number"]');
+    const options = Array.from(sel.options).map((o) => o.value);
+    if (options.includes(String(v))) {
+      sel.value = String(v);
+      num.style.display = 'none';
+      num.value = '';
+    } else {
+      sel.value = '__custom__';
+      num.style.display = '';
+      num.value = String(v);
+    }
+    combo.classList.toggle('has-custom', sel.value === '__custom__');
+    num.dispatchEvent(new Event('input', { bubbles: true }));
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  function show(text, onCorrect) {
+    warning.innerHTML = '';
+    const span = el('span', { style: 'flex: 1;' }, text);
+    warning.appendChild(span);
+    if (onCorrect) {
+      const btn = el('button', { class: 'correct-btn', type: 'button' }, 'Correct');
+      btn.addEventListener('click', onCorrect);
+      warning.appendChild(btn);
+    }
+    warning.style.display = '';
+  }
+  function hide() {
+    warning.style.display = 'none';
+    warning.innerHTML = '';
+  }
+  function parseAspect(v) {
+    if (!v) return null;
+    const m = String(v).match(/^(\d+):(\d+)$/);
+    if (!m) return null;
+    return { w: parseInt(m[1], 10), h: parseInt(m[2], 10) };
+  }
+  function recheck() {
+    const aspectVal = aspect.getValue();
+    const w = parseInt(width.getValue(), 10);
+    const h = parseInt(height.getValue(), 10);
+    const ap = parseAspect(aspectVal);
+    // 1. Aspect ratio mismatch.
+    if (ap && Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+      const actual = w / h;
+      const expected = ap.w / ap.h;
+      // Allow 1% slop for float rounding.
+      if (Math.abs(actual - expected) / expected > 0.01) {
+        show(
+          `W × H (${w}×${h}) doesn't match the selected aspect ratio ${aspectVal}. The API will likely reject this or auto-override one of the values.`,
+          () => {
+            // Prioritise W as the source of truth: H = W * ratio.
+            const newH = Math.max(8, Math.round((w * ap.h) / ap.w / 8) * 8);
+            setValue(height, newH);
+            recheck();
+          },
+        );
+        return;
+      }
+    }
+    // 2. Divisible-by-8 checks.
+    if (Number.isFinite(w) && w > 0 && w % 8 !== 0) {
+      show(
+        `W (${w}) must be a multiple of 8 (the API rejects other values with a 400).`,
+        () => {
+          setValue(width, Math.max(8, Math.round(w / 8) * 8));
+          recheck();
+        },
+      );
+      return;
+    }
+    if (Number.isFinite(h) && h > 0 && h % 8 !== 0) {
+      show(
+        `H (${h}) must be a multiple of 8 (the API rejects other values with a 400).`,
+        () => {
+          setValue(height, Math.max(8, Math.round(h / 8) * 8));
+          recheck();
+        },
+      );
+      return;
+    }
+    hide();
+  }
+  // Wire the listeners. buildParamRow number params are combos;
+  // the 'input' event bubbles from the inner num input.
+  width.el.addEventListener('input', recheck);
+  width.el.addEventListener('change', recheck);
+  height.el.addEventListener('input', recheck);
+  height.el.addEventListener('change', recheck);
+  // The aspect select lives in aspect.el directly.
+  aspect.el.addEventListener('change', () => {
+    // If the user picks a new aspect ratio, auto-fill whichever
+    // of W or H is already set (or both, if both are empty, to
+    // the first preset value that matches the aspect).
+    const aspectVal = aspect.getValue();
+    const ap = parseAspect(aspectVal);
+    if (!ap) { recheck(); return; }
+    const w = parseInt(width.getValue(), 10);
+    const h = parseInt(height.getValue(), 10);
+    if (Number.isFinite(w) && w > 0) {
+      const newH = Math.max(8, Math.round((w * ap.h) / ap.w / 8) * 8);
+      setValue(height, newH);
+    } else if (Number.isFinite(h) && h > 0) {
+      const newW = Math.max(8, Math.round((h * ap.w) / ap.h / 8) * 8);
+      setValue(width, newW);
+    }
+    recheck();
+  });
+  // Initial pass — picks up restored state on first paint.
+  recheck();
+  return warning;
+}
+
+// Validate the --subject-ref value. mmx accepts:
+//   - a local filesystem path that exists (PNG / JPG / JPEG / WebP)
+//   - an http(s) URL (and seemingly URLs to a CDN)
+//   - an empty string (no character ref)
+// Everything else is rejected with a "file not found" or
+// "invalid URL" 400. We watch the input and surface a warning
+// when the value doesn't look like one of the above.
+function attachSubjectRefGuard(subjRef) {
+  const warning = el('div', { class: 'subject-ref-warning', style: 'display: none;' });
+  const input = subjRef.el;
+  function recheck() {
+    const v = (input.value || '').trim();
+    if (!v) { warning.style.display = 'none'; warning.innerHTML = ''; return; }
+    if (/^https?:\/\//i.test(v)) { warning.style.display = 'none'; warning.innerHTML = ''; return; }
+    // For local paths we can't easily async-check existence from
+    // the renderer (no fs access in the renderer's main world),
+    // and the renderer's fb:list already validates this on click.
+    // We just sanity-check the shape: must look like a path and
+    // have a recognised image extension.
+    const looksLikePath = /[\\/]/.test(v) || /^[a-zA-Z]:[\\/]/.test(v) || v.startsWith('./') || v.startsWith('../') || v.startsWith('/') || /^[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+$/.test(v);
+    if (!looksLikePath) {
+      warning.innerHTML = '';
+      warning.appendChild(el('span', { style: 'flex: 1;' },
+        'Subject reference must be a local image path or an http(s) URL. Examples: C:\\Users\\me\\char.png  ·  https://example.com/char.png'));
+      warning.style.display = '';
+      return;
+    }
+    const ext = v.toLowerCase().split('.').pop();
+    if (!['png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
+      warning.innerHTML = '';
+      warning.appendChild(el('span', { style: 'flex: 1;' },
+        `Subject reference must be a .png, .jpg, .jpeg or .webp file. Got: .${ext}`));
+      warning.style.display = '';
+      return;
+    }
+    warning.style.display = 'none';
+    warning.innerHTML = '';
+  }
+  input.addEventListener('input', recheck);
+  recheck();
+  return warning;
+}
+
 // ----------------- Tabs -----------------
 const TABS = {};
 
@@ -748,6 +934,16 @@ TABS.image = {
       el('h3', {}, 'Parameters'),
       buildFilePrefixRow(),
       el('div', { class: 'grid' }, [aspect.row, n.row, width.row, height.row, seed.row, respFmt.row, promptOpt.row, watermark.row, subjRef.row]),
+      // Live validity warnings for the W × H combo and the subject
+      // ref field. attachImageDimGuards wires the aspect/W/H
+      // listeners (auto-fill on aspect change, ratio-mismatch
+      // warning, div-by-8 warning) and returns the warning div
+      // for the .section. attachSubjectRefGuard does the same for
+      // the --subject-ref field (must be a path or http(s) URL
+      // with a recognised image extension). Both are hidden when
+      // the inputs are valid.
+      attachImageDimGuards(aspect, width, height),
+      attachSubjectRefGuard(subjRef),
     ]));
 
     // Action bar + preview
@@ -997,7 +1193,23 @@ TABS.image = {
             displayFile = lastOutFile;
           }
         }
-        showImagePreview(preview, displayFile, lastPreview);
+        // The per-tab preview used to render a 400×400 thumbnail
+        // here (showImagePreview). Per the user's request, the
+        // generated image now lives in the right-side
+        // folder-explorer's preview pane — the left-side area
+        // only carries a short "Image ready, see preview on the
+        // right" message so the layout doesn't collapse.
+        preview.innerHTML = '';
+        preview.appendChild(el('div', { class: 'empty' },
+          el('div', { class: 'preview-ready-msg' }, [
+            '✅ Image ready — ',
+            el('strong', {}, 'preview on the right'),
+            '. Click the filename in the file browser or ',
+            el('strong', {}, 'the image in the preview pane'),
+            ' to open at 1:1.',
+          ]),
+        ));
+        try { previewImageFromFile(displayFile); } catch (_) {}
         bumpGenerationCounter('image', variantsCount);
       } else if (!allOk) {
         // Build a detailed, actionable error block. The user has been
@@ -2511,19 +2723,138 @@ async function showUpscaleDirect(srcPath) {
     anchorGrid.style.display = us.autoCrop ? '' : 'none';
     m.appendChild(anchorGrid);
 
+    // A short explanation of the cropping section, so the user
+    // doesn't have to guess what the 3×3 grid + W × H inputs
+    // actually do. Uses inline <code> tags for the glyphs.
+    const cropExplanation = el('div', { class: 'crop-explanation' }, [
+      'When you click Upscale, the image is first scaled up by ',
+      el('strong', {}, `${us.multiplier || 2}×`),
+      ' (using the Real-ESRGAN binary if installed, otherwise multi-step canvas upscaling), then ',
+      el('strong', {}, 'cropped'),
+      ' to the target W × H at the chosen anchor. The 3×3 grid above picks the anchor: ',
+      el('code', {}, '↖'),
+      ' keeps the ',
+      el('strong', {}, 'top-left'),
+      ' corner, ',
+      el('code', {}, '·'),
+      ' keeps equal borders on all four sides, ',
+      el('code', {}, '↘'),
+      ' keeps the ',
+      el('strong', {}, 'bottom-right'),
+      '.',
+    ]);
+    cropExplanation.style.display = us.autoCrop ? '' : 'none';
+    m.appendChild(cropExplanation);
+
+    // Blank-image crop preview: a fixed 200×150 "source" with a
+    // green crop frame overlay that updates whenever the user
+    // picks a different anchor (or changes the W × H inputs).
+    // The frame is sized proportionally to the post-upscale
+    // target W × H so the user can see how much of the image
+    // is actually kept.
+    const cropPreviewBlock = el('div', { class: 'crop-preview' });
+    const stage = el('div', { class: 'crop-preview-stage' });
+    const blank = el('div', { class: 'crop-preview-image' });
+    const frame = el('div', { class: 'crop-preview-frame' });
+    stage.append(blank, frame);
+    cropPreviewBlock.appendChild(stage);
+    const legend = el('div', { class: 'crop-preview-legend' });
+    cropPreviewBlock.appendChild(legend);
+    const ANCHOR_LABELS = {
+      'left-top':       'top-left',
+      'center-top':     'top-center',
+      'right-top':      'top-right',
+      'left-center':    'middle-left',
+      'center-center':  'center',
+      'right-center':   'middle-right',
+      'left-bottom':    'bottom-left',
+      'center-bottom':  'bottom-center',
+      'right-bottom':   'bottom-right',
+    };
+    function refreshCropPreview() {
+      const mult = parseInt(multSel.value, 10) || 2;
+      const stageW = 200, stageH = 150;
+      // The stage represents the post-upscale source. We scale
+      // it to fit the stage keeping its real aspect ratio.
+      const aspect = srcW / srcH;
+      let dispSrcW, dispSrcH;
+      if (aspect >= stageW / stageH) {
+        dispSrcW = stageW;
+        dispSrcH = stageW / aspect;
+      } else {
+        dispSrcH = stageH;
+        dispSrcW = stageH * aspect;
+      }
+      const srcOffsetX = (stageW - dispSrcW) / 2;
+      const srcOffsetY = (stageH - dispSrcH) / 2;
+      // Frame size: use the user's W × H if set, otherwise the
+      // full post-upscale target.
+      const tW = srcW * mult;
+      const tH = srcH * mult;
+      const wantW = parseInt(cropWInput.value, 10);
+      const wantH = parseInt(cropHInput.value, 10);
+      let cropW = (Number.isFinite(wantW) && wantW > 0) ? Math.min(wantW, tW) : tW;
+      let cropH = (Number.isFinite(wantH) && wantH > 0) ? Math.min(wantH, tH) : tH;
+      // Scale the frame to the displayed source size.
+      const scale = dispSrcW / tW;
+      const frameW = cropW * scale;
+      const frameH = cropH * scale;
+      const maxX = dispSrcW - frameW;
+      const maxY = dispSrcH - frameH;
+      let x, y;
+      if (anchor.x === 'left')       x = 0;
+      else if (anchor.x === 'right') x = maxX;
+      else                            x = Math.floor(maxX / 2);
+      if (anchor.y === 'top')         y = 0;
+      else if (anchor.y === 'bottom') y = maxY;
+      else                            y = Math.floor(maxY / 2);
+      frame.style.width = frameW + 'px';
+      frame.style.height = frameH + 'px';
+      frame.style.left = (srcOffsetX + x) + 'px';
+      frame.style.top = (srcOffsetY + y) + 'px';
+      // Position the blank "image" to match the source size.
+      blank.style.left = srcOffsetX + 'px';
+      blank.style.top = srcOffsetY + 'px';
+      blank.style.width = dispSrcW + 'px';
+      blank.style.height = dispSrcH + 'px';
+      // Legend.
+      legend.innerHTML = '';
+      const name = ANCHOR_LABELS[anchor.x + '-' + anchor.y] || 'center';
+      legend.appendChild(document.createTextNode('Anchor: '));
+      legend.appendChild(el('span', { class: 'crop-preview-anchor-name' }, name));
+      legend.appendChild(document.createTextNode(' — the green frame shows what will be kept.'));
+    }
+    cropPreviewBlock.style.display = us.autoCrop ? '' : 'none';
+    m.appendChild(cropPreviewBlock);
+
     // Toggle the auto-crop sub-UI. We do this in a single place so
     // the show / hide stays in sync and the target text always
     // reflects the current state.
     function setAutoCropVisible(on) {
       cropSizeRow.style.display = on ? '' : 'none';
       anchorGrid.style.display = on ? '' : 'none';
+      cropExplanation.style.display = on ? '' : 'none';
+      cropPreviewBlock.style.display = on ? '' : 'none';
+      if (on) {
+        // The preview depends on a few derived values; recompute
+        // on show so the user sees the current W × H + anchor.
+        refreshCropPreview();
+      }
       refreshTarget();
     }
     autoCropCb.addEventListener('change', () => setAutoCropVisible(autoCropCb.checked));
     multSel.addEventListener('change', refreshTarget);
     cropWInput.addEventListener('input', refreshTarget);
     cropHInput.addEventListener('input', refreshTarget);
+    // The crop preview also re-renders on any input change.
+    multSel.addEventListener('change', refreshCropPreview);
+    cropWInput.addEventListener('input', refreshCropPreview);
+    cropHInput.addEventListener('input', refreshCropPreview);
+    // Each anchor cell already updates anchor.x/y; we also
+    // re-render the crop preview on click.
+    for (const cell of cells) cell.addEventListener('click', refreshCropPreview);
     setAutoCropVisible(!!us.autoCrop); // also primes the W/H inputs + target text
+    if (us.autoCrop) refreshCropPreview();
 
     const upscaleBtn = el('button', { class: 'primary' }, 'Upscale');
     const cancelBtn = el('button', { onclick: close }, 'Cancel');

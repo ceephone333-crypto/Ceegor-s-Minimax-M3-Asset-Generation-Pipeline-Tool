@@ -837,6 +837,146 @@ label { color: var(--fg); font-weight: 500; }
   border-color: var(--accent-2);
 }
 
+/* ========== Image-dim guards (aspect ratio + div-by-8) ==========
+   Shown below the W × H row in the image tab when the user
+   types a value that doesn't fit the chosen aspect ratio or
+   isn't a multiple of 8 (which mmx rejects with a cryptic
+   400). The warning has a "Correct" button that auto-fills
+   the offending field. */
+.image-dim-warning {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  background: rgba(248, 196, 122, 0.12);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.image-dim-warning .correct-btn {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #1a1a1f;
+  font-weight: 600;
+  padding: 2px 8px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.image-dim-warning .correct-btn:hover {
+  background: #f8c47a;
+  border-color: #f8c47a;
+}
+
+/* Subject-ref "path or URL" validity warning. Same style as the
+   dim-warning but for a different field, so the user can spot
+   the source at a glance. */
+.subject-ref-warning {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  background: rgba(248, 196, 122, 0.12);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* ========== Upscale-dialog crop preview ==========
+   A blank "image" with a green crop frame overlay that updates
+   whenever the user picks a different anchor in the 3×3 grid.
+   The whole stage is a fixed size (200×150) so the layout is
+   predictable; the frame is computed from the chosen anchor and
+   the current W × H settings. */
+.crop-preview {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  margin: 8px 0 4px;
+  text-align: center;
+}
+.crop-preview-stage {
+  position: relative;
+  width: 200px;
+  height: 150px;
+  margin: 0 auto 6px;
+  background: linear-gradient(135deg, #4a4a52 0%, #2a2a30 100%);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.crop-preview-image {
+  /* The "blank image" — a subtle gradient with corner marks so
+     the user can see the four corners of the source. */
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(135deg, transparent 49%, rgba(255,255,255,0.15) 49%, rgba(255,255,255,0.15) 51%, transparent 51%),
+    linear-gradient(45deg, transparent 49%, rgba(255,255,255,0.15) 49%, rgba(255,255,255,0.15) 51%, transparent 51%);
+}
+.crop-preview-image::before,
+.crop-preview-image::after {
+  content: "";
+  position: absolute;
+  background: rgba(255, 255, 255, 0.25);
+  width: 10px;
+  height: 1px;
+  top: 50%;
+}
+.crop-preview-image::before { left: 0; }
+.crop-preview-image::after  { right: 0; }
+.crop-preview-frame {
+  position: absolute;
+  border: 2px solid #4ec98b;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  transition: left 0.15s, top 0.15s, width 0.15s, height 0.15s;
+}
+.crop-preview-legend {
+  font-size: 11px;
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+}
+.crop-preview-anchor-name {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* Help text for the cropping section in the upscale dialog. */
+.crop-explanation {
+  font-size: 12px;
+  color: var(--fg-2);
+  line-height: 1.5;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  margin: 6px 0;
+}
+.crop-explanation code {
+  font-family: var(--font-mono);
+  background: var(--bg-3);
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+/* "Image ready" placeholder shown in the per-tab preview after
+   we removed the in-tab thumbnail (the actual image is now in
+   the right-side folder-explorer's preview pane). */
+.preview-ready-msg {
+  text-align: center;
+  color: var(--fg-2);
+  padding: 20px 10px;
+  font-size: 13px;
+}
+.preview-ready-msg strong {
+  color: var(--fg);
+}
+
 /* File-info block at the top of the right-click context menu.
    Shows type / size / modified / (for images) dimensions in a
    compact two-column grid. The Dimensions cell starts with
