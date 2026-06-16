@@ -3,6 +3,9 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
+const https = require('https');
+const { spawn } = require('child_process');
+const os = require('os');
 
 const { runMmx } = require('./src/mmx');
 const cfgMod = require('./src/config');
@@ -307,6 +310,114 @@ ipcMain.handle('upscale:realesrgan:run', async (_e, srcPath, dstPath, opts) => {
     return { ok: false, code: -1, stderr: 'Destination path is outside the allowed directories.', outputPath: null };
   }
   return reEsrgan.run(srcPath, dstPath, opts || {});
+});
+
+// ----------------- IPC: Real-ESRGAN download (one-click installer) -----------------
+// The user can install Real-ESRGAN into ./bin/ with a single click in
+// the ⚙ Settings → Image upscaling popup. We download the latest
+// release zip from GitHub into the OS temp dir, then use PowerShell's
+// Expand-Archive to unpack into ./bin/. Progress is streamed back
+// to the renderer via webContents.send so the button can show a
+// "Downloading… 12 / 90 MB" status.
+//
+// We deliberately do NOT query api.github.com for the latest URL —
+// the user can ship a fixed URL in the source release and not depend
+// on GitHub API rate limits. v0.2.5.0 is the latest stable as of
+// 2024; users on a newer release can manually drop the binary into
+// ./bin/.
+
+const RE_ESRGAN_DOWNLOAD_URL = 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-v0.2.5.0-windows.zip';
+
+function _httpsGetFollowingRedirects(url, maxRedirects = 5) {
+  return new Promise((resolve, reject) => {
+    function get(target) {
+      https.get(target, (res) => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
+          const next = res.headers.location;
+          res.resume();
+          if (!next || maxRedirects <= 0) return reject(new Error('Too many redirects'));
+          get(new URL(next, target).toString());
+          return;
+        }
+        resolve(res);
+      }).on('error', reject);
+    }
+    get(url);
+  });
+}
+
+ipcMain.handle('upscale:realesrgan:download', async (event) => {
+  const win = event.sender;
+  const send = (data) => { try { win.send('upscale:realesrgan:download:progress', data); } catch (_) {} };
+  const tmpZip = path.join(os.tmpdir(), `realesrgan-${Date.now()}.zip`);
+  try {
+    // ---- Phase 1: download the zip ----
+    send({ phase: 'download', downloaded: 0, total: 0, status: 'starting' });
+    await new Promise((resolve, reject) => {
+      _httpsGetFollowingRedirects(RE_ESRGAN_DOWNLOAD_URL).then((res) => {
+        if (res.statusCode !== 200) {
+          return reject(new Error(`HTTP ${res.statusCode} from ${RE_ESRGAN_DOWNLOAD_URL}`));
+        }
+        const total = parseInt(res.headers['content-length'] || '0', 10);
+        send({ phase: 'download', downloaded: 0, total, status: 'started' });
+        const file = fs.createWriteStream(tmpZip);
+        let downloaded = 0;
+        let lastSent = 0;
+        res.on('data', (chunk) => {
+          downloaded += chunk.length;
+          // Throttle to every 500 KB or 250 ms to avoid IPC spam.
+          if (downloaded - lastSent > 500 * 1024) {
+            lastSent = downloaded;
+            send({ phase: 'download', downloaded, total, status: 'progress' });
+          }
+        });
+        res.pipe(file);
+        file.on('finish', () => file.close(() => {
+          send({ phase: 'download', downloaded, total, status: 'done' });
+          resolve();
+        }));
+        file.on('error', (err) => {
+          try { fs.unlinkSync(tmpZip); } catch (_) {}
+          reject(err);
+        });
+      }).catch(reject);
+    }).catch((err) => {
+      try { fs.unlinkSync(tmpZip); } catch (_) {}
+      throw err;
+    });
+
+    // ---- Phase 2: extract into ./bin/ ----
+    const binDir = path.join(__dirname, 'bin');
+    if (!fs.existsSync(binDir)) fs.mkdirSync(binDir, { recursive: true });
+    send({ phase: 'extract', downloaded: 0, total: 0, status: 'starting' });
+    await new Promise((resolve, reject) => {
+      const ps = spawn('powershell.exe', [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass',
+        '-Command', `Expand-Archive -Path "${tmpZip}" -DestinationPath "${binDir}" -Force`,
+      ], { windowsHide: true });
+      let stderr = '';
+      ps.stderr.on('data', (b) => { stderr += b.toString('utf8'); });
+      ps.on('close', (code) => {
+        if (code === 0) {
+          send({ phase: 'extract', downloaded: 0, total: 0, status: 'done' });
+          resolve();
+        } else {
+          reject(new Error(`Expand-Archive failed (code ${code}): ${stderr}`));
+        }
+      });
+      ps.on('error', reject);
+    });
+
+    // ---- Phase 3: clean up the temp zip ----
+    try { fs.unlinkSync(tmpZip); } catch (_) {}
+    // Reset the binary detector cache so the next probe sees the
+    // newly-extracted binary.
+    try { reEsrgan.resetCache && reEsrgan.resetCache(); } catch (_) {}
+    return { ok: true, binDir };
+  } catch (e) {
+    try { fs.unlinkSync(tmpZip); } catch (_) {}
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 });
 
 // ---------------- IPC: file browser ----------------
