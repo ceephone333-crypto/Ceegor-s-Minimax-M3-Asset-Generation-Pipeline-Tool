@@ -1,0 +1,36 @@
+#!/usr/bin/env node
+// .githooks/pre-commit
+// Atomare Qualitätssicherung. Wird vor jedem Commit ausgeführt und
+// blockt, wenn Lint oder Unit-Tests fehlschlagen.
+//
+// Aktivierung (einmal pro Clone):
+//   git config core.hooksPath .githooks
+//
+// Überspringen (NOTFALL, nicht für Regelverstöße):
+//   git commit --no-verify
+
+const { spawnSync } = require('child_process');
+
+const ROOT = __dirname.replace(/\.githooks$/, '');
+
+function run(label, args) {
+  console.log(`\n[pre-commit] → ${label}`);
+  const r = spawnSync(process.execPath, args, {
+    cwd: ROOT,
+    stdio: 'inherit',
+    shell: false,
+  });
+  if (r.status !== 0) {
+    console.error(`\n[pre-commit] ✗ ${label} failed (exit ${r.status})`);
+    process.exit(r.status);
+  }
+  console.log(`[pre-commit] ✓ ${label} passed`);
+}
+
+// 1) Lint: Dateigrößen, God-Words, Cross-Tier-DAG
+run('lint', ['scripts/lint.js']);
+
+// 2) Unit-Tests: 39 Tests über alle Pure-Module
+run('test', ['--test', 'tests/unit/**/*.test.js']);
+
+console.log('\n[pre-commit] ✓ all checks passed — proceeding with commit');
