@@ -7359,33 +7359,10 @@ async function promptNewFolder() {
       } }, 'Create'),
     ]));
   });
-}
-
-// ----------------- Quota -----------------
-// The mmx CLI quota endpoint returns a list of "model_remains" entries.
-// Each model has BOTH a daily interval AND a weekly quota:
-//   - current_interval_total_count / current_interval_usage_count
-//   - current_interval_remaining_percent  (sometimes 100% when counts=0/0 even
-//     when the model is not in plan â€” see MiniMax-AI/cli#173)
-//   - current_interval_status   (1 = in plan, 3 = not in plan)
-//   - current_weekly_total_count / current_weekly_usage_count
-//   - current_weekly_remaining_percent
-//   - current_weekly_status
-//
-// Old display logic showed "X% this week" and called anything with total=0
-// "not in plan" â€” but the *_status field is the source of truth, AND for
-// some models (e.g. video) the *daily* interval is what matters. We now:
-//   - use *_status to decide plan inclusion
-//   - show BOTH daily + weekly segments when both have non-zero totals
-//   - compute used/total % ourselves (the API's *_remaining_percent is
-//     unreliable, e.g. reports 100% remaining for 0/0 when status=3)
-function _quotaSeg(name, used, total, label) {
-  if (!total || total <= 0) return '';
-  const remaining = Math.max(0, total - used);
-  const usedPct = Math.round((used / total) * 100);
-  const cls = usedPct >= 90 ? 'quota-low' : (usedPct >= 50 ? 'quota-warn' : '');
-  return `<span class="${cls}" title="${escapeHtml(`${name} Â· ${label}: ${used}/${total} (${usedPct}% used)`)}">${used}/${total} ${label} <small>(${usedPct}%)</small></span>`;
-}
+// Phase 3 Block 12: _quotaSeg() + _formatQuotaModel() extrahiert
+// nach renderer/utils/quotaFormatter.js. Pure Format-Logik,
+// 0 App-Coupling (nur escapeHtml über window).
+const { quotaSeg: _quotaSeg, formatQuotaModel: _formatQuotaModel } = window.QuotaFormatter;
 function _formatQuotaModel(m) {
   const name = m.model_name || m.name || m.model || '?';
   // All values are rendered into innerHTML below â€” escape to avoid XSS via a
