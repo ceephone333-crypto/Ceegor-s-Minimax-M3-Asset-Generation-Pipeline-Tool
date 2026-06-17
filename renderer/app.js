@@ -432,38 +432,10 @@ function showHelp(topicKey, fallbackText) {
       el('button', { class: 'primary', onclick: close }, 'Got it'),
     ]));
   }, { id: modalId });
-}
-
-// Wire every element that has a `data-help-topic` attribute
-// (e.g. the topbar buttons, the sidebar buttons, the log
-// buttons) to open the help modal on click. We use event
-// delegation on the document so we don't have to attach
-// listeners to every individual button (and so dynamically
-// added elements get the behaviour for free as long as
-// they have the attribute).
-function setupHelpDelegation() {
-  document.addEventListener('click', (e) => {
-    const t = e.target && e.target.closest && e.target.closest('[data-help-topic]');
-    if (!t) return;
-    // Suppress help for form controls (INPUT/SELECT/TEXTAREA)
-    // â€” clicking into the folder-browser filter, a prompt
-    // textarea, or a model dropdown should focus the control,
-    // not pop a help modal. The help is still reachable via
-    // the surrounding label / the explicit ? icon. Without
-    // this guard, clicking the filter opens the help modal,
-    // closes it, and the user is forced to click the filter a
-    // SECOND time to type â€” which opens the modal again,
-    // forever.
-    const tag = e.target && e.target.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
-      return;
-    }
-    e.preventDefault();
-    e.stopPropagation();
-    const topic = t.getAttribute('data-help-topic');
-    showHelp(topic, t.getAttribute('title') || null);
-  });
-}
+// Phase 3 Block 8: setupHelpDelegation() extrahiert nach
+// renderer/components/HelpDelegation.js. Nutzt window.showHelp
+// (gesetzt von app.js am File-Ende).
+const { setupHelpDelegation } = window.HelpDelegation;
 
 // Phase 3 Block 4: setupHoverHelpTooltips() extrahiert nach
 // renderer/components/HelpTooltip.js. Shim-Alias unten.
@@ -8224,3 +8196,8 @@ function showDiagnose() {
     m.appendChild(el('div', { class: 'footer' }, el('button', { onclick: close }, 'Close')));
   });
 }
+
+// Phase 3: exportiere showHelp auf window, damit
+// components/HelpButton.js (und zukünftige Help-Module) es aufrufen
+// können, ohne den Function-Scope zu verlassen.
+window.showHelp = showHelp;
