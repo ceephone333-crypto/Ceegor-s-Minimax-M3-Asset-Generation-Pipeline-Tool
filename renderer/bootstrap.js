@@ -16,11 +16,19 @@
   }
 
   // 2) Live-Log-Stream vom Main-Process an den EventBus weiterreichen.
+  //    MmxService.emit('mmx:log', line); LogService hört mit.
   if (window.MmxService) {
     window.MmxService.attachLogStream();
   }
 
-  // 3) State aus state.json in den AppState laden (best-effort; schlägt
+  // 3) LogService: bounded Ring-Buffer für UI-Konsumenten. Wird VOR
+  //    der ersten mmx-Aktivität gestartet, damit keine Logs verloren
+  //    gehen.
+  if (window.LogService) {
+    window.LogService.init();
+  }
+
+  // 4) State aus state.json in den AppState laden (best-effort; schlägt
   //    beim ersten Start fehl → Default-Werte bleiben).
   if (window.api && typeof window.api.stateGet === 'function') {
     window.api.stateGet().then((persisted) => {
@@ -30,7 +38,7 @@
     }).catch((e) => console.warn('[bootstrap] stateGet failed:', e));
   }
 
-  // 4) Versions-String (BRAND_VERSION) in den Topbar stempeln.
+  // 5) Versions-String (BRAND_VERSION) in den Topbar stempeln.
   if (window.api && typeof window.api.getAppVersion === 'function') {
     window.api.getAppVersion().then((info) => {
       const v = (info && info.version) || 'unknown';

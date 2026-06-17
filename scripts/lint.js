@@ -13,7 +13,9 @@
 // Regeln (siehe _refactoringplan.md §3 + §7):
 //   HART  — Datei > 500 Zeilen   → Fehler
 //   HART  — God Word (Manager|Controller) im Dateinamen → Fehler
+//   HART  — Cross-Tier-Import (z. B. src/ → main/) → Fehler
 //   WARN  — Datei > 300 Zeilen   → Warnung (geplante Aufteilung nötig)
+//   INFO  — Modul-Count, größte Datei, Ø-Zeilen (Metriken)
 
 const fs = require('fs');
 const path = require('path');
@@ -25,26 +27,38 @@ const SCAN_DIRS = ['main', 'renderer', 'src'];
 
 // Legacy-Files, die noch NICHT refactored sind (Hauptziel des Plans).
 // Sie dürfen das 500er-Limit überschreiten, erzeugen aber eine WARN.
-// Sobald Phase 2/3/4 abgeschlossen ist, werden sie aus dieser Liste entfernt.
 const LEGACY_OVERSIZE = new Set([
-  'main.js',        // 941 Z.   — wird in Phase 2 zerlegt
   'app.js',         // 8 546 Z. — wird in Phase 3 zerlegt
-  'audioCutter.js', //   661 Z. — wird in Phase 4 zerlegt
 ]);
 
-// "God Words" — Dateien mit diesen Suffixen und mehr als 3 Aufgaben
-// werden abgelehnt. Für jetzt matchen wir nur den Dateinamen, da die
-// genaue Aufgaben-Anzahl erst in Phase 1 erhoben wird.
+// "God Words" — Dateien mit diesen Suffixen werden abgelehnt.
 const GOD_WORDS = [
   /\bManager\.js$/i,
   /\bController\.js$/i,
 ];
+
+// Cross-Tier-Import-Verbot. Jede Tier darf nur die ihr zugewiesenen
+// Tiers importieren (siehe _refactoringplan.md §3.5 DAG-Pflicht).
+//
+// Renderer-Dateien laufen im Browser — sie dürfen KEIN Node-Modul
+// importieren. Wir prüfen NICHT statisch, ob die Imports Node-APIs
+// verwenden (require('child_process') etc.) — das übernimmt Electron
+// zur Laufzeit. Wir prüfen nur, dass kein Renderer-File `require()`
+// mit einem Pfad zu main/ macht (das wäre ein klarer Verstoß).
+const ALLOWED_TIER_EDGES = {
+  'main':     new Set(['main', 'src', 'node:built-in']),
+  'renderer': new Set(['renderer']),
+  'src':      new Set(['src', 'node:built-in']),
+};
 
 const HARD_LIMIT = 500;
 const WARN_LIMIT = 300;
 
 const errors = [];
 const warnings = [];
+const fileCount = { main: 0, renderer: 0, src: 0 };
+const lineCount = { main: 0, renderer: 0, src: 0 };
+const largest = { main: { rel: '', n: 0 }, renderer: { rel: '', n: 0 }, src: { rel: '', n: 0 } };
 
 function* walk(dir) {
   if (!fs.existsSync(dir)) return;
@@ -59,13 +73,50 @@ function* walk(dir) {
   }
 }
 
+function detectTier(rel) {
+  const norm = rel.replace(/\\/g, '/');
+  if (norm.startsWith('main/')) return 'main';
+  if (norm.startsWith('renderer/')) return 'renderer';
+  if (norm.startsWith('src/')) return 'src';
+  return null;
+}
+
+function checkCrossTier(file, rel) {
+  const tier = detectTier(rel);
+  if (!tier) return;
+  const allowed = ALLOWED_TIER_EDGES[tier];
+  const src = fs.readFileSync(file, 'utf8');
+  // Match require('./...') or require('../...') with relative paths.
+  const requireRe = /require\(\s*['"]([^'"]+)['"]\s*\)/g;
+  let m;
+  while ((m = requireRe.exec(src)) !== null) {
+    const target = m[1];
+    if (target.startsWith('node:') || target.startsWith('electron') || !target.startsWith('.')) continue;
+    // Resolve the import relative to the file's directory.
+    const fileDir = path.dirname(rel);
+    const resolved = path.normalize(path.join(fileDir, target)).replace(/\\/g, '/');
+    const targetTier = detectTier(resolved);
+    if (targetTier && !allowed.has(targetTier)) {
+      errors.push(`[DAG] ${rel} → ${resolved} — Cross-Tier-Import verboten (${tier} → ${targetTier}).`);
+    }
+  }
+}
+
 function lint() {
   for (const dir of SCAN_DIRS) {
     const abs = path.join(ROOT, dir);
     for (const file of walk(abs)) {
-      const rel = path.relative(ROOT, file);
+      const rel = path.relative(ROOT, file).replace(/\\/g, '/');
       const base = path.basename(file);
       const lines = fs.readFileSync(file, 'utf8').split('\n').length;
+
+      // Metrics
+      const tier = detectTier(rel);
+      if (tier) {
+        fileCount[tier]++;
+        lineCount[tier] += lines;
+        if (lines > largest[tier].n) largest[tier] = { rel, n: lines };
+      }
 
       // 1) God-Word-Check
       for (const pat of GOD_WORDS) {
@@ -78,13 +129,14 @@ function lint() {
       if (lines > HARD_LIMIT && !LEGACY_OVERSIZE.has(base)) {
         errors.push(`[SIZE] ${rel} — ${lines} Zeilen > ${HARD_LIMIT} (HART-Limit). Datei zerlegen.`);
       } else if (lines > WARN_LIMIT && LEGACY_OVERSIZE.has(base)) {
-        const phase = base === 'main.js' ? '2' : base === 'app.js' ? '3' : base === 'audioCutter.js' ? '4' : '?';
+        const phase = base === 'app.js' ? '3' : '?';
         warnings.push(`[SIZE] ${rel} — ${lines} Zeilen > ${WARN_LIMIT} (Legacy-God-File, Phase ${phase}).`);
-      } else if (lines > HARD_LIMIT && LEGACY_OVERSIZE.has(base)) {
-        warnings.push(`[SIZE] ${rel} — ${lines} Zeilen > ${HARD_LIMIT} (Legacy-God-File, Refactoring ausstehend).`);
       } else if (lines > WARN_LIMIT) {
         warnings.push(`[SIZE] ${rel} — ${lines} Zeilen > ${WARN_LIMIT} (Aufteilung empfohlen).`);
       }
+
+      // 3) Cross-Tier-Import-Check (DAG-Pflicht)
+      checkCrossTier(file, rel);
     }
   }
 }
@@ -94,6 +146,16 @@ console.log('===========================');
 console.log('');
 
 lint();
+
+// Metriken
+console.log('Modul-Metriken:');
+for (const tier of ['main', 'renderer', 'src']) {
+  const avg = fileCount[tier] > 0 ? (lineCount[tier] / fileCount[tier]).toFixed(1) : '0';
+  console.log(`  ${tier.padEnd(8)}  ${String(fileCount[tier]).padStart(3)} Dateien, ` +
+              `${String(lineCount[tier]).padStart(5)} Zeilen total, ` +
+              `Ø ${avg} Z., größte: ${largest[tier].rel || '-'} (${largest[tier].n})`);
+}
+console.log('');
 
 if (warnings.length) {
   console.log(`WARNINGS (${warnings.length}):`);

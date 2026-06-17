@@ -7,6 +7,8 @@
     "start": "electron .",
     "setup": "node scripts/setup.js",
     "check": "node scripts/check.js",
+    "lint": "node scripts/lint.js",
+    "test": "node --test tests/unit/**/*.test.js",
     "prebuild": "node scripts/check.js",
     "build": "node scripts/zip-portable.js",
     "enable-devmode": "node scripts/enable-devmode.js",

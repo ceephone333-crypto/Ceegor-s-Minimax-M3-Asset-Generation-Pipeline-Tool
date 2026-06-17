@@ -7,12 +7,17 @@
  * Beispiele:
  *   "C:/out/foo.png" + "_optimized" → "C:/out/foo_optimized.png"
  *   "C:/out/foo" + "_cut"          → "C:/out/foo_cut"
+ *   ".gitignore" + "_bak"          → ".gitignore_bak"  (Dotfile: kein Extension-Cut)
  */
 function derivedOutputPath(srcPath, suffix) {
   if (!srcPath) return srcPath;
   const lastDot = srcPath.lastIndexOf('.');
   const lastSlash = Math.max(srcPath.lastIndexOf('/'), srcPath.lastIndexOf('\\'));
-  if (lastDot > lastSlash && lastDot !== -1) {
+  // lastDot > 0 verhindert, dass Dotfiles (.gitignore) fälschlich als
+  // "Extension an Position 0" interpretiert werden. lastDot > lastSlash
+  // stellt sicher, dass der Punkt zum Filenamen und nicht zu einem
+  // Verzeichnisnamen gehört.
+  if (lastDot > 0 && lastDot > lastSlash) {
     return srcPath.slice(0, lastDot) + suffix + srcPath.slice(lastDot);
   }
   return srcPath + suffix;
