@@ -7548,22 +7548,9 @@ async function runRemoveBackgroundOnItem(it) {
     setStatus('Background removal failed.', false);
     toast('Background removal failed: ' + (e && e.message || e), 'err', 6000);
   }
-}
-
-// Format a mtimeMs timestamp as a human-readable local string.
-// Returns "â€”" for null / NaN / 0 (we treat 0 as "no timestamp",
-// which happens for some FS drivers that don't expose mtime).
-function formatDate(ms) {
-  if (!ms || typeof ms !== 'number') return 'â€”';
-  const d = new Date(ms);
-  if (isNaN(d.getTime())) return 'â€”';
-  // YYYY-MM-DD HH:MM in the user's local timezone. Locale-agnostic
-  // on purpose so two users in different regions see the same text
-  // in a shared screenshot.
-  const pad = (n) => String(n).padStart(2, '0');
-  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
-       + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
-}
+// Phase 3 Block 5: formatDate() extrahiert nach FormatUtils.js
+// als formatLocalShort(). Drop-in-Alias unten.
+const { formatLocalShort: formatDate } = window.FormatUtils;
 
 function promptRename(it) {
   showModal((m, close) => {

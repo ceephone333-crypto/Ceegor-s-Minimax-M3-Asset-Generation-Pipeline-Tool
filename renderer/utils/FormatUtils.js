@@ -27,4 +27,19 @@ function isoLocal(d) {
          `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
-window.FormatUtils = { bytesToHuman, secondsToHMS, pad2, isoLocal };
+/**
+ * "YYYY-MM-DD HH:MM" im lokalen Timezone. Locale-agnostisch,
+ * damit zwei User in unterschiedlichen Zeitzonen dasselbe Bild
+ * teilen können. Gibt "—" zurück für null/NaN/0.
+ * @param {number} ms
+ * @returns {string}
+ */
+function formatLocalShort(ms) {
+  if (!ms || typeof ms !== 'number') return '—';
+  const d = new Date(ms);
+  if (isNaN(d.getTime())) return '—';
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+         `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+window.FormatUtils = { bytesToHuman, secondsToHMS, pad2, isoLocal, formatLocalShort };
