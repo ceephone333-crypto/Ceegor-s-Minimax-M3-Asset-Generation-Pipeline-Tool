@@ -7363,60 +7363,6 @@ async function promptNewFolder() {
 // nach renderer/utils/quotaFormatter.js. Pure Format-Logik,
 // 0 App-Coupling (nur escapeHtml über window).
 const { quotaSeg: _quotaSeg, formatQuotaModel: _formatQuotaModel } = window.QuotaFormatter;
-function _formatQuotaModel(m) {
-  const name = m.model_name || m.name || m.model || '?';
-  // All values are rendered into innerHTML below â€” escape to avoid XSS via a
-  // hostile model name returned by the API.
-  const e = (s) => escapeHtml(String(s == null ? '' : s));
-  // mmx quota fields have changed between versions. Read them with a few
-  // aliases so we survive both old and new shapes.
-  const iTotal = m.current_interval_total_count ?? m.interval_total ?? m.daily_total ?? 0;
-  const iUsed  = m.current_interval_usage_count ?? m.interval_used ?? m.daily_used ?? 0;
-  const iStatus = m.current_interval_status ?? m.interval_status ?? m.daily_status;
-  const iPct    = m.current_interval_remaining_percent ?? m.interval_remaining_percent ?? m.daily_remaining_percent;
-  const wTotal = m.current_weekly_total_count ?? m.weekly_total ?? 0;
-  const wUsed  = m.current_weekly_usage_count ?? m.weekly_used ?? 0;
-  const wStatus = m.current_weekly_status ?? m.weekly_status;
-  const wPct    = m.current_weekly_remaining_percent ?? m.weekly_remaining_percent;
-  // "Not in plan" only when BOTH statuses are explicitly 3. (The previous
-  // version also matched `null`, which mis-classified every model that
-  // didn't return a status field â€” that's why the user saw "general: not
-  // in plan" even though generations worked.) The remaining_percent fields
-  // are then used as a fallback so the user still sees *something* useful.
-  const explicitlyNotInPlan =
-    (iStatus === 3) && (wStatus === 3);
-  if (explicitlyNotInPlan) {
-    return `<span class="quota-not-in-plan">${e(name)}: not in plan</span>`;
-  }
-  const parts = [];
-  // Daily interval (e.g. "today"): only when there's a non-zero total
-  if (iTotal && iTotal > 0) parts.push(_quotaSeg(name, iUsed || 0, iTotal, 'today'));
-  // Weekly: only when there's a non-zero total
-  if (wTotal && wTotal > 0) parts.push(_quotaSeg(name, wUsed || 0, wTotal, 'week'));
-  if (parts.length === 0) {
-    // In plan but no counts (e.g. general returned 0/0 with status=1).
-    // Fall back to the *_remaining_percent field (note: this is "remaining"
-    // percent â€” invert it to show "used" percent, which the user expects).
-    const segs = [];
-    if (iPct != null) {
-      const usedPct = 100 - iPct;
-      const cls = usedPct >= 90 ? 'quota-low' : (usedPct >= 50 ? 'quota-warn' : '');
-      segs.push(`<span class="${cls}">${iPct}% today <small>(${usedPct}% used)</small></span>`);
-    }
-    if (wPct != null) {
-      const usedPct = 100 - wPct;
-      const cls = usedPct >= 90 ? 'quota-low' : (usedPct >= 50 ? 'quota-warn' : '');
-      segs.push(`<span class="${cls}">${wPct}% week <small>(${usedPct}% used)</small></span>`);
-    }
-    if (segs.length === 0) {
-      // We have a model entry but no usable data. Show it as in-plan with
-      // a hint so the user knows we got something, just no counters.
-      return `<span class="quota-in-plan">${e(name)}: in plan</span>`;
-    }
-    return `<span class="quota-in-plan">${e(name)}:</span> ${segs.join(' Â· ')}`;
-  }
-  return parts.join(' Â· ');
-}
 async function refreshQuota() {
   const el2 = $('#quota-value');
   el2.innerHTML = '<span class="spinner"></span>';
