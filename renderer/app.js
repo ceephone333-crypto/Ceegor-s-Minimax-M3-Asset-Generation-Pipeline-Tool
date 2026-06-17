@@ -3938,37 +3938,9 @@ TABS.music = {
       }
     });
   },
-};
-
-// ----------------- Previews -----------------
-// Build a file:// URL that works in the renderer. The path may contain
-// characters that are special in a URL (#, ?, %, &) â€” these MUST be percent-
-// encoded or the file fails to load (e.g. a folder named "v2 #3" would
-// otherwise have the "#3" parsed as a fragment).
-function fileUrl(p) {
-  if (!p) return '';
-  // Normalize Windows backslashes to forward slashes (the file:// URL
-  // scheme uses forward slashes, regardless of OS).
-  let normalized = p.replace(/\\/g, '/');
-  // encodeURI keeps '/' and ':' intact, encodes everything else. That's
-  // almost right but it does NOT escape '#' or '?' â€” those are reserved
-  // URL characters, so a filename with '#' (e.g. "render#001.png")
-  // would have the URL truncated at the '#', silently loading the
-  // wrong file (or nothing). Manually escape them after encodeURI.
-  const encoded = encodeURI(normalized)
-    .replace(/#/g, '%23')
-    .replace(/\?/g, '%3F');
-  // file:// URLs use 3 slashes after the scheme for absolute paths:
-  //   - Windows: "file:///C:/Users/me/file.png"  â† drive letter stays
-  //   - POSIX:   "file:///home/me/file.png"      â† no leading slash in path
-  // Concatenating "file:///" with an absolute POSIX path (which already
-  // starts with "/") would produce 4 slashes (file:////home/...) which
-  // Chromium accepts but some Chromium-based clients (and Electron's
-  // older image-loader) reject as malformed. Strip a single leading
-  // slash so the result is always exactly 3 slashes after "file:".
-  const body = encoded.startsWith('/') ? encoded.slice(1) : encoded;
-  return 'file:///' + body;
-}
+// Phase 3 Block 10: fileUrl() extrahiert nach
+// renderer/utils/fileUrl.js. Pure Funktion, 0 App-Coupling.
+const { fileUrl } = window.FileUrl;
 
 function showImagePreview(rootEl, file, parsed) {
   // Use file:// to let the renderer display the local file.
@@ -6059,100 +6031,10 @@ async function refreshBrowser(opts = {}) {
   renderFbList(sorted);
   // Apply current search filter if any
   applyFileSearch();
-}
-
-// Whitelist of valid sort modes. The dropdown only ever offers one
-// of these, but we re-validate on read so a corrupted state.json
-// can't inject an arbitrary string into the comparator. The value
-// `null` / `undefined` / unknown falls through to the default
-// (name-asc, dirs-first).
-const FB_SORT_MODES = new Set([
-  'name-asc', 'name-desc',
-  'size-desc', 'size-asc',
-  'mtime-desc', 'mtime-asc',
-  'created-desc', 'created-asc',
-  'type-asc',
-]);
-function normalizeFbSort(mode) {
-  return (typeof mode === 'string' && FB_SORT_MODES.has(mode)) ? mode : 'name-asc';
-}
-// "Natural" name comparison: file_2.png sorts before file_10.png.
-// Plain String.localeCompare is lexicographic and would sort
-// file_10.png before file_2.png. We split each name into runs of
-// digits and non-digits, compare the non-digit runs as strings and
-// the digit runs as numbers â€” close to what Windows Explorer does.
-function naturalCompare(a, b) {
-  const re = /(\d+)|(\D+)/g;
-  const aParts = String(a || '').toLowerCase().match(re) || [];
-  const bParts = String(b || '').toLowerCase().match(re) || [];
-  const len = Math.min(aParts.length, bParts.length);
-  for (let i = 0; i < len; i++) {
-    const ap = aParts[i], bp = bParts[i];
-    const an = /^\d/.test(ap), bn = /^\d/.test(bp);
-    if (an && bn) {
-      // Numeric compare â€” strip leading zeros so "001" and "1" tie.
-      const an2 = parseInt(ap, 10), bn2 = parseInt(bp, 10);
-      if (an2 !== bn2) return an2 - bn2;
-    } else if (ap !== bp) {
-      return ap.localeCompare(bp);
-    }
-  }
-  return aParts.length - bParts.length;
-}
-// Re-sort an array of fs-items according to the user's preferred
-// sort mode. Always returns a NEW array; the input is never
-// mutated. The default is "name-asc, dirs-first" (the same order
-// the main process returns), so a no-op call (mode === 'name-asc'
-// on a list that was already sorted by name) is cheap.
-function sortFbItems(items, mode) {
-  const m = normalizeFbSort(mode);
-  const arr = Array.isArray(items) ? items.slice() : [];
-  // Directories always come first, regardless of the chosen sort.
-  // (Windows Explorer behaviour: the user expects to find folders
-  // at the top.) We honour this by sorting on the dir-flag first
-  // and the user's chosen key second.
-  const cmp = (a, b) => {
-    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-    switch (m) {
-      case 'name-desc':
-        return naturalCompare(b.name, a.name);
-      case 'size-desc':
-        // Files only â€” directories have size 0 and shouldn't dominate.
-        return (Number(b.size) || 0) - (Number(a.size) || 0);
-      case 'size-asc':
-        return (Number(a.size) || 0) - (Number(b.size) || 0);
-      case 'mtime-desc':
-        return (Number(b.mtimeMs) || 0) - (Number(a.mtimeMs) || 0);
-      case 'mtime-asc':
-        return (Number(a.mtimeMs) || 0) - (Number(b.mtimeMs) || 0);
-      case 'created-desc': {
-        // Fall back to mtimeMs when birthtime isn't available
-        // (FAT32 / some non-NTFS volumes return 0).
-        const av = Number(a.birthtimeMs) || Number(a.mtimeMs) || 0;
-        const bv = Number(b.birthtimeMs) || Number(b.mtimeMs) || 0;
-        return bv - av;
-      }
-      case 'created-asc': {
-        const av = Number(a.birthtimeMs) || Number(a.mtimeMs) || 0;
-        const bv = Number(b.birthtimeMs) || Number(b.mtimeMs) || 0;
-        return av - bv;
-      }
-      case 'type-asc': {
-        // Sort by extension (case-insensitive), then by name. Files
-        // with no extension sort to the end.
-        const ae = (a.ext || '').toLowerCase();
-        const be = (b.ext || '').toLowerCase();
-        if (ae !== be) return ae.localeCompare(be);
-        return naturalCompare(a.name, b.name);
-      }
-      case 'name-asc':
-      default:
-        return naturalCompare(a.name, b.name);
-    }
-  };
-  arr.sort(cmp);
-  return arr;
-}
+// Phase 3 Block 11: FB_SORT_MODES + normalizeFbSort + naturalCompare +
+// sortFbItems extrahiert nach renderer/utils/fbSort.js. Pure Modul,
+// 0 App-Coupling.
+const { FB_SORT_MODES, normalizeFbSort, naturalCompare, sortFbItems } = window.FbSort;
 
 // ----------------- File-browser columns -----------------
 // Each column is a self-describing object that tells the renderer
