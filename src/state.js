@@ -89,6 +89,125 @@ function write(s) {
     // once, we honour that and don't re-ask on every launch. Stored
     // here so the dismissal survives restarts.
     realesrganFirstRunDismissed: s?.realesrganFirstRunDismissed === true,
+    // Image optimisation settings (post-generation pipeline +
+    // folder-browser right-click menu). Persisted across launches
+    // so the user only has to pick their preferred quality /
+    // format / metadata policy once.
+    //
+    //   enabled:        master toggle for the post-generation flow
+    //                   (the right-click menu ignores this and
+    //                   always shows the dialog).
+    //   quality:        1..100, the Sharp quality slider. We
+    //                   hard-clamp to [1,100] here so a corrupted
+    //                   state.json can't inject a 0 or a
+    //                   negative number that would otherwise be
+    //                   silently passed to libvips.
+    //   format:         'keep' (preserve source format) | 'jpeg'
+    //                   | 'png' | 'webp' | 'avif'. Whitelisted
+    //                   against the same set the Sharp wrapper
+    //                   accepts.
+    //   stripMetadata:  drop non-essential EXIF (camera model,
+    //                   GPS, software tag, etc.) but keep the
+    //                   ICC colour profile so the image still
+    //                   renders correctly on colour-managed
+    //                   displays. The renderer passes this
+    //                   through to window.api.optimizeImage
+    //                   unchanged.
+    optimizeSettings: (s && s.optimizeSettings && typeof s.optimizeSettings === 'object')
+      ? {
+          enabled: !!s.optimizeSettings.enabled,
+          quality: Math.max(1, Math.min(100, Math.round(Number(s.optimizeSettings.quality) || 82))),
+          format: ['keep', 'jpeg', 'png', 'webp', 'avif'].includes(s.optimizeSettings.format)
+            ? s.optimizeSettings.format
+            : 'keep',
+          stripMetadata: s.optimizeSettings.stripMetadata !== false,
+        }
+      : { enabled: false, quality: 82, format: 'keep', stripMetadata: true },
+    // Layout / splitter sizes for the 4 main areas (content,
+    // folder browser, log, picture preview). All four are
+    // pixel values; the JS drag handler clamps them to a
+    // sensible range (matching the CSS min/max in
+    // styles.css) before writing here, so a corrupted
+    // state.json with a -1 or 999999 can never break the
+    // layout. Defaults here mirror the CSS `:root` block
+    // (sidebar 360px, logbar 280px, preview 360px) so a
+    // fresh install opens with the same sizes the CSS
+    // expects. Persisted across restarts so the user only
+    // has to set their preferred column widths once.
+    layoutSettings: (s && s.layoutSettings && typeof s.layoutSettings === 'object')
+      ? {
+          sidebarW: Math.max(180, Math.min(2000, Math.round(Number(s.layoutSettings.sidebarW) || 360))),
+          logbarH:  Math.max(60,  Math.min(2000, Math.round(Number(s.layoutSettings.logbarH)  || 280))),
+          previewW: Math.max(160, Math.min(2000, Math.round(Number(s.layoutSettings.previewW) || 360))),
+        }
+      : { sidebarW: 360, logbarH: 280, previewW: 360 },
+    // File-browser sort mode (Name ↑/↓, Size ↑/↓, Newest / Oldest,
+    // Created ↑/↓, Type). Whitelisted to the same set the dropdown
+    // offers so a corrupted state.json can't inject a value that
+    // would later be used in a comparator. The renderer also
+    // re-validates on read.
+    fbSort: (typeof s?.fbSort === 'string' && [
+      'name-asc', 'name-desc',
+      'size-desc', 'size-asc',
+      'mtime-desc', 'mtime-asc',
+      'created-desc', 'created-asc',
+      'type-asc',
+    ].includes(s.fbSort)) ? s.fbSort : 'name-asc',
+    // File-browser column visibility (size, type, mtime, created,
+    // path). Object keyed by column id with boolean values. The
+    // main process round-trips the object verbatim — the renderer
+    // is the source of truth on what columns are valid, so a
+    // future column id added in a newer renderer survives the
+    // round trip. We only defend against the file being a
+    // non-object so a corrupted write can't crash the JSON parse.
+    fbColumns: (s && typeof s.fbColumns === 'object' && s.fbColumns !== null)
+      ? s.fbColumns
+      : { size: true, type: false, mtime: false, created: false, path: false },
+    // File-browser image thumbnail toggle. When true, image rows
+    // in the folder explorer render a small centered thumbnail
+    // of the actual image file (instead of the generic 🖼 icon).
+    // Folder rows are unchanged either way. The renderer is the
+    // source of truth on which files are images; we just
+    // round-trip the boolean here so a corrupted state.json can't
+    // sneak a string through.
+    fbThumbnails: !!(s && s.fbThumbnails),
+    // v1.1.1 polish: the package.json version the user last
+    // dismissed the "What's new" toast for. The renderer
+    // shows the toast only when the current version is
+    // different from this string, so a returning user
+    // sees the new changelog once per upgrade and never
+    // again. Whitelisted as a plain string with a sane
+    // length cap (corrupted write defence).
+    lastSeenVersion: (typeof s?.lastSeenVersion === 'string')
+      ? s.lastSeenVersion.slice(0, 32)
+      : '',
+    // Popup display policy. Controls how the optional "first run"
+    // / "tab intro" popups behave:
+    //   'once-fresh'   — default. Show each popup until the user
+    //                    dismisses it; then never show it again
+    //                    (across restarts).
+    //   'per-session'  — Show each popup the first time it's
+    //                    triggered after each app start; reset on
+    //                    every launch.
+    //   'never'        — Never show these popups.
+    //   'always'       — Always show these popups (ignoring any
+    //                    prior dismissal).
+    // Whitelisted so a corrupted state.json can't inject an
+    // arbitrary value.
+    popupPolicy: ['once-fresh', 'per-session', 'never', 'always'].includes(s?.popupPolicy)
+      ? s.popupPolicy
+      : 'once-fresh',
+    // Map of popup-id → ISO timestamp of when the user dismissed
+    // it. Used by the 'once-fresh' policy to decide whether the
+    // popup should still fire. Capped to a small set (popups a
+    // user has dismissed + a small ring buffer for transient
+    // entries) so the file doesn't grow unbounded if the app
+    // ever logs a lot of popup ids.
+    seenPopups: (s && typeof s.seenPopups === 'object' && s.seenPopups !== null && !Array.isArray(s.seenPopups))
+      ? Object.fromEntries(Object.entries(s.seenPopups)
+          .filter(([k, v]) => typeof k === 'string' && k.length <= 64 && typeof v === 'string' && v.length <= 32)
+          .slice(-64))
+      : {},
   };
   // Atomic write: write to a temp file then rename. Avoids a corrupt
   // state.json if the process is killed mid-write.

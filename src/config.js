@@ -62,7 +62,8 @@ function serialize(cfg) {
   const styles = Array.isArray(cfg.styles) ? cfg.styles : [];
   const lines = [
     '# MiniMax Assets Tool configuration',
-    '# Put your MiniMax Token Plan API key on the line below, save as config.txt next to the .exe',
+    '# Put your MiniMax API key on the line below, save as config.txt next to the .exe.',
+    '# Both Token Plan keys (sk-cp-…) and pay-as-you-go keys are accepted.',
     '',
     `api_key=${cfg.api_key || ''}`,
     '',

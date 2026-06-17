@@ -2,6 +2,15 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
+  // ---- app metadata ----
+  // Read by the renderer's startup popup to stamp the build
+  // version on the greetings screen. Resolved from
+  // package.json at runtime so the source of truth stays
+  // single (no risk of a stale "1.1.0" string lingering in
+  // the renderer after someone bumps the version in
+  // package.json).
+  getAppVersion: () => ipcRenderer.invoke('app:version'),
+
   // ---- config ----
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (cfg) => ipcRenderer.invoke('config:set', cfg),
@@ -80,6 +89,50 @@ contextBridge.exposeInMainWorld('api', {
   // allowedRoots() allowlist in main.js. opts: { useGpu?: boolean }.
   // On success the binary writes a transparent PNG to dstPath.
   isnetbgRun: (srcPath, dstPath, opts) => ipcRenderer.invoke('isnetbg:run', srcPath, dstPath, opts),
+
+  // ---- Image optimization / compression (Sharp + libvips) ----
+  // Re-encodes the source image to shrink its file size while
+  // preserving best-possible visual quality. opts:
+  //   {
+  //     quality:       1..100,                  // default 82
+  //     format:        'jpeg'|'png'|'webp'|'avif'|null, // null = keep source
+  //     stripMetadata: boolean,                 // default true (keeps ICC)
+  //     outputPath:    string|null,             // null = sibling with _optimized
+  //   }
+  // Returns a structured result envelope:
+  //   { ok, outputPath, inputSize, outputSize, savedBytes,
+  //     savedPercent, format, width, height, error? }
+  // Failures (corrupt file, sharp not installed, etc.) are
+  // returned as { ok: false, error: '...' } — never thrown.
+  optimizeImage: (srcPath, opts) => ipcRenderer.invoke('image:optimize', srcPath, opts),
+
+  // ---- Audio cut / probe (folder-browser right-click) ----
+  // Wraps the bundled ffmpeg-static binary. Used by the
+  // "✂ Audio cut…" overlay opened from the right-click menu on
+  // any audio file the file browser recognises. The wrapper
+  // enforces the same path-allowlist as fb:* / image:*.
+  //   audioAvailable()     → { available, path }
+  //   audioProbe(src)      → { ok, duration, codec, sampleRate,
+  //                            channels, channelLayout, bitRate,
+  //                            format, size }
+  //   audioDecodePeaks(src, opts) → downsampled peak buckets +
+  //                            optional raw mono PCM for snap-to-zero.
+  //                            opts: { duration, targetRate=8000,
+  //                                    maxBuckets=4000,
+  //                                    startSec, endSec, withPcm }
+  //   audioFindZeroCrossing(pcm, targetSample, window) → { ok, index }
+  //   audioTrimSilence(src, opts) → { ok, startSec, endSec,
+  //                            leadSilenceSec, tailSilenceSec, … }
+  //   audioCut(src, dst, opts) → streams the trimmed range to dst,
+  //                            applying the requested micro-fade.
+  //                            opts: { startSec, endSec, fadeMs=5,
+  //                                    fade=true, copy=false }
+  audioAvailable: () => ipcRenderer.invoke('audio:available'),
+  audioProbe: (srcPath) => ipcRenderer.invoke('audio:probe', srcPath),
+  audioDecodePeaks: (srcPath, opts) => ipcRenderer.invoke('audio:decodePeaks', srcPath, opts),
+  audioFindZeroCrossing: (pcm, targetSample, window) => ipcRenderer.invoke('audio:findZeroCrossing', pcm, targetSample, window),
+  audioTrimSilence: (srcPath, opts) => ipcRenderer.invoke('audio:trimSilence', srcPath, opts),
+  audioCut: (srcPath, dstPath, opts) => ipcRenderer.invoke('audio:cut', srcPath, dstPath, opts),
 
   // ---- batches (BatchGen storage) ----
   batchesGet: () => ipcRenderer.invoke('batches:get'),

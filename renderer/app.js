@@ -1,16 +1,23 @@
-/* renderer/app.js — UI logic, no build step. */
+﻿/* renderer/app.js â€” UI logic, no build step. */
 // We use globals (window.api from preload) to stay build-free.
 
-// Tool version: bump / refresh this whenever you ship a build. Format is
-// free-form (typically "<semver> · <compile date> <compile time>").
-// For now we just stamp the current build date/time. A real build pipeline
-// can replace this string at packaging time.
-const BUILD_VERSION = `0.1.0 · ${new Date().toISOString().slice(0, 19).replace('T', ' ')} UTC`;
+// Tool version: bump / refresh this whenever you ship a build. The
+// string is read from package.json via window.api.getAppVersion()
+// at startup (added in the same change that bumped it to 1.1.1), so
+// the renderer always shows the version that ships in this build's
+// package.json â€” no risk of a stale string in the source when
+// someone forgets to bump it. The format is "<version> Â· <compile
+// date> <compile time>" so the user can see at a glance which
+// build they have.
+let BUILD_VERSION = '1.1.1 Â· loadingâ€¦';
 const TOOL_NAME = 'MiniMax Assets Tool';
 const TOOL_INFO =
-  'Standalone Windows 11 tool for the MiniMax (mmx) CLI. ' +
-  'Generate images, speech, music, and videos from a single UI, ' +
-  'with style presets, batch generation, and per-tab output folders.';
+  'A friendly desktop app for the MiniMax AI service. ' +
+  'Generate images, speech, music, and short videos from text prompts in one window. ' +
+  'Works with both Token Plan keys and pay-as-you-go (PAYG) API keys. ' +
+  'Includes style presets (so you can keep the same look across many generations), ' +
+  'batch generation (run a whole list of prompts in one click), ' +
+  'and built-in tools to upscale, crop, remove backgrounds, and shrink the file size of every result.';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -26,13 +33,13 @@ const state = {
   batches: { image: [], speech: [], music: [], video: [] },
   // Per-tab last visited folder (for per-tab folder persistence, see showTab)
   fbDirs: { image: '', speech: '', music: '', video: '' },
-  // Global "Target file prefix" — prepended to every generated file's
+  // Global "Target file prefix" â€” prepended to every generated file's
   // name. Mirrored on all 4 tabs (one input on each) so the user can
   // tweak it without switching tabs. Persisted to state.json.
   filePrefix: '',
   // Real-ESRGAN model name (passed to the ncnn-vulkan binary via
-  // `-n <model>`). The default is the general-purpose 4× BSD-3 model.
-  // Users pick a different one in ⚙ Settings → Image upscaling →
+  // `-n <model>`). The default is the general-purpose 4Ã— BSD-3 model.
+  // Users pick a different one in âš™ Settings â†’ Image upscaling â†’
   // Model. The actual spawn is whitelisted in src/realesrgan.js to a
   // short known set so a corrupted state.json can't inject an
   // arbitrary model name (or argv flag) into the binary.
@@ -49,10 +56,10 @@ const state = {
   // upscaled locally (Canvas API) after the mmx call returns, using the
   // settings below. Persisted to state.json so it survives restarts.
   upscaleEnabled: false,
-  // The auto-crop options are now part of the upscale settings — they
+  // The auto-crop options are now part of the upscale settings â€” they
   // live here so the Add button in the image tab can capture them as
   // part of the batch entry snapshot, and the image tab's generate
-  // handler can apply them after the upscale. The ⚙ Settings →
+  // handler can apply them after the upscale. The âš™ Settings â†’
   // Upscale Settings popup exposes all five fields (multiplier,
   // autoCrop, cropWidth, cropHeight, cropAnchorX/Y) so the user can
   // configure everything in one place.
@@ -62,7 +69,7 @@ const state = {
   // binary. Persisted to state.json so the user's "yes, always
   // free up my generated assets" choice survives restarts. The
   // standalone right-click "Remove background" action does NOT
-  // depend on this flag — it's an explicit user gesture every
+  // depend on this flag â€” it's an explicit user gesture every
   // time, so accidental turn-on here is contained to the
   // generation pipeline.
   removeBackgroundEnabled: false,
@@ -71,6 +78,30 @@ const state = {
   // binary supports) because IS-Net on a CPU is slow; the user
   // can opt out if the GPU path is misbehaving on their box.
   removeBackgroundUseGpu: true,
+  // Image-optimisation settings. When `enabled` is true, every
+  // generated image is run through the Sharp-based
+  // image-optimizer IPC after upscale (and after the optional
+  // auto-crop + background-removal stages). Persisted to
+  // state.json. The right-click "Optimize / Compress" entry in
+  // the folder browser always opens the dialog regardless of
+  // this toggle (it's an explicit user gesture every time).
+  //
+  // Defaults match the spec's "sweet spot" for perceptually
+  // lossless compression: quality 82, keep the source format
+  // (so a PNG round-trip doesn't silently re-encode to JPEG),
+  // strip EXIF (camera model / GPS / etc.) but keep the ICC
+  // profile so colours still render correctly on colour-
+  // managed displays.
+  optimizeSettings: { enabled: false, quality: 82, format: 'keep', stripMetadata: true },
+  // Resizable-layout sizes (folder-browser column width,
+  // log/preview row height, picture-preview column width).
+  // Persisted to state.json via the splitter drag handlers so
+  // the user only has to set their preferred sizes once. The
+  // sidebar + logbar defaults match the CSS `:root` block in
+  // styles.css; the previewW default is recomputed at startup
+  // to half the available row width (see applyLayoutSettings)
+  // so a fresh install opens with a balanced 50/50 split.
+  layoutSettings: { sidebarW: 360, logbarH: 280, previewW: 480 },
   // Per-tab generation state used for status dots and the batch runner.
   // "running" while mmx is in flight, "done" after success, "idle" otherwise.
   // Green dot is only shown when the tab is not the active one.
@@ -80,11 +111,11 @@ const state = {
   // completion between batch entries.
   generating: null,
   // Per-tab generation queue progress. genQueueSize is the total number
-  // of items the current run will produce (variants × --n). genQueueDone
+  // of items the current run will produce (variants Ã— --n). genQueueDone
   // is how many items have finished. The tab's ETA timer reads both
   // values to compute a "remaining time for the whole queue" estimate.
   // Cleared by armGenBtnWithCancel's cleanup. Without these, the ETA
-  // only ever showed the time for the CURRENT item — useless when the
+  // only ever showed the time for the CURRENT item â€” useless when the
   // user is running a 5-variant batch and wants to know when the whole
   // batch will be done.
   genQueueSize: { image: 0, speech: 0, music: 0, video: 0 },
@@ -94,12 +125,453 @@ const state = {
   // same file twice" and avoid a re-decode + flicker. Cleared when
   // the preview is reset to the empty state (e.g. after a file is
   // deleted or moved out from under the pane). Initialized here so
-  // the first read doesn't see "undefined" — the comparison would
+  // the first read doesn't see "undefined" â€” the comparison would
   // still work, but writing to it via a property assignment on
   // `state` would silently create the key on first use, which is
   // the kind of implicit shape change that's hard to grep for.
   _lastPreviewPath: null,
+  // Snapshot of the file-browser list (the items returned by
+  // window.api.fbList and rendered into #fb-list). Used by helpers
+  // that need to look up a full fs-item record by path (size, ext,
+  // mtimeMs, isDir) without re-issuing an IPC call. Populated by
+  // renderFbList on every refresh.
+  _fbItems: [],
+  // The current multi-image preview batch, when one is shown. Set
+  // by previewImagesFromFiles to { paths: string[], index: number }.
+  // Cleared by previewImageFromFile when a single-image preview
+  // replaces the multi-image grid. The image-overlay arrow-key
+  // handler (added in a later feature) reads from this to navigate
+  // to the previous / next image in the batch. Cleared to `null`
+  // (not undefined) so the first read returns a known value.
+  _previewBatch: null,
+  // Sort mode for the file-browser list. One of:
+  //   'name-asc' (default), 'name-desc',
+  //   'size-desc', 'size-asc',
+  //   'mtime-desc' (newest first), 'mtime-asc' (oldest first),
+  //   'created-desc' (newest first), 'created-asc' (oldest first),
+  //   'type-asc' (by file extension)
+  // Persisted to state.json so the user's preferred sort survives a
+  // restart. The renderer re-sorts the items in memory; the main
+  // process still returns them in its default (name-asc, dirs-first)
+  // order so a corrupted state.json value just falls back to the
+  // server-side default.
+  fbSort: 'name-asc',
+  // Which file-browser columns are visible. An object keyed by
+  // column id (see FB_COLUMNS) with boolean values. The "name"
+  // column is mandatory and is always rendered, regardless of
+  // this object; the option-overlay reflects that by disabling
+  // its checkbox. The default set is the smallest reasonable
+  // view (name + size). Persisted to state.json so the user's
+  // choice survives a restart.
+  fbColumns: {
+    size: true,
+    type: false,
+    mtime: false,
+    created: false,
+    path: false,
+  },
+  // File-browser image thumbnail toggle. When true, image rows
+  // in the folder explorer render a small centered thumbnail of
+  // the actual image file (instead of the generic ðŸ–¼ icon). The
+  // row height grows to fit the thumbnail; non-image rows are
+  // unaffected. When false, the regular icon is shown and is
+  // left-aligned (was centred before â€” the user explicitly asked
+  // for left-alignment when thumbnails are off, so plain icons
+  // read like a normal Explorer list instead of a centred
+  // badge). Persisted to state.json.
+  fbThumbnails: false,
+  // Structured event log. Each entry is one line in the
+  // bottom-left log pane. Replaces the old <pre id="log">
+  // raw-text approach (which didn't support selection / expand
+  // / structured copy). The new pane renders each event as a
+  // row with a time stamp, a category icon, a result icon,
+  // and a one-line headline; clicking the row toggles its
+  // selection, and clicking the small chevron toggles the
+  // expanded details. Capped at LOG_MAX_EVENTS to keep memory
+  // usage bounded over a long session.
+  _logEvents: [],
+  // The id of the most recently clicked event row. Used by
+  // the shift-click range-select (shift-click selects every
+  // event between this id and the clicked one).
+  _logLastClickedId: null,
+  // Popup display policy. Controls how the optional "first run"
+  // / "tab intro" popups behave. One of:
+  //   'once-fresh'   â€” default. Show each popup until the user
+  //                    dismisses it; then never show it again
+  //                    (across restarts).
+  //   'per-session'  â€” Show each popup the first time it's
+  //                    triggered after each app start; reset on
+  //                    every launch.
+  //   'never'        â€” Never show these popups.
+  //   'always'       â€” Always show these popups (ignoring any
+  //                    prior dismissal).
+  // The user can change this in âš™ Settings â†’ Popups.
+  popupPolicy: 'once-fresh',
+  // Map of popup-id â†’ ISO timestamp of the user's last dismissal.
+  // Used by the 'once-fresh' policy to decide whether the popup
+  // should still fire. We also keep an in-memory per-session set
+  // for the 'per-session' policy so popups don't re-show inside
+  // the same launch. see _popupSeenThisSession below.
+  seenPopups: {},
 };
+// Per-session set of popup ids that have already been shown during
+// this app launch. Used by the 'per-session' popup policy so a
+// popup that was dismissed earlier in this session doesn't re-fire.
+// Cleared at app start; the on-disk seenPopups (state.seenPopups)
+// is preserved across launches and used by the 'once-fresh' policy.
+const _popupSeenThisSession = new Set();
+
+// ----------------- Centralized help system -----------------
+// Every option in the app (form field, button, settings toggle,
+// context-menu action) has a help topic. Topics are keyed by a
+// stable string ID; the help text is intentionally written in
+// plain, non-technical English so a first-time user can
+// understand it without prior experience with image / audio
+// generation tooling.
+//
+// Two ways to wire a topic into the UI:
+//   1. Inline `?` icon: pass the topic ID to `helpButton(id)`.
+//      Clicking the icon opens the help modal.
+//   2. Inline text only: pass an object with `{ text, topic }`
+//      to `helpButton()`. The icon shows a 1-line hover
+//      summary; click opens the same modal for the full text.
+//
+// The help modal is the same `showModal` primitive used for
+// every other dialog in the app, so it gets the standard
+// Esc-to-close + click-outside-to-close + focus-management
+// behaviour for free. The "Got it" button is just the default
+// `Close` action â€” the user can also press Esc.
+//
+// Why a central map (and not inline text everywhere)?
+//   - One place to update wording when the user reports
+//     something is unclear.
+//   - Searchable: `grep '"topic\\.image\\.prompt"'` finds every
+//     place in the renderer that references the image-prompt
+//     help topic, even after the help text is rewritten.
+//   - The `helpButton` factory always renders the same DOM shape
+//     (consistent styling, consistent a11y title, consistent
+//     click target).
+const helpTopics = {
+  // -- Topbar --
+  'topbar.tabImage':       { title: 'Image tab',                text: 'Generate still images from a text prompt using the MiniMax AI service (works with both Token Plan and pay-as-you-go / PAYG API keys). You can also enable local post-processing (upscale, crop, background removal, file-size optimization) that runs after the API returns the image.' },
+  'topbar.tabSpeech':      { title: 'Speech tab',               text: 'Convert text into spoken audio. Pick a voice, paste or type the text, and click Generate. The result is written to the folder browser (right side) as an MP3 file.' },
+  'topbar.tabMusic':       { title: 'Music tab',                text: 'Generate music from a description (genre, mood, instruments). The result is a short instrumental track â€” lyrics are not supported.' },
+  'topbar.tabVideo':       { title: 'Video tab',                text: 'Generate short videos from a text prompt. Note: video generations are expensive â€” Token Plan keys allow only 3 per week; pay-as-you-go (PAYG) keys have no weekly cap and are billed per video. Each video takes a few minutes to render.' },
+  'topbar.quota':          { title: 'Quota display',            text: 'Shows how many generations you have left on your MiniMax plan for the current day and the current week. Token Plan keys have daily and/or weekly caps; pay-as-you-go (PAYG) keys instead deduct credits per generation. Some models have daily limits, some have weekly limits, and a few have both. Click the round arrow to refresh.' },
+  'topbar.styleBtn':       { title: 'Style Settings',           text: 'Manage your saved "style presets" — short text snippets that are automatically prepended to every prompt. For example, a "Cinematic" style might prepend "Cinematic lighting, shallow depth of field, 35mm film" to every image prompt. Use them to keep the same look across many generations without retyping.\n\nTip: the same style presets are also available in ⚙ Settings → Style presets. Manage them from whichever place is more convenient; both edit the same saved list.' },
+  'topbar.themeBtn':       { title: 'Theme toggle',             text: 'Switch between the dark and light UI themes. The choice is remembered for your next launch.' },
+  'topbar.settingsBtn':    { title: 'Settings',                 text: 'Open the main Settings dialog: API key, output folder, region, theme, style presets, image upscaling, image optimization, and the optional add-ons manager (Real-ESRGAN, IS-Net background-removal).' },
+
+  // -- Folder browser --
+  'sidebar.upBtn':         { title: 'Up',                       text: 'Go to the parent folder of the current folder browser location.' },
+  'sidebar.refreshBtn':    { title: 'Refresh',                  text: 'Re-scan the current folder and re-render the file list. Use this if you added or removed files in another program (e.g. Windows Explorer) and the browser is out of date.' },
+  'sidebar.filter':        { title: 'Filter',                   text: 'Type to filter the file list by name. Only files whose name contains the typed text are shown. Clear the field to show everything again.' },
+  'sidebar.sort':          { title: 'Sort',                     text: 'Sort the file browser. The available modes are: Name â†‘/â†“ (alphabetical, with "natural" number ordering so file_2.png sorts before file_10.png), Size â†‘/â†“ (by file size; directories always come first regardless of the chosen mode), Newest / Oldest (by last-modified date), Created â†‘/â†“ (by creation date â€” falls back to last-modified on filesystems that don\'t track creation, e.g. FAT32), and Type (by file extension). The selected sort is remembered across restarts.' },
+  'sidebar.pickBtn':       { title: 'Open folder',              text: 'Open the Windows folder-selection dialog and switch the file browser to any folder on your computer. The folder is added to the list of folders the tool is allowed to read and write to.' },
+  'sidebar.newFolderBtn':  { title: 'New folder',               text: 'Create a new empty folder inside the current folder.' },
+  'sidebar.openExplorerBtn': { title: 'Open in Explorer',       text: 'Open the current folder in Windows File Explorer so you can use your normal file-management tools (copy, paste, rename, share) on the generated files.' },
+  'sidebar.options':       { title: 'Folder options',          text: 'Open the folder-options overlay: pick which columns the folder explorer shows (Size, Type, Modified, Created, Path) and toggle image thumbnails in the list. The File-name column is always visible â€” turning it off would make the list unscannable. Toggle a column and the change is applied live (you can see the row get wider / narrower immediately). Enable image thumbnails to replace the generic ðŸ–¼ icon with a centered preview of the actual image file (image rows only â€” folder rows and non-image files are unaffected). The selections are remembered across restarts. When the columns don\'t fit the available width, a horizontal scroll bar appears at the bottom of the list automatically.' },
+  'sidebar.thumbnails':    { title: 'Image thumbnails',        text: 'Replace the generic ðŸ–¼ icon on image rows with a centered preview of the actual image file (folder rows and non-image files are unaffected). The row height grows automatically so the thumbnail is fully visible â€” even when every column is enabled at once. When the toggle is off, the regular emoji icon is shown and is left-aligned (instead of the previous centred style), so a plain list reads like a normal Explorer view. The choice is remembered across restarts.' },
+
+  // -- Image tab --
+  'image.prompt':          { title: 'Prompt',                   text: 'Describe the image you want. Be as specific as you can â€” include the subject, the setting, the lighting, the mood, the camera angle, the artistic style. For example, instead of "a cat", try "a fluffy ginger cat sitting on a sunlit windowsill, soft afternoon light, photographic style". The more detail, the closer the result matches what you had in mind.' },
+  'image.style':           { title: 'Style preset',             text: 'A saved prefix that is automatically added to your prompt. Use a style to keep the same look across many images (for example, all images in a comic-strip project share the same "ink illustration" style prefix). Manage your styles via the ðŸŽ¨ button in the top bar.' },
+  'image.negativePrompt':  { title: 'Negative prompt',         text: 'A list of things you do NOT want in the image. For example, "blurry, low quality, extra fingers" steers the model away from those problems. Leave empty for the default.' },
+  'image.model':           { title: 'Model',                    text: 'Which image-generation model to use. Different models have different strengths: some are photorealistic, some are better for illustrations, some are optimised for text rendering, etc. If you are not sure, start with the default.' },
+  'image.aspect':          { title: 'Aspect ratio',             text: 'The shape of the output image. "1:1" is a square. "16:9" is a wide landscape (good for desktop wallpapers). "9:16" is a tall portrait (good for phone wallpapers). "4:3" is the classic monitor shape.' },
+  'image.resolution':      { title: 'Resolution',               text: 'The pixel size of the output image. Higher = more detail but slower to generate and uses more of your quota. The default (1024Ã—1024 for 1:1) is a good balance for most uses.' },
+  'image.variants':        { title: 'Variants',                 text: 'How many different images to generate from the same prompt in a single click. Each variant uses one quota unit. Use 2-3 to compare options; use 4-5 if you want a wider selection to pick from.' },
+  'image.seed':            { title: 'Seed',                     text: 'A number that controls the random pattern used by the model. The same prompt + the same seed always produces (roughly) the same image. Useful when you want to re-generate with one small change and keep everything else the same. Leave "-1" (default) for a fresh random seed each time.' },
+  'image.referenceImage':  { title: 'Reference image',          text: 'An optional local image file the model should "look at" while generating. The model tries to match the style, the colour palette, the composition, or the subject of the reference. Not all models support this.' },
+  'image.filePrefix':      { title: 'File-name prefix',         text: 'A short text prepended to every generated file name. For example, a prefix of "project42_" produces files like "project42_2024-01-15_â€¦". Useful for grouping related generations in a single project folder.' },
+  'image.upscaleCheckbox': { title: 'Upscale after generation', text: 'When checked, every generated image is upscaled locally after the API returns it. Pure browser / Sharp pipeline, no extra network call. Click the label to open the settings dialog (multiplier, auto-crop, background-removal, optimization).' },
+  'image.upscaleSettings': { title: 'Upscale settings',         text: 'Configure the local post-processing pipeline: how much to upscale (2Ã— / 3Ã— / 4Ã—), whether to auto-crop to a target resolution, and whether to remove the background or optimize the file size after upscale. Click the ðŸ” Upscale label to open this dialog.' },
+  'image.addToBatch':      { title: 'Add to BatchGen',          text: 'Save the current prompt + settings as one entry in the BatchGen queue for this tab. You can then click "Start BatchGen" to run all queued entries one after another â€” useful for variations on a theme (same character, different poses / outfits / settings).' },
+  'image.generateBtn':     { title: 'Generate',                 text: 'Send the current prompt to the MiniMax API. While the generation is in progress the button becomes "Cancel" â€” click it to abort. After the API returns, any enabled post-processing (upscale, crop, background removal, optimization) runs automatically before the image is shown in the preview pane. Works with both Token Plan and pay-as-you-go (PAYG) keys.' },
+  'image.batchStart':      { title: 'Start BatchGen',           text: 'Run every prompt in the batch queue, one after another, using the prompt + settings of each entry. While a generation is running on this tab, the button is locked (greyed out) â€” wait for the current one to finish first.' },
+  'image.batchEdit':       { title: 'Edit batch entries',       text: 'Open the BatchGen manager for this tab: add, remove, reorder, or edit the saved prompts. You can also paste a list of prompts (one per line) for bulk entry.' },
+
+  // -- Speech tab --
+  'speech.prompt':         { title: 'Text to speak',            text: 'The text the voice will read out. Plain text, no special formatting. Newlines are spoken as short pauses. Use punctuation (commas, periods, question marks) to control the pacing â€” they really do change how the voice sounds.' },
+  'speech.voice':          { title: 'Voice',                    text: 'Which voice to use. The list is loaded from the API and contains dozens of voices in many languages. Each voice has a different age, gender, accent, and personality â€” click around to find the one you like. The "preview" button (â–¶) plays a sample.' },
+  'speech.speed':          { title: 'Speed',                    text: 'How fast the voice speaks. 1.0 is the default. 0.5 is half-speed (slower, more deliberate). 2.0 is double-speed (chipmunk territory â€” usually too fast). Most use cases want 0.9-1.1.' },
+  'speech.pitch':          { title: 'Pitch',                    text: 'How high or low the voice sounds. 0 is the default. Positive values make it higher, negative values make it lower. Small changes (Â±2) are usually all you need; large changes (Â±10+) start to sound unnatural.' },
+  'speech.volume':         { title: 'Volume',                   text: 'Output loudness in decibels. 0 is the default. Positive values are louder, negative values are quieter. Useful for matching the level of multiple generated clips without re-encoding them.' },
+  'speech.emotion':        { title: 'Emotion',                  text: 'Optional emotional tone: happy, sad, angry, surprised, fearful, disgusted, neutral. Leave at "Auto" for the model to pick based on the text. Not all voices support all emotions â€” the dropdown only shows what is available for the selected voice.' },
+  'speech.language':       { title: 'Language',                 text: 'The spoken language. Most voices speak multiple languages â€” pick the one closest to the text you are feeding in. "Auto" lets the model detect the language from the text.' },
+  'speech.format':         { title: 'Output format',            text: 'Audio file format. MP3 is the most compatible (plays on every device). PCM is raw audio (larger file, no quality loss). FLAC is lossless compression (smaller than PCM, same quality).' },
+  'speech.sampleRate':     { title: 'Sample rate',              text: 'Audio quality, measured in samples per second. 32 kHz is good for speech. 44.1 kHz is CD quality. 48 kHz is studio quality â€” usually overkill for speech but fine for music. Higher = bigger file.' },
+
+  // -- Music tab --
+  'music.prompt':          { title: 'Music description',        text: 'Describe the music you want: genre (jazz, classical, electronicâ€¦), mood (energetic, melancholic, calmâ€¦), instruments (piano, drums, synthâ€¦), tempo (slow, mid-tempo, fastâ€¦), any reference (e.g. "in the style of 80s synthwave"). The more specific you are, the closer the result matches.' },
+  'music.model':           { title: 'Model',                    text: 'Which music-generation model to use. Different models produce different lengths and styles. The default is a good starting point.' },
+  'music.duration':        { title: 'Duration',                 text: 'How long the generated track should be, in seconds. Most models produce tracks between 10 and 60 seconds. Longer tracks use more quota.' },
+  'music.instrumental':    { title: 'Instrumental only',        text: 'When checked, the model produces an instrumental track with no singing. When unchecked, the model can add vocals based on the description.' },
+
+  // -- Video tab --
+  'video.prompt':          { title: 'Prompt',                   text: 'Describe the short video you want. The model is best at clear, concrete subjects and actions (a dog running on a beach, a car driving through a city). Abstract or surreal prompts produce less reliable results.' },
+  'video.model':           { title: 'Model',                    text: 'Which video-generation model to use. Different models have different resolution, length, and motion characteristics. The default is a good starting point.' },
+  'video.resolution':     { title: 'Resolution',               text: 'The pixel size of the video. Higher = more detail but slower to render and uses more quota. 720p is a good default.' },
+  'video.duration':        { title: 'Duration',                 text: 'How long the video should be, in seconds. Most models produce 5-10 second clips. Each extra second roughly doubles the render time and quota cost.' },
+  'video.fps':             { title: 'Frames per second',        text: 'How smooth the video motion looks. 24 fps is the cinema standard. 30 fps is the TV standard. 60 fps is very smooth (used for sports / games). Higher = bigger file and more quota.' },
+  'video.camera':          { title: 'Camera motion',            text: 'Optional camera movement (pan, zoom, dolly, etc.). Leave at "Static" for a fixed shot. Not all models support camera motion â€” the dropdown only shows what is available for the selected model.' },
+
+  // -- Settings dialog --
+  'settings.apiKey':       { title: 'API key',                  text: 'Your MiniMax API key. Works with both Token Plan keys (which look like "sk-cp-xxxxxxxx") and pay-as-you-go (PAYG) keys. Get a Token Plan key from the MiniMax dashboard, or create a PAYG key at the developer portal under "Interface Keys". Paste it here. The key is stored in config.txt next to the executable â€” never in the cloud, never embedded in the tool. You can use the "Show" / "Hide" toggle to confirm you pasted it correctly; the field is masked by default to prevent shoulder-surfing.' },
+  'settings.outputDir':    { title: 'Output folder',            text: 'Where every generated file (image, audio, music, video) is written. Pick a folder with enough free space â€” videos and high-resolution images can be hundreds of megabytes each. The default is a "generated" folder next to the executable.' },
+  'settings.region':       { title: 'Region',                   text: 'Which MiniMax API region to talk to. Most users want "global". Pick the regional endpoint only if you are inside a regulated network that blocks the global one. The region setting applies to both Token Plan and pay-as-you-go (PAYG) keys.' },
+  'settings.theme':        { title: 'Theme',                    text: 'Pick the UI theme. "Dark" is easier on the eyes for long sessions. "Light" is better for screenshots / screen sharing in a bright room.' },
+  'settings.upscale':      { title: 'Image upscaling',          text: 'Configure the local post-processing pipeline. The default works without any extra software, but you can install Real-ESRGAN (BSD-3-Clause) for noticeably higher-quality 4Ã— upscale, and IS-Net for one-click background removal. Both are optional.' },
+  'settings.optionalAddons': { title: 'Optional add-ons',      text: 'One-click installers for the optional quality tools: Real-ESRGAN binary, IS-Net binary, IS-Net ONNX model. The tool works without them; they are quality upgrades, not requirements.' },
+  'settings.popupPolicy':    { title: 'Popup behaviour',        text: 'Controls how often the optional popups appear: the welcome screen on every fresh launch, the first-time setup, the optional add-ons installer, and the per-tab intro messages. "Show once to fresh users, then never" is the default â€” each popup fires once and remembers your dismissal across restarts. "Show first time each app start" re-triggers every popup on the next launch (useful while you\'re still learning the tool). "Never show these popups" silences all of them at once. "Always show (even after dismissal)" re-fires them on every trigger â€” useful for demos and training. The "Reset popup history" button below wipes the dismissal record so every popup fires again on its next trigger.' },
+  'settings.popupsBtn':      { title: 'Popups settings',        text: 'Open the popup behaviour settings: pick how often the welcome / first-time / add-on / tab-intro popups appear, or reset the seen-popups history so every popup fires again the next time it is triggered.' },
+
+  // -- Image pipeline (right-click context menu) --
+  'ctx.upscale':           { title: 'Upscale',                  text: 'Make the image bigger (2Ã—, 3Ã—, or 4Ã—) using the built-in canvas pipeline, or the higher-quality Real-ESRGAN binary if installed. The new file is written next to the original with a "_2x" / "_3x" / "_4x" suffix in the filename.' },
+  'ctx.crop':              { title: 'Crop',                     text: 'Crop the image to a specific rectangle. Drag the crop frame with the mouse, or type exact W Ã— H values. The cropped file is written next to the original with a "_cropped_WxH" suffix.' },
+  'ctx.convert':           { title: 'Convert format',           text: 'Re-encode the image to a different format. PNG is lossless (good for screenshots / illustrations, supports transparency). JPEG is much smaller (good for photos, no transparency). WebP is a modern middle ground (smaller than JPEG, supports transparency, but less universal).' },
+  'ctx.optimize':          { title: 'Optimize / Compress',      text: 'Shrink the file size while keeping the image looking (almost) the same. The default quality of 82 is the "perceptually lossless" sweet spot for photos. You can also re-encode to WebP / AVIF for further size savings, and strip non-essential EXIF data (camera model, GPS, software tag) while keeping the colour profile.' },
+  'ctx.removeBackground':  { title: 'Remove background',        text: 'Replace the background of the image with transparency. Uses the optional IS-Net model (a state-of-the-art segmentation model) â€” the tool walks you through the one-time install on first use. The result is a transparent PNG written next to the original.' },
+
+  // -- Audio pipeline (right-click context menu) --
+  'ctx.audioCut':          { title: 'Audio cut',                text: 'Open the audio in a waveform editor. Drag the two markers to set the selection, or use the time inputs for millisecond precision. Quality-of-life helpers: "Auto-trim silence" removes leading/trailing silence, "Snap to zero-crossing" prevents clicks at the cut edges, and a configurable micro-fade (5 ms by default) buries any residual click. Pick a different output format (MP3 / WAV / OGG / Opus / FLAC / M4A) from the dropdown, then "Export" writes the trimmed file next to the original. Keyboard: Space = play/stop, I/O = set start/end at the playhead, Z = zoom to selection, F = fit, A = amplify view, S = toggle snap, L = toggle loop.' },
+
+  // -- Splitters --
+  'layout.splitter':       { title: 'Drag to resize',           text: 'Click and drag this bar to resize the two areas on either side. The new size is remembered for your next launch. Three splitters exist: between the main content and the folder browser (vertical), between the content row and the log row (horizontal), and between the log and the picture preview (vertical).' },
+
+  // -- Log + preview pane --
+  'log.copy':              { title: 'Copy log',                 text: 'Copy the entire log to the clipboard. Useful for sharing an error with support or a friend. The API key is automatically masked in the copy (only the first 5 characters + "***" are shown) so a full key never accidentally leaves your machine.' },
+  'log.clear':             { title: 'Clear log',                text: 'Erase the log. This is purely cosmetic â€” the next generation will start a fresh log. Useful when you are about to do a deliberate test and want a clean log of the test run only.' },
+  'log.toggle':            { title: 'Collapse / expand the log', text: 'Collapse the log pane to a small button bar on the LEFT side so the picture preview can use the rest of the row. Click again to expand. The picture preview is locked to the RIGHT side of the window â€” there is never empty space to its right.' },
+  'log.structured':        { title: 'Log events',               text: 'Each row in the log pane is one event. The columns are: time stamp, category icon (âœŽ generate, â¤´ upscale, â— background, âˆ‡ optimize, â–¤ batch, ! error, Ã— cancel, Â· info), result icon (âœ“ for success, âœ• for error), and a one-line headline. Click anywhere on a row to select it; click the small â–¸ chevron to expand and see the full details. Use Ctrl+click and Shift+click to multi-select multiple rows. The Copy button copies the selected rows (or all rows if nothing is selected) in a plain-text format that includes both the headline and the expanded details, so a support ticket gets the full picture.' },
+  'preview.clear':         { title: 'Clear picture preview',    text: 'Reset the picture preview pane to its empty state. The file in the file browser is not touched â€” only the preview pane is cleared.' },
+  'preview.pane':          { title: 'Picture preview pane',     text: 'When you click an image in the folder browser, it is shown here. The image is fit to the pane (no cropping, no zoom). For multi-image runs (a batch of 4 variants), the pane splits into a grid of thumbnails â€” click any thumbnail to open it at 1:1 size.' },
+  'preview.overlayNav':    { title: 'Image overlay navigation', text: 'When the image overlay is open (1:1 view from a thumbnail click), use the left and right arrow keys to switch to the previous / next image. If the overlay was opened from a multi-image batch (e.g. 4 variants from a single Generate click), the arrow keys step through the batch in order. If it was opened from a single image in the file browser, the arrow keys step through all the images in the current folder, in the same order the folder explorer shows them. The position counter ("(3 / 12)") in the overlay header tells you where you are in the sequence. The "â€¹" and "â€º" buttons in the overlay header do the same thing with the mouse.' },
+  'preview.liveUpdates':   { title: 'Live batchgen updates',    text: 'While a generation is in progress (including a multi-variant BatchGen run), the folder explorer and the picture preview pane update live as each new image is written to disk: a 1-second poll scans the output folder, every newly-discovered image is added to the multi-image preview grid as a thumbnail, the matching row in the folder explorer is marked active, and the new row + thumbnail briefly blink so you can see the progress at a glance. The polling stops automatically when the generation ends (or is cancelled).' },
+};
+
+function helpButton(topic) {
+  // Build a clickable `?` icon that opens the help modal for
+  // the given topic. Returns an HTMLElement you can drop
+  // inline next to a label.
+  //
+  // `topic` can be either:
+  //   - a string (treated as a key into helpTopics), or
+  //   - an object with `{ text, topic }` for an inline
+  //     1-line summary that ALSO links to the full topic.
+  // The existing `def.help = "..."` strings (e.g. in
+  // buildParamRow) are passed through unchanged; we just
+  // upgrade them to a clickable button.
+  let helpKey = null;
+  let inlineText = null;
+  if (typeof topic === 'string') {
+    inlineText = topic;
+    helpKey = topic;
+  } else if (topic && typeof topic === 'object') {
+    inlineText = topic.text || '';
+    helpKey = topic.topic || null;
+  }
+  const titleAttr = inlineText
+    ? (inlineText.length > 200 ? inlineText.slice(0, 197) + 'â€¦' : inlineText)
+    : 'Show help';
+  const b = el('button', {
+    type: 'button',
+    class: 'help-btn',
+    title: titleAttr,
+    'aria-label': 'Show help',
+    onclick: (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // Prefer the topic-keyed version (richer text) when
+      // available; fall back to the inline summary.
+      showHelp(helpKey, inlineText);
+    },
+  }, '?');
+  return b;
+}
+
+function showHelp(topicKey, fallbackText) {
+  // Open a modal that displays the help text for the given
+  // topic key. If the key is not in the registry, fall back
+  // to whatever inline text the caller supplied.
+  let topic = null;
+  if (topicKey && helpTopics[topicKey]) {
+    topic = helpTopics[topicKey];
+  } else if (topicKey) {
+    // Unrecognised key: synthesize a minimal entry so the
+    // user still sees *something* instead of a blank modal.
+    topic = { title: 'Help', text: topicKey };
+  } else if (fallbackText) {
+    topic = { title: 'Help', text: fallbackText };
+  } else {
+    topic = { title: 'Help', text: 'No help text available for this option.' };
+  }
+  // Pass an id derived from the topic key so the modal-stack
+  // dedup catches repeated clicks on the same help button.
+  // Without this, mashing the ? icon on a glitchy trackpad
+  // could pile up five identical help modals on top of each
+  // other (each with its own backdrop and Esc listener).
+  const modalId = topicKey ? ('help:' + topicKey) : 'help:inline';
+  showModal((m, close) => {
+    m.classList.add('help-modal');
+    m.appendChild(el('h2', {}, 'â“ ' + topic.title));
+    // The help text can contain short paragraphs separated by
+    // blank lines â€” render as multiple <p> elements so the
+    // typography is consistent with the rest of the app.
+    const paragraphs = String(topic.text).split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
+    const body = el('div', { class: 'help-modal-body' });
+    for (const p of paragraphs) {
+      body.appendChild(el('p', {}, p));
+    }
+    m.appendChild(body);
+    // Footer with a single "Got it" close button so the
+    // user has an obvious "I'm done" action. Esc also
+    // closes (handled by the global keydown listener in
+    // showModal).
+    m.appendChild(el('div', { class: 'footer' }, [
+      el('button', { class: 'primary', onclick: close }, 'Got it'),
+    ]));
+  }, { id: modalId });
+}
+
+// Wire every element that has a `data-help-topic` attribute
+// (e.g. the topbar buttons, the sidebar buttons, the log
+// buttons) to open the help modal on click. We use event
+// delegation on the document so we don't have to attach
+// listeners to every individual button (and so dynamically
+// added elements get the behaviour for free as long as
+// they have the attribute).
+function setupHelpDelegation() {
+  document.addEventListener('click', (e) => {
+    const t = e.target && e.target.closest && e.target.closest('[data-help-topic]');
+    if (!t) return;
+    // Suppress help for form controls (INPUT/SELECT/TEXTAREA)
+    // â€” clicking into the folder-browser filter, a prompt
+    // textarea, or a model dropdown should focus the control,
+    // not pop a help modal. The help is still reachable via
+    // the surrounding label / the explicit ? icon. Without
+    // this guard, clicking the filter opens the help modal,
+    // closes it, and the user is forced to click the filter a
+    // SECOND time to type â€” which opens the modal again,
+    // forever.
+    const tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    const topic = t.getAttribute('data-help-topic');
+    showHelp(topic, t.getAttribute('title') || null);
+  });
+}
+
+// Hover-driven tooltip for inline `data-help` icons (the small
+// `?` spans next to form-field labels). Replaces the previous
+// CSS pseudo-element approach (`[data-help]:hover::after`) which
+// positioned the tooltip `absolute` next to the icon and was
+// clipped by the content area's `overflow: auto`. Long tooltips
+// (e.g. for --width, --model) routinely extended past the right
+// edge of #content and were rendered invisible behind the
+// folder-explorer area. The new tooltip is `position: fixed` so
+// no parent container can clip it.
+//
+// A SINGLE tooltip element is created and reused. We use event
+// delegation on the document so dynamically added icons (e.g.
+// the help icons mounted by the per-tab build() calls) pick up
+// the behaviour for free.
+//
+// The tooltip is repositioned on every scroll / resize event so
+// it always tracks the currently-hovered icon, even when the
+// page is scrolled while the tooltip is open.
+function setupHoverHelpTooltips() {
+  const tip = document.createElement('div');
+  tip.className = 'help-hover-tooltip';
+  tip.setAttribute('role', 'tooltip');
+  tip.style.display = 'none';
+  document.body.appendChild(tip);
+  // The icon we're currently showing a tooltip for. Lets the
+  // scroll/resize listener know whether to reposition or hide.
+  let activeEl = null;
+  // Show / hide / reposition helpers ----------------------------------
+  function showFor(el) {
+    const text = el.getAttribute('data-help') || el.getAttribute('title') || '';
+    if (!text) { hide(); return; }
+    tip.textContent = text;
+    tip.style.display = '';
+    activeEl = el;
+    position(tip, el);
+  }
+  function hide() {
+    tip.style.display = 'none';
+    activeEl = null;
+  }
+  function position(tipEl, anchor) {
+    // Position below the icon by default. If the tooltip would
+    // overflow the bottom of the viewport, flip it above the
+    // icon instead. If it would overflow the right edge, clamp
+    // the left position so the right edge stays inside the
+    // viewport. We use getBoundingClientRect (relative to the
+    // viewport) because the tooltip itself is position: fixed.
+    const r = anchor.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 8; // px from the viewport edge
+    // Measure the tooltip after we set the text but BEFORE we
+    // position it â€” display:none / display:'' flicker is
+    // unavoidable but lasts one frame, which is fine.
+    const tipR = tipEl.getBoundingClientRect();
+    let top = r.bottom + 6;
+    let left = r.left;
+    if (top + tipR.height > vh - margin) {
+      // Try above the icon first
+      const above = r.top - tipR.height - 6;
+      if (above >= margin) top = above;
+      else top = Math.max(margin, vh - tipR.height - margin);
+    }
+    if (left + tipR.width > vw - margin) {
+      left = vw - tipR.width - margin;
+    }
+    if (left < margin) left = margin;
+    tipEl.style.left = left + 'px';
+    tipEl.style.top = top + 'px';
+  }
+  // Event delegation on the document. We use mouseover /
+  // mouseout (NOT mouseenter / mouseleave) because they bubble â€”
+  // critical for delegation. mouseover fires once per icon
+  // entry, mouseout fires once per icon leave.
+  document.addEventListener('mouseover', (e) => {
+    const t = e.target && e.target.closest && e.target.closest('[data-help]');
+    if (!t) return;
+    showFor(t);
+  });
+  document.addEventListener('mouseout', (e) => {
+    const t = e.target && e.target.closest && e.target.closest('[data-help]');
+    if (!t) return;
+    // Only hide if we're really leaving the icon (not just
+    // moving to a child node inside the icon). relatedTarget
+    // is the element the pointer is moving to; if it's still
+    // inside `[data-help]`, we keep the tooltip open.
+    const to = e.relatedTarget;
+    if (to && t.contains(to)) return;
+    hide();
+  });
+  // Hide on Esc and on window blur (the latter is a safety net
+  // for cases like alt-tabbing away with the tooltip open).
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && activeEl) hide();
+  });
+  window.addEventListener('blur', hide);
+  // Reposition on scroll / resize so the tooltip stays glued to
+  // the icon even if the user is mid-scroll. capture: true on
+  // the scroll listener so we catch scrolls inside the
+  // scrollable #content (which doesn't bubble to window).
+  window.addEventListener('scroll', () => {
+    if (activeEl) position(tip, activeEl);
+  }, true);
+  window.addEventListener('resize', () => {
+    if (activeEl) position(tip, activeEl);
+  });
+}
 
 // ----------------- Utilities -----------------
 function el(tag, attrs = {}, children = []) {
@@ -122,8 +594,8 @@ function el(tag, attrs = {}, children = []) {
 // ----------------- API key masking -----------------
 // The API key is the single most sensitive piece of config we
 // touch. Once it lands in the log pane, the user can copy it
-// with one click — the same one-click they use to share logs
-// with support — and accidentally leak the full key. We mask
+// with one click â€” the same one-click they use to share logs
+// with support â€” and accidentally leak the full key. We mask
 // everywhere except the actual mmx call:
 //   - maskApiKey(key)               -> first 5 chars + "***", or
 //                                     "***" for short / empty keys
@@ -153,15 +625,19 @@ function maskLine(line, apiKey) {
 // current real value, not the masked one), so a Save with no
 // user interaction still works correctly. When the user types
 // over the field, the new value is the "real" value from then
-// on — the toggle then toggles between masked(new) and new.
+// on â€” the toggle then toggles between masked(new) and new.
 //
-// SECURITY: when hidden, the input is also `readonly`, so the
-// user can't type over the masked value (which would otherwise
-// look like a normal field and could trick them into "saving"
-// the masked version). The `getValue()` returned from this
-// helper always returns the *real* value, regardless of the
-// input's current display — so the caller's Save handler is
-// safe to read from it without re-implementing the mask logic.
+// SECURITY: when the field has a real value AND is hidden, the
+// input is `readonly` so the user can't type over the masked
+// display (which would otherwise look like a normal field and
+// could trick them into "saving" the masked version). When the
+// field is empty there is nothing to mask, so we leave it
+// editable â€” the user can paste / type a key on first run
+// without first having to click "Show". The `getValue()`
+// returned from this helper always returns the *real* value,
+// regardless of the input's current display â€” so the caller's
+// Save handler is safe to read from it without re-implementing
+// the mask logic.
 function showRevealableKey(realKey, opts) {
   opts = opts || {};
   const placeholder = opts.placeholder || '';
@@ -171,16 +647,47 @@ function showRevealableKey(realKey, opts) {
   let revealed = false;
   const toggle = el('button', { class: 'btn-mini', type: 'button' }, 'Show');
   function refresh() {
-    inp.value = revealed ? curValue : maskApiKey(curValue);
-    inp.readOnly = !revealed;
+    // Three states:
+    //   - empty AND not revealed: editable, empty value (nothing
+    //     to mask, so we don't show "***" â€” pasting must work).
+    //   - empty AND revealed: editable, empty value (still
+    //     nothing to mask; the user is in the middle of editing).
+    //   - non-empty AND revealed: editable, real value visible.
+    //   - non-empty AND not revealed: READ-ONLY, masked display
+    //     so a casual shoulder-surfer sees "abcde***" only.
+    const hasValue = !!curValue;
+    if (hasValue) {
+      inp.value = revealed ? curValue : maskApiKey(curValue);
+      inp.readOnly = !revealed;
+    } else {
+      // Empty: never readonly, never display the mask. The
+      // placeholder is shown instead.
+      inp.value = '';
+      inp.readOnly = false;
+    }
     toggle.textContent = revealed ? 'Hide' : 'Show';
   }
   refresh();
   inp.addEventListener('input', () => {
-    // The input is readonly while hidden, so this only fires when
-    // the user is actually editing the real value. Track every
-    // edit so getValue() returns the latest typed value.
-    if (revealed) curValue = inp.value;
+    // The user is typing into an editable field (either revealed
+    // or empty). Track every edit so getValue() returns the
+    // latest typed value, and re-evaluate readOnly so we lock
+    // the field down the moment there's a real value to protect.
+    curValue = inp.value;
+    refresh();
+  });
+  inp.addEventListener('focus', () => {
+    // Empty + not revealed + user clicks the field: a click on
+    // a "Show" button is no longer required to paste. The
+    // security model still holds because there's nothing to mask
+    // (curValue is still ''), and the moment the user types /
+    // pastes a single character, refresh() above locks the field
+    // back to readonly until they click "Show" again.
+    if (!curValue && !revealed) {
+      // No-op visually; we just make sure the field is
+      // focusable + editable (already true in the empty case).
+      inp.readOnly = false;
+    }
   });
   toggle.addEventListener('click', () => {
     revealed = !revealed;
@@ -193,17 +700,309 @@ function showRevealableKey(realKey, opts) {
   return { row, input: inp, getValue: () => curValue, isRevealed: () => revealed };
 }
 
+// ----------------- Structured event log -----------------
+// The new log pane is a list of structured events (one per row)
+// instead of the old raw-text <pre>. Each event has:
+//   { id, ts, category, headline, details, result, expanded, raw }
+// and is rendered as a row with time stamp + category icon + result
+// icon + headline. The user can multi-select rows with the mouse
+// (click / ctrl-click / shift-click), expand a row to see its
+// details, and copy the selected events (or all) to the clipboard
+// in a plain-text format that includes both the headline and the
+// expanded details â€” so pasting into a support ticket gives the
+// helper every piece of information the renderer has.
+
+// Maximum number of events kept in memory. Newer events push older
+// ones out (FIFO). Caps memory growth over a long session; the
+// user almost never scrolls back more than a few hundred lines.
+const LOG_MAX_EVENTS = 500;
+
+// Map of category id â†’ (icon glyph, label). The icon is the
+// leading character in each row; the label is shown on hover
+// (and used by the keyboard-shortcut help modal). Kept short
+// so a single row stays one line in the collapsed state.
+const LOG_CATEGORIES = {
+  info:     { icon: 'Â·', label: 'Info' },
+  gen:      { icon: 'âœŽ', label: 'Generate' },
+  upscale:  { icon: 'â¤´', label: 'Upscale' },
+  bg:       { icon: 'â—', label: 'Background' },
+  optimize: { icon: 'âˆ‡', label: 'Optimize' },
+  batch:    { icon: 'â–¤', label: 'Batch' },
+  error:    { icon: '!', label: 'Error' },
+  cancel:   { icon: 'Ã—', label: 'Cancel' },
+};
+
+// Add a new event to the log. Returns the new event id so the
+// caller can reference it later (e.g. for a "background
+// generation complete" event that needs to update a prior
+// "background generation started" event).
+//
+// Args:
+//   opts.headline  : string, short one-line description (required)
+//   opts.category  : string, one of LOG_CATEGORIES keys (default 'info')
+//   opts.details   : string | string[] | null, extra lines shown
+//                    when the row is expanded. Strings are split
+//                    on \n into multiple lines; null is no details.
+//   opts.result    : 'ok' | 'err' | null (default null). Drives the
+//                    trailing âœ… / âŒ icon.
+//   opts.ts        : Date | null (default: now). Pass a custom
+//                    timestamp for events that happened earlier
+//                    (e.g. after a delay).
+//   opts.select    : boolean (default false). If true, the new
+//                    event is also added to the current selection.
+//   opts.raw       : string | null. Free-form text (used by the
+//                    legacy log() wrapper). Included in the
+//                    copy output but not shown in the row.
+//
+// Masking: the headline + details are passed through maskLine()
+// so a full API key never appears in a log event the user
+// might paste into a support ticket.
+function addLogEvent(opts) {
+  opts = opts || {};
+  const cfg = state.config || {};
+  const mask = (s) => maskLine(String(s == null ? '' : s), cfg.api_key);
+  const ev = {
+    id: (_logNextId()),
+    ts: opts.ts instanceof Date ? opts.ts : new Date(),
+    category: LOG_CATEGORIES[opts.category] ? opts.category : 'info',
+    headline: mask(opts.headline || ''),
+    details: (function () {
+      const d = opts.details;
+      if (d == null) return [];
+      const arr = Array.isArray(d) ? d : String(d).split(/\r?\n/);
+      return arr.map((s) => mask(s)).filter((s) => s !== '');
+    })(),
+    result: opts.result === 'ok' || opts.result === 'err' ? opts.result : null,
+    expanded: !!opts.expanded,
+    raw: opts.raw != null ? mask(String(opts.raw)) : null,
+  };
+  state._logEvents.push(ev);
+  // Cap the buffer. Drop the oldest events (FIFO) so the
+  // visible scroll position stays near the bottom (newest
+  // event). The user can still scroll up to see what's left
+  // of the dropped events (they're gone from memory but the
+  // UI re-renders only the live buffer).
+  if (state._logEvents.length > LOG_MAX_EVENTS) {
+    state._logEvents.splice(0, state._logEvents.length - LOG_MAX_EVENTS);
+  }
+  renderLogEvent(ev);
+  // Auto-scroll the container to the new event unless the user
+  // has scrolled up to read older events (a "stick to bottom"
+  // toggle is a future enhancement; the simple "always scroll
+  // to bottom on new event" is the right default for a log).
+  const root = $('#log');
+  if (root) root.scrollTop = root.scrollHeight;
+  if (opts.select) toggleLogSelection(ev.id, true, false);
+  return ev.id;
+}
+let _logIdCounter = 0;
+function _logNextId() { return ++_logIdCounter; }
+
+// Render a single event into the log pane. Builds the row's
+// DOM once and appends it. The row carries the event id on a
+// data attribute so click handlers can look up the underlying
+// event in state._logEvents.
+function renderLogEvent(ev) {
+  const root = $('#log');
+  if (!root) return;
+  const cat = LOG_CATEGORIES[ev.category] || LOG_CATEGORIES.info;
+  const row = el('div', {
+    class: 'log-event',
+    'data-log-id': ev.id,
+    'data-log-cat': ev.category,
+  });
+  // 1. Time stamp
+  const tsText = ev.ts.toLocaleTimeString('en-GB', { hour12: false });
+  row.appendChild(el('span', { class: 'log-event-ts', title: ev.ts.toISOString() }, tsText));
+  // 2. Category icon (single character so the row stays compact)
+  row.appendChild(el('span', { class: 'log-event-cat', title: cat.label }, cat.icon));
+  // 3. Result icon. "ok" â†’ green check, "err" â†’ red cross, null â†’ no icon.
+  let resChar = '';
+  let resTitle = '';
+  if (ev.result === 'ok') { resChar = 'âœ“'; resTitle = 'Success'; }
+  else if (ev.result === 'err') { resChar = 'âœ•'; resTitle = 'Error'; }
+  if (resChar) {
+    const cls = 'log-event-res ' + (ev.result === 'ok' ? 'ok' : 'err');
+    row.appendChild(el('span', { class: cls, title: resTitle }, resChar));
+  } else {
+    row.appendChild(el('span', { class: 'log-event-res none' }, ''));
+  }
+  // 4. Headline + the (collapsed) details, shown as a single
+  //    text node. The user-visible headline is truncated with
+  //    ellipsis if it overflows the row, but the full text is
+  //    available on hover via the title attribute.
+  const headlineEl = el('span', { class: 'log-event-headline', title: ev.headline }, ev.headline);
+  row.appendChild(headlineEl);
+  // 5. Expand chevron. Toggles the details section on click.
+  //    We always render it (even when details is empty) so the
+  //    visual position of the column is stable. The chevron is
+  //    visually-disabled (lower opacity, no hover) when there
+  //    are no details to show.
+  const hasDetails = ev.details.length > 0 || !!ev.raw;
+  const chev = el('button', {
+    type: 'button',
+    class: 'log-event-chev' + (hasDetails ? '' : ' log-event-chev-empty'),
+    'aria-label': hasDetails ? 'Toggle details' : 'No details',
+  }, ev.expanded ? 'â–¾' : 'â–¸');
+  row.appendChild(chev);
+  // 6. Details section (rendered but hidden when not expanded).
+  //    Each detail line is its own <div> for clean wrapping.
+  //    When the user copies selected events, both the headline
+  //    and every detail line are included (so the clipboard
+  //    contains everything, not just the visible one-liner).
+  if (hasDetails) {
+    const det = el('div', { class: 'log-event-details' });
+    if (!ev.expanded) det.style.display = 'none';
+    for (const line of ev.details) {
+      det.appendChild(el('div', { class: 'log-event-detail-line' }, line));
+    }
+    if (ev.raw) {
+      det.appendChild(el('div', { class: 'log-event-detail-line log-event-detail-raw' }, ev.raw));
+    }
+    row.appendChild(det);
+  }
+  // Selection state. If this event id is currently in the
+  // selection set, add the class so the row shows the
+  // highlight. The toggle is done in the click handler.
+  if (isLogSelected(ev.id)) row.classList.add('selected');
+  if (ev.expanded) row.classList.add('expanded');
+  root.appendChild(row);
+  // Click delegation: the row-level click listener is attached
+  // once on the root element (see setupLogClicks below), so
+  // individual rows don't need per-row listeners.
+}
+// Track which events are currently in the multi-selection. A
+// Set is used so the copy path can do a fast ordered iteration
+// (Set preserves insertion order). The set is NOT exposed on
+// state â€” it's an internal implementation detail of the log
+// pane.
+const _logSelected = new Set();
+function isLogSelected(id) { return _logSelected.has(id); }
+function toggleLogSelection(id, selected, scrollIntoView) {
+  if (selected) _logSelected.add(id);
+  else _logSelected.delete(id);
+  const row = document.querySelector(`.log-event[data-log-id="${id}"]`);
+  if (row) {
+    row.classList.toggle('selected', selected);
+    if (scrollIntoView) {
+      try { row.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
+    }
+  }
+}
+function clearLogSelection() {
+  _logSelected.clear();
+  $$('.log-event.selected').forEach((n) => n.classList.remove('selected'));
+}
+// Range-select helper: select every event between `fromId` and
+// `toId` (inclusive) by document order. Used by shift-click.
+function selectLogRange(fromId, toId) {
+  const ids = state._logEvents.map((e) => e.id);
+  const a = ids.indexOf(fromId);
+  const b = ids.indexOf(toId);
+  if (a < 0 || b < 0) return;
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  for (let i = lo; i <= hi; i++) toggleLogSelection(ids[i], true, false);
+}
+
+// Serialize a single event for the clipboard. Returns a string
+// with the event's headline + every detail line, separated by
+// \n so the paste target can render it correctly. The format
+// is intentionally simple (no markdown) â€” a support ticket
+// should display it as-is.
+function formatLogEventForCopy(ev) {
+  const parts = [];
+  const ts = ev.ts.toLocaleString();
+  const cat = (LOG_CATEGORIES[ev.category] || LOG_CATEGORIES.info).label;
+  const res = ev.result === 'ok' ? ' [OK]' : ev.result === 'err' ? ' [ERR]' : '';
+  parts.push(`[${ts}] [${cat}]${res} ${ev.headline}`);
+  for (const d of ev.details) parts.push('    ' + d);
+  if (ev.raw) parts.push('    ' + ev.raw);
+  return parts.join('\n');
+}
+
+// Serialize the current selection (or all events, if the
+// selection is empty) for the clipboard. Returns the joined
+// string the caller writes to the clipboard. The order is the
+// same as the document order so a multi-line copy reads top
+// to bottom.
+function collectLogCopyText() {
+  const events = state._logEvents;
+  if (!events.length) return '';
+  // If the user has a selection, only copy those. Otherwise
+  // copy every event currently in memory.
+  let chosen;
+  if (_logSelected.size > 0) {
+    const selSet = _logSelected;
+    chosen = events.filter((e) => selSet.has(e.id));
+    // Sort by document order (events are pushed in order so
+    // _logEvents is already sorted by id, but we re-derive the
+    // order to be safe against future changes).
+    chosen.sort((a, b) => a.id - b.id);
+  } else {
+    chosen = events.slice();
+  }
+  return chosen.map(formatLogEventForCopy).join('\n');
+}
+
+// Wire click + keydown on the log root. Click handling:
+//   click on a row              â†’ toggle that row's selection
+//                                 (single-click replaces; ctrl
+//                                 adds; shift range-selects)
+//   click on the chevron        â†’ toggle that row's expand
+//                                 (NOT the selection)
+// We attach the listener once, on the root, and let event
+// delegation do the rest (so dynamically-added events get
+// the behaviour for free).
+function setupLogClicks() {
+  const root = $('#log');
+  if (!root) return;
+  root.addEventListener('click', (e) => {
+    const row = e.target.closest('.log-event');
+    if (!row) return;
+    const id = parseInt(row.getAttribute('data-log-id') || '0', 10);
+    if (!id) return;
+    // Chevron click â€” toggle expand only.
+    if (e.target.classList.contains('log-event-chev')) {
+      e.stopPropagation();
+      const ev = state._logEvents.find((x) => x.id === id);
+      if (!ev) return;
+      if (!ev.details.length && !ev.raw) return;
+      ev.expanded = !ev.expanded;
+      row.classList.toggle('expanded', ev.expanded);
+      const det = row.querySelector('.log-event-details');
+      if (det) det.style.display = ev.expanded ? '' : 'none';
+      const chev = row.querySelector('.log-event-chev');
+      if (chev) chev.textContent = ev.expanded ? 'â–¾' : 'â–¸';
+      return;
+    }
+    // Multi-select on row click.
+    e.preventDefault();
+    if (e.shiftKey && state._logLastClickedId != null) {
+      selectLogRange(state._logLastClickedId, id);
+    } else if (e.ctrlKey || e.metaKey) {
+      toggleLogSelection(id, !isLogSelected(id), false);
+    } else {
+      clearLogSelection();
+      toggleLogSelection(id, true, false);
+    }
+    state._logLastClickedId = id;
+  });
+}
+
 function log(line) {
-  const logEl = $('#log');
-  if (!logEl) return;
-  const ts = new Date().toLocaleTimeString();
-  // The log is copied to clipboard by the user (📋 Copy button)
-  // and pasted into support tickets. We must never let a full
-  // API key ride along. maskLine replaces every occurrence of
-  // the real key in the line with the first-5 + "***" version.
-  const safe = maskLine(line, state.config && state.config.api_key);
-  logEl.textContent += `[${ts}] ${safe}\n`;
-  logEl.scrollTop = logEl.scrollHeight;
+  // Legacy free-form log line (used for mmx stderr streaming).
+  // We now route these through addLogEvent() so the new
+  // structured pane picks them up. The 'info' category + a
+  // 'headline' that is the full line preserves the original
+  // text; the headline is also used by the new pane (one
+  // line per event) so a casual user sees a one-line
+  // summary, and a help-desk helper can click the chevron
+  // to see the full line.
+  if (!line) return;
+  addLogEvent({
+    category: 'info',
+    headline: maskLine(String(line), state.config && state.config.api_key),
+  });
 }
 
 function toast(msg, kind = 'info', ms = 3000) {
@@ -214,35 +1013,154 @@ function toast(msg, kind = 'info', ms = 3000) {
   setTimeout(() => t.remove(), ms);
 }
 
+// v1.1.1 polish: a "What's new" toast that fires the first time
+// the user launches a build with a newer package.json version
+// than what they last saw. The flag is per-version (not just
+// a one-time "saw it" boolean) so future upgrades also surface
+// their changelog. The user can dismiss the toast with the X
+// button; it never auto-shows again until the next upgrade.
+//
+// The toast is intentionally compact (a single line of headline
+// + a few bullets) so it doesn't block the user's first
+// action. It can be expanded by clicking the title.
+async function maybeShowWhatsNewToast() {
+  try {
+    const meta = await window.api.getAppVersion();
+    if (!meta || !meta.version) return;
+    const seen = (state.state && state.state.lastSeenVersion) || '';
+    if (seen === meta.version) return;
+    // v1.1.1 is the first release to use this mechanism, so
+    // anyone upgrading from anything earlier sees the
+    // changelog. If the user is on a brand-new install (no
+    // saved state at all) the startup popup already covers
+    // the onboarding case; we just want to surface WHAT
+    // changed for returning users.
+    const headline = `v${meta.version} is here`;
+    const items = [
+      'Folder options: choose your columns (size, type, modified, created, path)',
+      'Live batchgen: watch files appear in the preview as each variant finishes',
+      'New log pane: time-stamped, multi-select, click-to-expand, structured copy',
+      'Arrow keys in image overlay: ← / → to step through your batch / folder',
+      'Mark active in browser: the file you\'re previewing is always highlighted',
+    ];
+    showWhatsNewToast(headline, items, async () => {
+      // Persist "I've seen this version" so the toast doesn't
+      // fire again on the next launch of the same build.
+      try {
+        if (!state.state) state.state = {};
+        state.state.lastSeenVersion = meta.version;
+        await window.api.stateSet(state.state);
+      } catch (_) { /* non-fatal */ }
+    });
+  } catch (_) { /* non-fatal */ }
+}
+
+function showWhatsNewToast(headline, items, onDismiss) {
+  const root = $('#toast-root');
+  // The toast is a compact card (single column, ~380px wide
+  // — see styles.css .whats-new-toast) with a header row
+  // (X button) + the headline + a collapsed bullet list.
+  // Clicking the headline expands the bullets. The 380px
+  // width + 15px headline font was bumped from the original
+  // 320/13 because the user reported the headline was being
+  // cut off on smaller windows.
+  const t = el('div', { class: 'whats-new-toast' });
+  const header = el('div', { class: 'whats-new-header' });
+  const h = el('span', { class: 'whats-new-headline' }, headline);
+  h.title = 'Click to expand';
+  const x = el('button', { class: 'btn-mini whats-new-x', type: 'button' }, '×');
+  header.append(h, x);
+  t.appendChild(header);
+  const list = el('ul', { class: 'whats-new-list' });
+  for (const item of items) list.appendChild(el('li', {}, item));
+  t.appendChild(list);
+  // Click anywhere on the toast body to expand. Click X to
+  // dismiss.
+  h.addEventListener('click', () => { t.classList.toggle('expanded'); });
+  t.addEventListener('click', (e) => { if (e.target === t) t.classList.toggle('expanded'); });
+  x.addEventListener('click', (e) => {
+    e.stopPropagation();
+    t.style.transition = 'opacity 200ms ease, transform 200ms ease';
+    t.style.opacity = '0';
+    t.style.transform = 'translateY(-8px)';
+    setTimeout(() => { t.remove(); if (onDismiss) onDismiss(); }, 220);
+  });
+  root.appendChild(t);
+  // Don't auto-dismiss â€” the user should explicitly close it
+  // (or accept that it stays). Persisting `lastSeenVersion` only
+  // happens on X click so an unexpected reload still shows the
+  // toast next launch.
+}
+
 // ----------------- Modal -----------------
 // Stack-based modal manager. The previous version used a single
-// `_modalClose` slot and wiped `modal-root` on every `showModal` call —
+// `_modalClose` slot and wiped `modal-root` on every `showModal` call â€”
 // that destroyed any underlying modal (e.g. opening the bulk-paste
 // dialog from the BatchGen manager wiped the BatchGen modal entirely,
 // and the user lost Esc-to-close on the parent). Stacking keeps each
 // modal's DOM around until its own close is called, and Esc closes the
 // topmost modal first.
+//
+// Focus restoration: when a modal opens we remember the
+// document.activeElement so we can restore focus on close. Without
+// this, clicking into the folder-browser filter opened the
+// help modal AND stripped focus from the input; after dismissing
+// the modal the user had to click the input again, which would
+// re-trigger the same help modal â€” an infinite loop. Restoring
+// focus on close breaks the cycle.
+//
+// Stack dedup: every modal can carry an optional `id` string.
+// If a modal with the same id is already on the stack, the new
+// call is treated as a no-op (returns the existing modal's close
+// fn). Without this, mashing a help button on a glitchy trackpad
+// could pile up five identical help modals on top of each other.
 let _modalClose = null;
 const _modalStack = [];
-function showModal(build) {
+function showModal(build, opts) {
   const root = $('#modal-root');
+  const id = (opts && opts.id) || null;
+  // Stack dedup: refuse to open a second modal with the same id
+  // when one is already showing. The user gets the existing one
+  // (and its focus) â€” clicking the same help button twice is a
+  // no-op rather than stacking two copies.
+  if (id) {
+    for (const entry of _modalStack) {
+      if (entry && entry.id === id) return entry.close;
+    }
+  }
   root.classList.add('active');
   const m = el('div', { class: 'modal' });
   root.appendChild(m);
+  // Remember the currently-focused element so we can restore it
+  // on close. We capture this BEFORE we run the builder, because
+  // the builder typically focuses its primary button (which would
+  // otherwise become the "previously focused" element).
+  const prevFocus = document.activeElement;
+  const stackEntry = { id, close: null };
   const close = () => {
-    m.remove();
+    if (m.parentNode) m.remove();
     if (root.children.length === 0) {
       root.classList.remove('active');
     }
-    const idx = _modalStack.indexOf(close);
+    const idx = _modalStack.indexOf(stackEntry);
     if (idx >= 0) _modalStack.splice(idx, 1);
     if (_modalStack.length > 0) {
-      _modalClose = _modalStack[_modalStack.length - 1];
+      _modalClose = _modalStack[_modalStack.length - 1].close;
     } else if (_modalClose === close) {
       _modalClose = null;
     }
+    // Restore focus to the element that was focused when the
+    // modal opened. Falls back to <body> if the original element
+    // was removed from the DOM in the meantime (e.g. a settings
+    // dialog re-rendered its form).
+    try {
+      if (prevFocus && prevFocus.focus && document.contains(prevFocus)) {
+        prevFocus.focus();
+      }
+    } catch (_) { /* ignore */ }
   };
-  _modalStack.push(close);
+  stackEntry.close = close;
+  _modalStack.push(stackEntry);
   _modalClose = close;
   build(m, close);
   return close;
@@ -259,24 +1177,75 @@ document.addEventListener('keydown', (e) => {
 
 // ----------------- Startup popup -----------------
 // Shown on every fresh launch. Single OK button to dismiss. Reachable later
-// from the ⚙ Settings menu (TODO: wire into settings if needed).
+// from the âš™ Settings menu (TODO: wire into settings if needed).
+//
+// Honours the user-configurable popup policy (state.popupPolicy):
+//   'once-fresh'   â€” default. Show on every fresh launch until the user
+//                    dismisses it; once dismissed, never show again.
+//   'per-session'  â€” Show once per app start.
+//   'never'        â€” Skip entirely.
+//   'always'       â€” Always show (ignoring any prior dismissal).
+// The popup id is 'startup'. openGatedPopup() is the central dispatcher;
+// new tab-triggered popups should reuse it with their own stable id.
+function shouldShowPopup(id) {
+  const policy = state.popupPolicy || 'once-fresh';
+  if (policy === 'always') return true;
+  if (policy === 'never') return false;
+  if (policy === 'per-session') {
+    return !_popupSeenThisSession.has(id);
+  }
+  // 'once-fresh' (default): persist dismissal in state.seenPopups so
+  // a returning user never sees the popup again unless they reset
+  // the seen set from âš™ Settings â†’ Popups.
+  return !(state.seenPopups && state.seenPopups[id]);
+}
+function markPopupSeen(id) {
+  if (!id) return;
+  _popupSeenThisSession.add(id);
+  if (!state.seenPopups || typeof state.seenPopups !== 'object') state.seenPopups = {};
+  state.seenPopups[id] = new Date().toISOString();
+  scheduleStateSave();
+}
+function resetPopupSeen() {
+  // Wipe both the persistent record AND the per-session set so a
+  // "Reset all popup history" action in âš™ Settings immediately
+  // re-triggers every popup on the very next trigger.
+  state.seenPopups = {};
+  _popupSeenThisSession.clear();
+  scheduleStateSave();
+}
+function openGatedPopup(id, build) {
+  // Centralised dispatcher: gates a popup behind the user's chosen
+  // popup policy, then opens it via the standard showModal() so it
+  // gets all the same Esc/click-outside/stack behaviour as every
+  // other dialog. Callers wrap the popup body in `build(m, close,
+  // markSeen)` and MUST call `markSeen()` exactly once (typically
+  // from every close path) so the 'once-fresh' / 'per-session'
+  // policies don't re-fire it.
+  if (!shouldShowPopup(id)) return null;
+  const markSeen = () => markPopupSeen(id);
+  return showModal((m, close) => {
+    build(m, close, markSeen);
+  });
+}
 function showStartupPopup() {
-  showModal((m, close) => {
+  openGatedPopup('startup', (m, close, markSeen) => {
     m.classList.add('startup-modal');
     m.appendChild(el('h2', {}, TOOL_NAME));
     m.appendChild(el('div', { class: 'startup-version' }, BUILD_VERSION));
     m.appendChild(el('p', { class: 'startup-info' }, TOOL_INFO));
     const shortcuts = el('div', { class: 'shortcuts-box' });
-    shortcuts.appendChild(el('h4', {}, '⌨ Keyboard shortcuts'));
+    shortcuts.appendChild(el('h4', {}, 'âŒ¨ Keyboard shortcuts'));
     const list = [
-      ['Ctrl+Enter', 'Generate on the active tab'],
-      ['Ctrl+1 / 2 / 3 / 4', 'Switch to Image / Speech / Music / Video'],
-      ['Ctrl+B', 'Open BatchGen for the active tab'],
-      ['Ctrl+T', 'Open Style Settings'],
-      ['Ctrl+S', 'Open Settings'],
-      ['Ctrl+L', 'Toggle dark / light mode'],
-      ['Ctrl+F', 'Focus the file-browser filter'],
-      ['Ctrl+R', 'Refresh quota'],
+      ['Ctrl+Enter', 'Generate on the active tab (same as clicking the big Generate button)'],
+      ['Ctrl+1 / 2 / 3 / 4', 'Switch to the Image / Speech / Music / Video tab'],
+      ['Ctrl+B', 'Open BatchGen for the active tab (queue multiple prompts to run in sequence)'],
+      ['Ctrl+T', 'Open Style Settings (manage your saved prompt prefixes)'],
+      ['Ctrl+S', 'Open Settings (API key, output folder, region, theme, image pipeline)'],
+      ['Ctrl+L', 'Switch between dark and light mode'],
+      ['Ctrl+F', 'Focus the file-browser filter (start typing to filter the file list)'],
+      ['Ctrl+R', 'Refresh the quota counter (how many generations you have left)'],
+      ['â† / â†’', 'When the image overlay is open: step to the previous / next image (multi-image batch, or all images in the current folder)'],
     ];
     for (const [keys, desc] of list) {
       shortcuts.appendChild(el('div', { class: 'shortcut-row' }, [
@@ -287,6 +1256,7 @@ function showStartupPopup() {
     m.appendChild(shortcuts);
     m.appendChild(el('div', { class: 'footer' }, [
       el('button', { class: 'primary', onclick: () => {
+        markSeen();
         close();
         // After the user dismisses the greetings popup, if any of the
         // essential settings (api_key, output_dir) are still empty, walk
@@ -314,44 +1284,58 @@ function showStartupPopup() {
 // values are already in config.txt so the user only has to fix the
 // gaps. The "Save" button validates that both required fields are
 // present and writes the config before closing. "Skip for now" closes
-// without saving — the user can fill the values in later from ⚙
+// without saving â€” the user can fill the values in later from âš™
 // Settings.
 function openFirstTimeSetup() {
-  showModal((m, close) => {
+  openGatedPopup('first-time-setup', (m, close, markSeen) => {
     m.classList.add('first-time-setup-modal');
     m.appendChild(el('h2', {}, 'First-time setup'));
+    // Plain-language description. Avoids jargon ("endpoint",
+    // "config") and tells the user exactly what each value is
+    // for and where it ends up.
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-      'A few required settings are still empty. Please fill them in to start using the tool. You can change all of these later in ⚙ Settings.'));
+      'Welcome! The tool needs two pieces of information to work: your MiniMax API key (so the tool can talk to the model) and the folder where you want generated files to be saved. Both can be changed later in âš™ Settings. Click the "?" next to any field for a longer explanation.'));
 
     const cfg = { ...state.config };
 
     // API key. We use the showRevealableKey helper so the first-time
-    // setup behaves the same as the regular ⚙ Settings popup: the
+    // setup behaves the same as the regular âš™ Settings popup: the
     // real key is hidden behind a "Show" toggle by default, but
     // the user can reveal it (or type a new one) with one click.
-    // Without the toggle, the placeholder is a generic "sk-cp-xxx…"
+    // Without the toggle, the placeholder is a generic "sk-cp-xxxâ€¦"
     // so the user knows what shape to paste, but the value field
     // never contains the real key unless the user explicitly asked
     // for it. See the comment on showRevealableKey for the full
     // security rationale.
+    //
+    // Both Token Plan keys (sk-cp-â€¦) and pay-as-you-go (PAYG) keys
+    // are accepted. The placeholder shows the Token Plan shape as a
+    // hint but the input is plain text â€” we do not enforce a prefix.
     const apiRow = showRevealableKey(cfg.api_key || '', {
-      placeholder: 'sk-cp-xxxxxxxx',
-      label: 'API key (MiniMax Token Plan)',
+      placeholder: 'sk-cp-xxxxxxxx  (or your PAYG key)',
+      label: 'API key (MiniMax Token Plan or PAYG)',
     });
+    // Help icon for the API-key field â€” the same one used in the
+    // Settings dialog so the user gets a consistent explanation
+    // regardless of which entry point they came from.
+    try {
+      const lbl = apiRow.row.querySelector('label');
+      if (lbl) lbl.appendChild(helpButton('settings.apiKey'));
+    } catch (_) {}
     m.appendChild(apiRow.row);
     const apiInput = apiRow.input;
 
-    // Output directory — text input + Browse button that opens the
+    // Output directory â€” text input + Browse button that opens the
     // standard Windows folder-selection dialog (the same one the
-    // ⚙ Settings popup uses).
-    const outInput = el('input', { type: 'text', value: cfg.output_dir || '', placeholder: 'C:\\Users\\me\\Pictures\\MiniMax' });
-    const browse = el('button', { class: 'btn-mini', type: 'button' }, 'Browse…');
+    // âš™ Settings popup uses).
+    const outInput = el('input', { type: 'text', value: cfg.output_dir || '', placeholder: 'C:\\Users\\me\\Pictures\\MiniMax-Assets' });
+    const browse = el('button', { class: 'btn-mini', type: 'button' }, 'Browseâ€¦');
     browse.addEventListener('click', async () => {
       const picked = await window.api.pickFolder();
       if (picked) outInput.value = picked;
     });
     m.appendChild(el('div', { class: 'row' }, [
-      el('label', {}, 'Output directory'),
+      el('label', {}, ['Output directory', helpButton('settings.outputDir')]),
       el('div', { class: 'combo' }, [outInput, browse]),
     ]));
 
@@ -360,10 +1344,10 @@ function openFirstTimeSetup() {
     const regInput = el('select', {});
     for (const r of ['global', 'cn']) regInput.appendChild(el('option', { value: r }, r));
     regInput.value = cfg.region || 'global';
-    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Region'), regInput]));
+    m.appendChild(el('div', { class: 'row' }, [el('label', {}, ['Region', helpButton('settings.region')]), regInput]));
 
     const save = el('button', { class: 'primary' }, 'Save');
-    const skip = el('button', { onclick: close }, 'Skip for now');
+    const skip = el('button', { onclick: () => { markSeen(); close(); } }, 'Skip for now');
     save.addEventListener('click', async () => {
       // Use the helper's getValue() (not apiInput.value) so we
       // never accidentally persist the masked version. The helper
@@ -372,11 +1356,12 @@ function openFirstTimeSetup() {
       const api_key = apiRow.getValue().trim();
       const output_dir = outInput.value.trim();
       const region = regInput.value || 'global';
-      if (!api_key) { toast('API key is required. Edit it now or click "Skip for now" and set it later in ⚙ Settings.', 'err', 5000); return; }
-      if (!output_dir) { toast('Output directory is required. Pick a folder with the Browse… button, or click "Skip for now".', 'err', 5000); return; }
+      if (!api_key) { toast('API key is required. Paste it into the API key field above, or click "Skip for now" and set it later in âš™ Settings.', 'err', 5000); return; }
+      if (!output_dir) { toast('Output directory is required. Pick a folder with the Browseâ€¦ button, or click "Skip for now".', 'err', 5000); return; }
       const newCfg = { ...state.config, api_key, output_dir, region };
       state.config = await window.api.setConfig(newCfg);
       toast('Settings saved.', 'ok');
+      markSeen();
       close();
       // Reload anything that depends on config (quota + the file
       // browser, so the freshly-set output_dir is shown).
@@ -385,7 +1370,7 @@ function openFirstTimeSetup() {
     });
     m.appendChild(el('div', { class: 'footer' }, [skip, save]));
 
-    // Focus the first empty field, then the second — saves the user a
+    // Focus the first empty field, then the second â€” saves the user a
     // click when both are blank.
     setTimeout(() => {
       if (!cfg.api_key) apiInput.focus();
@@ -396,15 +1381,15 @@ function openFirstTimeSetup() {
 
   // After the first-time setup popup (Save or Skip), walk the user
   // through the optional Real-ESRGAN install. Without this, a user
-  // who picked the built-in upscaler without ever opening ⚙
+  // who picked the built-in upscaler without ever opening âš™
   // Settings would never see the one-click installer, and would
   // wonder "why doesn't this upscale as well as the screenshots
-  // show?" later. The install IS automated (one click) — the issue
+  // show?" later. The install IS automated (one click) â€” the issue
   // is purely discoverability. The popup is gated on
   //   - Real-ESRGAN binary not present
   //   - user hasn't already dismissed it
   // so it never nags. It is intentionally NOT gated on
-  // "config was just set on this launch" — a user who already had a
+  // "config was just set on this launch" â€” a user who already had a
   // valid config but a fresh install (no ./bin/) should still see
   // it on first launch.
   if (!state.realesrganFirstRunDismissed) {
@@ -415,7 +1400,7 @@ function openFirstTimeSetup() {
 // ----------------- Real-ESRGAN first-run popup -----------------
 // Surfaces the one-click Real-ESRGAN installer on the very first
 // launch (after the first-time setup popup) so the user doesn't
-// have to dig through ⚙ Settings to discover it. If the binary is
+// have to dig through âš™ Settings to discover it. If the binary is
 // already present (e.g. the user copied it in themselves), the
 // popup auto-closes without bothering them. The "Don't ask again"
 // button persists a flag in state.json so this never re-appears
@@ -425,18 +1410,18 @@ function openFirstTimeSetup() {
 // the tool supports: Real-ESRGAN upscaler, isnetbg binary, and the
 // IS-Net ONNX model. Designed to be shown both as a first-run
 // prompt (when nothing is installed) and as a re-openable manager
-// from ⚙ Settings (the "Re-open add-ons" link in the Upscale
+// from âš™ Settings (the "Re-open add-ons" link in the Upscale
 // Settings section re-invokes it).
 //
 // Per-component install options:
-//   1. "Download" (Real-ESRGAN only) — fixed GitHub URL in main.js.
+//   1. "Download" (Real-ESRGAN only) â€” fixed GitHub URL in main.js.
 //      Streams progress via the existing realesrganDownload IPC.
-//   2. "Open download page" (Real-ESRGAN + model) — opens the
+//   2. "Open download page" (Real-ESRGAN + model) â€” opens the
 //      upstream release page / HuggingFace mirror in the user's
 //      default browser. The user then downloads the file
 //      themselves and uses the file-picker. This is the universal
 //      "no auto-download breakage" path.
-//   3. "Pick file…" (all three) — file-picker copies the picked
+//   3. "Pick fileâ€¦" (all three) â€” file-picker copies the picked
 //      file into ./bin/ (or ./bin/models/) under the name the
 //      wrapper probes for. This is the universal fallback for
 //      when neither auto-download nor the upstream URL is
@@ -449,11 +1434,11 @@ function openFirstTimeSetup() {
 // across multiple install attempts (it doesn't auto-close on
 // success) so the user can install all three components in one
 // sitting.
-async function openOptionalAddons({ autoOpened = false } = {}) {
+async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
   // Probe both backends BEFORE opening the modal. If everything
   // is already installed (e.g. the developer pre-bundled the
   // files in ./bin/ before building the portable .exe), skip the
-  // popup entirely on first run — the same "don't nag" logic the
+  // popup entirely on first run â€” the same "don't nag" logic the
   // previous Real-ESRGAN-only popup had.
   const probeAll = async () => {
     let reSt = null, isSt = null;
@@ -463,7 +1448,7 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
   };
   // If this is the first-run auto-open, AND everything is
   // installed, AND the user hasn't explicitly opened the popup
-  // via the ⚙ Settings link, silently dismiss.
+  // via the âš™ Settings link, silently dismiss.
   if (autoOpened) {
     const { reSt, isSt } = await probeAll();
     const reOk = reSt && reSt.available;
@@ -473,20 +1458,25 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
       scheduleStateSave();
       return;
     }
+    // Honour the popup policy on the auto-opened path. When the
+    // user picks 'never' (or has already dismissed this popup
+    // under 'once-fresh' / 'per-session'), skip silently so the
+    // auto-open from the startup flow doesn't nag.
+    if (!force && !shouldShowPopup('optional-addons')) return;
   }
 
   showModal((m, close) => {
     m.classList.add('optional-addons-modal');
-    m.appendChild(el('h2', {}, '🧩 Optional add-ons'));
+    m.appendChild(el('h2', {}, 'ðŸ§© Optional add-ons'));
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-      'The tool ships with built-in defaults that work without any extra software. The components below are optional quality upgrades — install them if you want sharper upscale, transparent backgrounds, or both. You can re-open this popup any time from ⚙ Settings → Image upscaling → "Re-open add-ons".'));
+      'The tool ships with built-in defaults that work without any extra software. The components below are optional quality upgrades â€” install them if you want sharper upscale, transparent backgrounds, or both. You can re-open this popup any time from âš™ Settings â†’ Image upscaling â†’ "Re-open add-ons".'));
 
     // ---- Section 1: Real-ESRGAN upscaler ----
     const reCard = el('div', { class: 'addon-card' });
-    reCard.appendChild(el('h3', {}, '🔍 Real-ESRGAN upscaler (BSD-3-Clause)'));
+    reCard.appendChild(el('h3', {}, 'ðŸ” Real-ESRGAN upscaler (BSD-3-Clause)'));
     reCard.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
-      'Drop-in upgrade for the built-in multi-step upscaler. Noticeably more detail on 4× upscale, and the only way to use the official 4× BSD-3 model.'));
-    const reStatus = el('div', { class: 'addon-status' }, 'Detecting…');
+      'Drop-in upgrade for the built-in multi-step upscaler. Noticeably more detail on 4Ã— upscale, and the only way to use the official 4Ã— BSD-3 model.'));
+    const reStatus = el('div', { class: 'addon-status' }, 'Detectingâ€¦');
     reCard.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Status'), reStatus]));
     const reProgress = el('div', { class: 'addon-progress' });
     reProgress.style.display = 'none';
@@ -495,7 +1485,7 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
     reCard.appendChild(reProgress);
     const reActions = el('div', { class: 'addon-actions' });
     const reDownload = el('button', { class: 'primary' }, 'Download from GitHub');
-    const rePick = el('button', {}, 'Pick file…');
+    const rePick = el('button', {}, 'Pick fileâ€¦');
     const reOpenPage = el('button', { class: 'btn-mini' }, 'Open releases page');
     reActions.append(reOpenPage, rePick, reDownload);
     reCard.appendChild(reActions);
@@ -503,13 +1493,13 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
 
     // ---- Section 2: IS-Net background-removal binary ----
     const isBinCard = el('div', { class: 'addon-card' });
-    isBinCard.appendChild(el('h3', {}, '✨ IS-Net background removal — binary (MIT)'));
+    isBinCard.appendChild(el('h3', {}, 'âœ¨ IS-Net background removal â€” binary (MIT)'));
     isBinCard.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
       'The local ONNX-driven background-removal engine. Build the binary from the C# reference in the project README (Microsoft.ML.OnnxRuntime + SixLabors.ImageSharp), then point this popup at the resulting .exe.'));
-    const isBinStatus = el('div', { class: 'addon-status' }, 'Detecting…');
+    const isBinStatus = el('div', { class: 'addon-status' }, 'Detectingâ€¦');
     isBinCard.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Status'), isBinStatus]));
     const isBinActions = el('div', { class: 'addon-actions' });
-    const isBinPick = el('button', { class: 'primary' }, 'Pick binary…');
+    const isBinPick = el('button', { class: 'primary' }, 'Pick binaryâ€¦');
     const isBinOpenReadme = el('button', { class: 'btn-mini' }, 'Open README');
     isBinActions.append(isBinOpenReadme, isBinPick);
     isBinCard.appendChild(isBinActions);
@@ -517,13 +1507,13 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
 
     // ---- Section 3: IS-Net model file ----
     const isModelCard = el('div', { class: 'addon-card' });
-    isModelCard.appendChild(el('h3', {}, '✨ IS-Net model — isnet-general-use.onnx (MIT, ~170 MB)'));
+    isModelCard.appendChild(el('h3', {}, 'âœ¨ IS-Net model â€” isnet-general-use.onnx (MIT, ~170 MB)'));
     isModelCard.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
       'The ONNX model the isnetbg binary loads at startup. Download from a HuggingFace mirror of your choice, or any of the official IS-Net model repos, then point this popup at the file.'));
-    const isModelStatus = el('div', { class: 'addon-status' }, 'Detecting…');
+    const isModelStatus = el('div', { class: 'addon-status' }, 'Detectingâ€¦');
     isModelCard.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Status'), isModelStatus]));
     const isModelActions = el('div', { class: 'addon-actions' });
-    const isModelPick = el('button', { class: 'primary' }, 'Pick model…');
+    const isModelPick = el('button', { class: 'primary' }, 'Pick modelâ€¦');
     const isModelOpenPage = el('button', { class: 'btn-mini' }, 'Open HuggingFace');
     isModelActions.append(isModelOpenPage, isModelPick);
     isModelCard.appendChild(isModelActions);
@@ -531,8 +1521,8 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
 
     // ---- Footer: Re-detect + Dismiss + Don't-ask-again ----
     const footer = el('div', { class: 'footer' });
-    const redetect = el('button', { class: 'btn-mini' }, '🔄 Re-detect');
-    const skipBtn = el('button', { onclick: close }, 'Skip for now');
+    const redetect = el('button', { class: 'btn-mini' }, 'ðŸ”„ Re-detect');
+    const skipBtn = el('button', { onclick: () => { markPopupSeen('optional-addons'); close(); } }, 'Skip for now');
     const neverBtn = el('button', { class: 'btn-mini' }, "Don't ask again");
     footer.append(neverBtn, skipBtn, redetect);
     m.appendChild(footer);
@@ -544,15 +1534,15 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
     }
 
     async function refreshAll() {
-      setStatus(reStatus, 'Detecting…');
-      setStatus(isBinStatus, 'Detecting…');
-      setStatus(isModelStatus, 'Detecting…');
+      setStatus(reStatus, 'Detectingâ€¦');
+      setStatus(isBinStatus, 'Detectingâ€¦');
+      setStatus(isModelStatus, 'Detectingâ€¦');
       const { reSt, isSt } = await probeAll();
       if (reSt && reSt.available) {
         const v = reSt.version ? ` v${reSt.version}` : '';
         setStatus(reStatus, 'Detected: ' + (reSt.binaryPath || '') + v, 'var(--success)');
       } else {
-        setStatus(reStatus, 'Not found — choose an install method below.', 'var(--fg-2)');
+        setStatus(reStatus, 'Not found â€” choose an install method below.', 'var(--fg-2)');
       }
       if (isSt && isSt.available && isSt.modelPresent) {
         // Differentiate the Node.js backend from a hand-built C#
@@ -570,16 +1560,16 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
         }
         setStatus(isModelStatus, 'Detected: ' + (isSt.modelPath || ''), 'var(--success)');
       } else if (isSt && isSt.available && !isSt.modelPresent) {
-        setStatus(isBinStatus, 'Binary detected — model file missing.', 'var(--warn, #d9a300)');
-        setStatus(isModelStatus, 'Not found — pick the .onnx file below.', 'var(--fg-2)');
+        setStatus(isBinStatus, 'Binary detected â€” model file missing.', 'var(--warn, #d9a300)');
+        setStatus(isModelStatus, 'Not found â€” pick the .onnx file below.', 'var(--fg-2)');
       } else {
-        setStatus(isBinStatus, 'Not found — pick the binary you built.', 'var(--fg-2)');
-        setStatus(isModelStatus, 'Not found — pick the .onnx file below.', 'var(--fg-2)');
+        setStatus(isBinStatus, 'Not found â€” pick the binary you built.', 'var(--fg-2)');
+        setStatus(isModelStatus, 'Not found â€” pick the .onnx file below.', 'var(--fg-2)');
       }
     }
     refreshAll();
 
-    // Re-detect button — single place to refresh after any install.
+    // Re-detect button â€” single place to refresh after any install.
     redetect.addEventListener('click', () => refreshAll());
 
     // Don't-ask-again: persist dismissal and close. We use the
@@ -587,6 +1577,7 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
     // state.json files still work.
     neverBtn.addEventListener('click', async () => {
       state.realesrganFirstRunDismissed = true;
+      markPopupSeen('optional-addons');
       try { await scheduleStateSave(); } catch (_) {}
       close();
     });
@@ -596,21 +1587,21 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
       reDownload.disabled = true; rePick.disabled = true; reOpenPage.disabled = true;
       reProgress.style.display = '';
       reProgress.style.color = 'var(--fg-2)';
-      reProgress.textContent = 'Starting download…';
+      reProgress.textContent = 'Starting downloadâ€¦';
       const off = window.api.onRealesrganDownloadProgress((data) => {
         if (data.phase === 'download') {
           if (data.total > 0) {
             const pct = (data.downloaded / data.total) * 100;
             const mb = (data.downloaded / 1024 / 1024).toFixed(1);
             const totalMb = (data.total / 1024 / 1024).toFixed(1);
-            reProgress.textContent = `Downloading… ${mb} / ${totalMb} MB (${pct.toFixed(0)}%)`;
+            reProgress.textContent = `Downloadingâ€¦ ${mb} / ${totalMb} MB (${pct.toFixed(0)}%)`;
           } else {
-            reProgress.textContent = 'Downloading…';
+            reProgress.textContent = 'Downloadingâ€¦';
           }
         } else if (data.phase === 'extract') {
-          reProgress.textContent = 'Extracting…';
+          reProgress.textContent = 'Extractingâ€¦';
         } else if (data.phase === 'done') {
-          reProgress.textContent = 'Done. Refreshing status…';
+          reProgress.textContent = 'Done. Refreshing statusâ€¦';
         }
       });
       try {
@@ -623,13 +1614,13 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
           try { await scheduleStateSave(); } catch (_) {}
         } else {
           reProgress.textContent = 'Download failed: ' + ((r && r.error) || 'unknown') +
-            ' — try "Pick file…" or "Open releases page" instead.';
+            ' â€” try "Pick fileâ€¦" or "Open releases page" instead.';
           reProgress.style.color = 'var(--danger)';
         }
       } catch (e) {
         off();
         reProgress.textContent = 'Download failed: ' + (e && e.message || e) +
-          ' — try "Pick file…" or "Open releases page" instead.';
+          ' â€” try "Pick fileâ€¦" or "Open releases page" instead.';
         reProgress.style.color = 'var(--danger)';
       } finally {
         reDownload.disabled = false; rePick.disabled = false; reOpenPage.disabled = false;
@@ -644,7 +1635,7 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
         toast('Real-ESRGAN binary installed.', 'ok', 2500);
         await refreshAll();
       } else if (r && r.canceled) {
-        // Silent — user just cancelled the dialog.
+        // Silent â€” user just cancelled the dialog.
       } else {
         toast('Install failed: ' + ((r && r.error) || 'unknown'), 'err', 6000);
       }
@@ -663,7 +1654,7 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
       }
     });
     isBinOpenReadme.addEventListener('click', () => {
-      // Open the upstream IS-Net project page (DIS on GitHub) —
+      // Open the upstream IS-Net project page (DIS on GitHub) â€”
       // the README there links to every current ONNX mirror +
       // a C# reference implementation the user can build their
       // isnetbg binary from. We don't try to ship a bundled
@@ -700,7 +1691,7 @@ async function openOptionalAddons({ autoOpened = false } = {}) {
 // ----------------- Form helpers -----------------
 
 // Build the "Target file prefix" input row. The same row is mounted on
-// every tab (image/speech/music/video) but the value is global — when
+// every tab (image/speech/music/video) but the value is global â€” when
 // the user types in one tab, the other tabs' inputs are updated in
 // place so they always show the same prefix. The prefix is prepended
 // verbatim to the generated file's name in every gen handler (see
@@ -726,7 +1717,7 @@ function buildFilePrefixRow() {
   // and increment it by 1, padding with leading zeros to preserve
   // the original width. The rightmost match (not necessarily at the
   // end of the string) means the user can use prefixes like
-  // "BildserieFürSpiel_Reihe1_" and have the trailing series counter
+  // "BildserieFÃ¼rSpiel_Reihe1_" and have the trailing series counter
   // bump. The regex `(\d+)(?=\D*$)` matches the last digit run that
   // is followed by zero or more non-digits to the end-of-string
   // anchor; e.g. for "Reihe10_v2" it matches "10", for "abc" nothing.
@@ -747,7 +1738,7 @@ function buildFilePrefixRow() {
     const numStr = match[1];
     const num = parseInt(numStr, 10);
     const newNum = num + 1;
-    // Keep the leading-zero padding so "001" → "002", not "2".
+    // Keep the leading-zero padding so "001" â†’ "002", not "2".
     const newNumStr = String(newNum).padStart(numStr.length, '0');
     const newVal = val.substring(0, match.index) + newNumStr + val.substring(match.index + numStr.length);
     input.value = newVal;
@@ -777,8 +1768,17 @@ function buildFilePrefixRow() {
 //   fileFilters (for kind:'text'): adds a Browse button with these filters
 //   id: explicit DOM id (used for state save/load + cross-tab unique key)
 function buildParamRow(label, def, id) {
-  const helpSpan = def.help ? el('span', { class: 'help', title: def.help, 'data-help': def.help }, '?') : null;
-  const lbl = el('label', {}, [label, helpSpan].filter(Boolean));
+  // Help icon: if def.help is a string, we use it as both the
+  // 1-line hover summary (the original behaviour) and the
+  // inline text in the help modal. If it's a key into the
+  // central helpTopics map, we use the richer text from there.
+  // Either way, the helpButton factory renders the same
+  // clickable `?` icon so the user can read the full
+  // explanation in a modal â€” the old `<span class="help">`
+  // only had a tiny native title tooltip which most users
+  // never read.
+  const helpEl = def.help ? helpButton(def.help) : null;
+  const lbl = el('label', {}, [label, helpEl].filter(Boolean));
 
   let input;
   const value = def.value ?? def.default ?? '';
@@ -796,7 +1796,7 @@ function buildParamRow(label, def, id) {
       sel.appendChild(el('option', { value: String(o.value) }, o.label ?? String(o.value)));
     }
     if (def.allowCustom !== false) {
-      sel.appendChild(el('option', { value: '__custom__' }, 'Custom…'));
+      sel.appendChild(el('option', { value: '__custom__' }, 'Customâ€¦'));
     }
     const num = el('input', { type: 'number', value: def.customDefault ?? '', placeholder: 'value', min: def.min, max: def.max, step: def.step ?? 1 });
     num.style.display = 'none';
@@ -818,7 +1818,7 @@ function buildParamRow(label, def, id) {
     for (const o of def.options) {
       sel.appendChild(el('option', { value: String(o.value) }, o.label ?? String(o.value)));
     }
-    if (def.allowCustom !== false) sel.appendChild(el('option', { value: '__custom__' }, 'Custom…'));
+    if (def.allowCustom !== false) sel.appendChild(el('option', { value: '__custom__' }, 'Customâ€¦'));
     const txt = el('input', { type: 'text', value: def.customDefault ?? '', placeholder: 'custom value' });
     txt.style.display = 'none';
     const current = (def.options || []).find((o) => String(o.value) === String(value));
@@ -838,7 +1838,7 @@ function buildParamRow(label, def, id) {
     if (id) inp.id = id;
     if (def.fileFilters && def.fileFilters.length) {
       // File-picker text input with Browse button
-      const browse = el('button', { class: 'btn-mini', type: 'button' }, 'Browse…');
+      const browse = el('button', { class: 'btn-mini', type: 'button' }, 'Browseâ€¦');
       browse.addEventListener('click', async () => {
         const r = await window.api.pickFile({ title: def.browseTitle || 'Select file', filters: def.fileFilters });
         if (r.ok) { inp.value = r.path; inp.dispatchEvent(new Event('input', { bubbles: true })); }
@@ -847,7 +1847,7 @@ function buildParamRow(label, def, id) {
       input = inp;  // raw element; arg builder uses inp.value
       const row = el('div', { class: 'row' }, [lbl, combo]);
       // Same top-level `.el` / `.getValue` aliases as the main
-      // return below — see comment there for the rationale.
+      // return below â€” see comment there for the rationale.
       return { row, input, el: inp, getValue: () => inp.value };
     }
     input = inp;
@@ -867,9 +1867,9 @@ function buildParamRow(label, def, id) {
 
   const row = el('div', { class: 'row' }, [lbl, input.el || input]);
   // Expose `el` and `getValue` at the top level too. The legacy
-  // return shape was `{ row, input }` only, but two call sites —
+  // return shape was `{ row, input }` only, but two call sites â€”
   // attachImageDimGuards() and attachSubjectRefGuard() in the
-  // image tab's build() — read `width.el.addEventListener(...)`
+  // image tab's build() â€” read `width.el.addEventListener(...)`
   // and `subjRef.el` directly on the returned param. Without the
   // top-level aliases those read `undefined.el` and crashed
   // "Cannot read properties of undefined (reading
@@ -882,7 +1882,7 @@ function buildParamRow(label, def, id) {
 }
 
 // Extract the --flag from a param's enclosing .row label (e.g. "--model (hd)"
-// → "--model"). The flag is the first "--xxx" token in the label. Returns
+// â†’ "--model"). The flag is the first "--xxx" token in the label. Returns
 // null if the row is unlabeled (e.g. prompt, lyrics textarea, variants row).
 function _flagForParam(param) {
   if (!param) return null;
@@ -913,16 +1913,16 @@ function appendBoolFlag(args, param, flag) {
 }
 
 // ----------------- Image-dim guards -----------------
-// Three live warnings below the image tab's W × H row:
-//   1. "W × H doesn't match aspect ratio 1:1" — when the user
+// Three live warnings below the image tab's W Ã— H row:
+//   1. "W Ã— H doesn't match aspect ratio 1:1" â€” when the user
 //      has an aspect ratio selected AND has manually entered both
 //      W and H such that their ratio is off by more than 1%.
 //      "Correct" auto-fills the offending dimension (W is the
 //      source of truth, per the user's spec).
 //   2. "W must be a multiple of 8" / "H must be a multiple of
-//      8" — mmx rejects non-multiple-of-8 dimensions with a
+//      8" â€” mmx rejects non-multiple-of-8 dimensions with a
 //      cryptic 400. "Correct" rounds to the nearest multiple.
-//   3. Same for the subject-ref field — it must be a valid
+//   3. Same for the subject-ref field â€” it must be a valid
 //      filesystem path or http(s) URL; mmx rejects everything
 //      else.
 //
@@ -932,13 +1932,13 @@ function appendBoolFlag(args, param, flag) {
 // fires 'input' / 'change' for the per-tab state autosave).
 function attachImageDimGuards(aspect, width, height) {
   const warning = el('div', { class: 'image-dim-warning', style: 'display: none;' });
-  // We insert the warning into the .section that owns the W × H
+  // We insert the warning into the .section that owns the W Ã— H
   // row, right after the .grid. The caller is responsible for
   // appending the warning element to the right parent.
   // (We return the element so the caller can do that.)
   function setValue(param, v) {
     // Write a numeric value into a buildParamRow number param.
-    // The combo (sel + num input) has a "Custom…" option that
+    // The combo (sel + num input) has a "Customâ€¦" option that
     // reveals the num input; we select it, set the value, and
     // dispatch the input event so has-custom class flips.
     const combo = param.el;
@@ -991,7 +1991,7 @@ function attachImageDimGuards(aspect, width, height) {
       // Allow 1% slop for float rounding.
       if (Math.abs(actual - expected) / expected > 0.01) {
         show(
-          `W × H (${w}×${h}) doesn't match the selected aspect ratio ${aspectVal}. The API will likely reject this or auto-override one of the values.`,
+          `W Ã— H (${w}Ã—${h}) doesn't match the selected aspect ratio ${aspectVal}. The API will likely reject this or auto-override one of the values.`,
           () => {
             // Prioritise W as the source of truth: H = W * ratio.
             const newH = Math.max(8, Math.round((w * ap.h) / ap.w / 8) * 8);
@@ -1050,7 +2050,7 @@ function attachImageDimGuards(aspect, width, height) {
     }
     recheck();
   });
-  // Initial pass — picks up restored state on first paint.
+  // Initial pass â€” picks up restored state on first paint.
   recheck();
   return warning;
 }
@@ -1078,7 +2078,7 @@ function attachSubjectRefGuard(subjRef) {
     if (!looksLikePath) {
       warning.innerHTML = '';
       warning.appendChild(el('span', { style: 'flex: 1;' },
-        'Subject reference must be a local image path or an http(s) URL. Examples: C:\\Users\\me\\char.png  ·  https://example.com/char.png'));
+        'Subject reference must be a local image path or an http(s) URL. Examples: C:\\Users\\me\\char.png  Â·  https://example.com/char.png'));
       warning.style.display = '';
       return;
     }
@@ -1100,6 +2100,264 @@ function attachSubjectRefGuard(subjRef) {
 
 // ----------------- Tabs -----------------
 const TABS = {};
+
+// ----------------- Per-model spec registry -----------------
+// Single source of truth for what each model accepts. Each tab
+// builds its form from one of these specs; the spec also drives
+// per-row validation (max chars, max value, min value) and the
+// "show only supported parameters" rule.
+//
+// The values below are pulled from the official MiniMax API
+// documentation at https://platform.minimax.io/docs/api-reference/
+// (image / video / music / speech tabs). Adding a new model
+// here is the only change required — every parameter row in the
+// corresponding tab consults this table to decide whether to be
+// shown, what its max is, and how to format the help text.
+//
+// Schema for each entry:
+//   prompt: { max: <chars>, help: <human-readable> }
+//   supportedFlags: [<string>, ...] — only these --flags are sent.
+//     Rows whose label doesn't appear here are NOT rendered.
+//   perRowOverrides: optional map of flag → { max, min, step }
+//     used by a few rows whose numeric range is tighter than the
+//     generic input type definition.
+//
+// To verify a value is in range the renderer does TWO things:
+//   1. The number <input> gets min/max attributes (already does).
+//   2. Before mmx is called, validateAgainstSpec() re-checks every
+//      row against the spec and short-circuits with a toast if
+//      anything is out of range.
+const MODEL_SPECS = {
+  image: {
+    label: 'Image generation',
+    // Currently the API exposes image-01 + image-01-live. Both
+    // accept the same parameter set; the help text for --model
+    // explains the style difference.
+    prompt: { max: 1500, help: 'Up to 1500 characters (hard limit).' },
+    supportedFlags: [
+      '--prompt',           // mandatory; the textarea above the parameters grid
+      '--model',            // image-01 (default) / image-01-live
+      '--aspect-ratio',     // 1:1 (default) / 16:9 / 9:16 / 4:3 / 3:4 / 2:3 / 3:2 / 21:9
+      '--n',                // 1–9 (renderer clamps to 4)
+      '--width',            // 512–2048 multiple of 8, image-01 only
+      '--height',           // 512–2048 multiple of 8, image-01 only
+      '--seed',             // 0 .. 2^31-1
+      '--prompt-optimizer', // boolean
+      '--aigc-watermark',   // boolean
+      '--subject-reference-file', // image-01 + image-01-live
+      '--subject-reference-type', // 'character' (only supported value)
+    ],
+    perRowOverrides: {
+      '--aspect-ratio': { note: '21:9 is image-01 only — hidden on image-01-live.' },
+    },
+    imageExtra: {
+      // (image-01-only) custom width/height; aspect-ratio is
+      // overridden when both are set.
+    },
+  },
+  speech: {
+    label: 'Speech generation',
+    prompt: { max: 10000, help: 'Up to 10 000 characters (hard limit).' },
+    supportedFlags: [
+      '--model',      // speech-2.8-hd / speech-2.8-turbo / speech-2.6-hd / speech-2.6-turbo / speech-02-hd / speech-02-turbo / speech-2.6 / speech-02
+      '--voice',      // voice id (loaded from `mmx speech voices`)
+      '--speed',      // 0.5–2.0, step 0.05, default 1.0
+      '--volume',     // 0–10, step 1, default 0
+      '--pitch',      // -12..+12 semitones, step 1, default 0
+      '--format',     // mp3 / wav / pcm / flac / opus / pcmu_raw / pcmu_wav
+      '--sample-rate',// 8000/16000/22050/24000/32000/44100/48000
+      '--bitrate',    // 32000..320000
+      '--channels',   // 1 / 2
+      '--language',   // 2-letter code or 'auto' (voice-dependent)
+      '--subtitles',  // boolean (saves .srt alongside audio)
+      '--sound-effect',
+      '--pronunciation', // from=to list
+      '--emotion',    // happy/sad/angry/fearful/surprised/disgusted/neutral
+      '--text',       // the textarea; mandatory
+    ],
+    perRowOverrides: {
+      // speech-2.6 and below do NOT support --emotion. The
+      // renderer hides the row when one of those models is
+      // selected.
+      '--emotion': {
+        supportedForModels: new Set(['speech-2.8-hd', 'speech-2.8-turbo', 'speech-2.6-hd', 'speech-2.6-turbo']),
+        note: 'Emotion control is only available on the 2.6+ speech models.',
+      },
+      // --bitrate only applies to compressed formats (mp3 / opus).
+      '--bitrate': {
+        supportedForFormats: new Set(['mp3', 'opus']),
+        note: 'Bitrate only affects MP3 / Opus; WAV / PCM / FLAC are lossless.',
+      },
+    },
+  },
+  music: {
+    label: 'Music generation',
+    prompt: { max: 2000, help: 'Up to 2 000 characters (hard limit).' },
+    lyrics: { max: 3500, help: 'Up to 3 500 characters. Required unless is_instrumental or lyrics_optimizer is enabled.' },
+    supportedFlags: [
+      '--model',              // music-2.0 / music-2.5 / music-2.5+ / music-2.6
+      '--prompt',             // mandatory, 10–2000 chars
+      '--lyrics',             // 10–3000 chars (2.6 supports 3500); not needed for instrumental
+      '--instrumental',       // boolean, music-2.5+ / music-2.6
+      '--lyrics-optimizer',   // boolean (music-2.6)
+      '--sample-rate',        // 8000/16000/22050/24000/32000/44100 (music-2.0 supports 8000)
+      '--bitrate',            // 32000/64000/128000/256000
+      '--format',             // mp3 (default) / wav / pcm
+    ],
+    perRowOverrides: {
+      // music-2.0 does NOT support --instrumental, --lyrics, or
+      // --lyrics-optimizer. music-2.5 supports --lyrics but not
+      // --lyrics-optimizer. Only music-2.6 supports all three.
+      '--instrumental': {
+        supportedForModels: new Set(['music-2.5', 'music-2.5+', 'music-2.6']),
+        note: 'Instrumental mode is supported on music-2.5 / 2.5+ / 2.6 only.',
+      },
+      '--lyrics-optimizer': {
+        supportedForModels: new Set(['music-2.6']),
+        note: 'Auto-lyrics is supported on music-2.6 only.',
+      },
+      '--lyrics': {
+        // music-2.0 supports lyrics but the model often ignores
+        // them. The renderer keeps the row visible but flags it.
+        note: 'music-2.5 / 2.6 honor --lyrics reliably; music-2.0 may ignore them.',
+      },
+    },
+  },
+  video: {
+    label: 'Video generation',
+    prompt: { max: 2000, help: 'Up to 2 000 characters (hard limit).' },
+    supportedFlags: [
+      '--model',                   // MiniMax-Hailuo-2.3 / MiniMax-Hailuo-02 / S2V-01
+      '--prompt',                  // mandatory, 1–2000 chars
+      '--first-frame-image',       // image path or URL
+      '--last-frame-image',        // image path or URL (Hailuo-02 only)
+      '--subject-image',           // S2V-01 only
+      '--duration',                // 6 (always) or 10 (768p only)
+      '--resolution',              // 768p / 1080p (1080p = 6s only on 2.3 / 02)
+      '--prompt-optimizer',        // boolean
+      '--fast-pretreatment',       // boolean (Hailuo-2.3 + Hailuo-02)
+    ],
+    perRowOverrides: {
+      '--first-frame-image': {
+        supportedForModels: new Set(['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3-Fast', 'MiniMax-Hailuo-02']),
+        note: 'MiniMax-Hailuo-2.3-Fast and MiniMax-Hailuo-02 require a first-frame image.',
+      },
+      '--last-frame-image': {
+        supportedForModels: new Set(['MiniMax-Hailuo-02']),
+        note: 'Last-frame image is supported on MiniMax-Hailuo-02 only (first+last frame interpolation).',
+      },
+      '--subject-image': {
+        supportedForModels: new Set(['S2V-01']),
+        note: 'Subject-image (face reference) is supported on S2V-01 only.',
+      },
+      '--duration': {
+        // 10 s is only available at 768P. The renderer drops the
+        // 10 option from the dropdown when 1080P is selected.
+        dependsOnResolution: true,
+        note: '10-second duration is only available at 768P.',
+      },
+      '--resolution': {
+        allowedForModels: {
+          'MiniMax-Hailuo-2.3':       new Set(['768P', '1080P']),
+          'MiniMax-Hailuo-2.3-Fast': new Set(['768P']),     // fast model only supports 768p
+          'MiniMax-Hailuo-02':       new Set(['768P', '1080P']),
+          'S2V-01':                  new Set(['768P']),     // S2V-01 only 768p
+        },
+        note: 'MiniMax-Hailuo-2.3-Fast and S2V-01 only support 768P.',
+      },
+      '--fast-pretreatment': {
+        supportedForModels: new Set(['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3-Fast', 'MiniMax-Hailuo-02']),
+        note: 'Fast-pretreatment is supported on Hailuo-2.3 (+Fast) and Hailuo-02.',
+      },
+    },
+  },
+};
+
+// Look up the per-model override for a row. Returns null if
+// the row is generally supported for the tab but has no
+// per-model restriction. Used by buildParamRow (to decide
+// whether to render the row at all) and by the gen handler
+// (to short-circuit before the request is sent).
+function getRowSpec(tabKey, flag, currentModel, currentResolution) {
+  const tab = MODEL_SPECS[tabKey];
+  if (!tab || !tab.perRowOverrides) return null;
+  const ov = tab.perRowOverrides[flag];
+  if (!ov) return null;
+  // Resolution-dependent rows: pick the option that matches
+  // the current resolution dropdown value (used for the
+  // video tab's --duration row, where the 10s option is
+  // only valid at 768P).
+  if (ov.dependsOnResolution && currentResolution && ov.resolutionOverrides) {
+    return ov.resolutionOverrides[currentResolution] || ov;
+  }
+  return ov;
+}
+
+// Decide whether a flag should be visible for the currently
+// selected model / resolution. A flag is hidden if:
+//   - the model's perRowOverrides lists a supportedForModels set
+//     and the current model is NOT in that set, OR
+//   - the flag is registered as model-restricted (no override
+//     = always visible).
+//
+// This is the implementation of "show only supported parameters".
+function isFlagVisibleForCurrentModel(tabKey, flag, currentModel, currentResolution) {
+  const ov = getRowSpec(tabKey, flag, currentModel, currentResolution);
+  if (!ov) return true;
+  if (ov.supportedForModels && currentModel) {
+    return ov.supportedForModels.has(currentModel);
+  }
+  return true;
+}
+
+// Validate every value in the per-tab state against the spec.
+// Returns an array of error strings (empty = OK). Called by the
+// gen handler right before the request is sent so the user never
+// gets a cryptic 400 from the API.
+function validateTabAgainstSpec(tabKey, params, currentModel, currentResolution) {
+  const errs = [];
+  const tab = MODEL_SPECS[tabKey];
+  if (!tab) return errs;
+  for (const flag of tab.supportedFlags || []) {
+    const param = params && params[flag];
+    if (!param) continue;
+    const v = param.getValue ? param.getValue() : (param.value ?? param.el?.value);
+    if (v == null || v === '' || v === 'off') continue;
+    // Skip flags that aren't visible for the current model.
+    if (!isFlagVisibleForCurrentModel(tabKey, flag, currentModel, currentResolution)) {
+      errs.push(`${flag} is not supported on ${currentModel}. Switch models or hide this row.`);
+      continue;
+    }
+    // Number range checks (only meaningful for numeric rows;
+    // the buildParamRow already sets HTML min/max attributes
+    // for native validation, but we re-check here so the
+    // user sees a precise toast instead of a silent clamp).
+    if (typeof v === 'number' || (typeof v === 'string' && /^-?\d/.test(v))) {
+      const ov = tab.perRowOverrides && tab.perRowOverrides[flag];
+      if (ov && ov.max != null && Number(v) > ov.max) {
+        errs.push(`${flag} = ${v} exceeds max ${ov.max} for ${currentModel || 'this model'}.`);
+      }
+      if (ov && ov.min != null && Number(v) < ov.min) {
+        errs.push(`${flag} = ${v} below min ${ov.min} for ${currentModel || 'this model'}.`);
+      }
+    }
+    // Prompt max length (the textarea above the parameters
+    // grid; the counter already colours itself red when over).
+    if (flag === '--prompt' && tab.prompt && tab.prompt.max) {
+      const len = String(v).length;
+      if (len > tab.prompt.max) {
+        errs.push(`Prompt is ${len} characters; max for ${tab.label} is ${tab.prompt.max}.`);
+      }
+    }
+    if (flag === '--lyrics' && tab.lyrics && tab.lyrics.max) {
+      const len = String(v).length;
+      if (len > tab.lyrics.max) {
+        errs.push(`Lyrics is ${len} characters; max for ${currentModel || 'this model'} is ${tab.lyrics.max}.`);
+      }
+    }
+  }
+  return errs;
+}
 
 // ----------------- Prompt character counter -----------------
 // Builds a small "X / 2000" counter for the --prompt argument. The API
@@ -1139,7 +2397,7 @@ function buildPromptCounter({ selEl, manualEl, getExtraPrefix = () => '', max = 
 function buildVariantsRow({ id, seedInput = null, defaultN = 1, label = '--variants' } = {}) {
   const sel = el('select', { class: 'variants-select', id: id || 'variants' });
   for (let i = 1; i <= 5; i++) {
-    sel.appendChild(el('option', { value: String(i) }, `${i}×`));
+    sel.appendChild(el('option', { value: String(i) }, `${i}Ã—`));
   }
   sel.value = String(defaultN);
   const lbl = el('label', { class: 'variants-label' }, [
@@ -1196,14 +2454,51 @@ function showTab(name) {
   refreshTabStatusDots();
   // Persist current tab selection
   scheduleStateSave();
+  // First-time intro popup for the tab. Gated by the same popup
+  // policy as the startup / first-time-setup popups, so the user
+  // can flip "never" in âš™ Settings â†’ Popups to silence every
+  // intro popup in one go. The popup id is `tab-intro:<name>` so
+  // each tab's intro is independently dismissable.
+  maybeShowTabIntro(name);
+}
+
+// ----------------- Tab intro popups -----------------
+// A short, friendly "what's this tab about" popup shown the first
+// time the user opens each tab. Gated by the popup policy in
+// state.popupPolicy (configured in âš™ Settings â†’ Popups). The popup
+// is rendered with the same showModal() primitive so it gets the
+// full Esc/click-outside/stack behaviour. The default text is short
+// on purpose: the detailed field-level help is still available via
+// the `?` icons on every input.
+function maybeShowTabIntro(tabName) {
+  const intros = {
+    image:  'ðŸ–¼ Image tab â€” describe what you want to generate in the prompt, tweak the model + aspect + variants, then click Generate. Enable the Upscale / Optimize toggle to run a local pipeline after the API returns.',
+    speech: 'ðŸ—£ Speech tab â€” type or paste the text, pick a voice, then click Generate. Use the â–¶ button next to each voice to hear a quick preview. The output is an MP3 (or your chosen format) saved to the folder browser on the right.',
+    music:  'ðŸŽµ Music tab â€” describe the music you want (genre, mood, instruments, tempo). Toggle "Instrumental only" to skip vocals. Each click of Generate produces one short track and writes it to the folder browser.',
+    video:  'ðŸŽ¬ Video tab â€” describe the short video you want, pick the model + resolution + duration, then click Generate. Note: Token Plan keys allow only 3 video generations per week; pay-as-you-go (PAYG) keys are billed per video with no weekly cap. Each video takes a few minutes to render.',
+  };
+  const text = intros[tabName];
+  if (!text) return;
+  openGatedPopup('tab-intro:' + tabName, (m, close, markSeen) => {
+    m.classList.add('tab-intro-modal');
+    const titles = { image: 'Image', speech: 'Speech', music: 'Music', video: 'Video' };
+    m.appendChild(el('h2', {}, 'ðŸ‘‹ Welcome to the ' + (titles[tabName] || tabName) + ' tab'));
+    m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 13px; line-height: 1.55;' }, text));
+    m.appendChild(el('p', { style: 'color: var(--fg-3); font-size: 11px;' },
+      'You can disable these intro popups in âš™ Settings â†’ Popups.'));
+    m.appendChild(el('div', { class: 'footer' }, [
+      el('button', { class: 'primary', onclick: () => { markSeen(); close(); } }, 'Got it'),
+    ]));
+    setTimeout(() => { m.querySelector('button.primary')?.focus(); }, 0);
+  });
 }
 
 // Update the colored status dots on the tab buttons. The rules are:
-//   - genStatus === 'running'  → red dot
-//   - genStatus === 'done' and tab !== currentTab → green dot
-//   - genStatus === 'done' and tab === currentTab → no dot (the user has
+//   - genStatus === 'running'  â†’ red dot
+//   - genStatus === 'done' and tab !== currentTab â†’ green dot
+//   - genStatus === 'done' and tab === currentTab â†’ no dot (the user has
 //     effectively "seen" the result by switching into the tab)
-//   - genStatus === 'idle'     → no dot
+//   - genStatus === 'idle'     â†’ no dot
 function refreshTabStatusDots() {
   for (const tabKey of ['image', 'speech', 'music', 'video']) {
     const t = $(`.tab[data-tab="${tabKey}"]`);
@@ -1223,7 +2518,7 @@ function refreshTabStatusDots() {
 // the countdown reflects the TOTAL remaining time for all items in the
 // queue (current item + future items). As each item completes, the
 // running average is updated and the ETA is recomputed on the next
-// 1-second tick. The countdown is an estimate, not a guarantee — but it
+// 1-second tick. The countdown is an estimate, not a guarantee â€” but it
 // gives the user a sense of how long the current call will still take.
 function refreshTabEtas() {
   for (const tabKey of ['image', 'speech', 'music', 'video']) {
@@ -1251,7 +2546,7 @@ function _formatTabEta(tabKey) {
     const defaults = { image: 35, speech: 12, music: 75, video: 90 };
     avg = defaults[tabKey] || 30;
   }
-  // Total queue size for the current run (variants × n, where n is the
+  // Total queue size for the current run (variants Ã— n, where n is the
   // --n count). When the gen handler kicks off, it sets
   // state.genQueueSize[tabKey] and increments state.genQueueDone[tabKey]
   // after each completed item. -1 for "the item currently in flight".
@@ -1282,7 +2577,7 @@ function _formatTabEta(tabKey) {
   const s = remaining % 60;
   return `- ${m}:${String(s).padStart(2, '0')}`;
 }
-// Update the ETA once a second while a tab is running. Cheap text update —
+// Update the ETA once a second while a tab is running. Cheap text update â€”
 // the tab has only 4 instances.
 let _etaTimer = null;
 function ensureEtaTimer() {
@@ -1310,7 +2605,7 @@ function ensureEtaTimer() {
 
 // ----------------- Style dropdown refresh -----------------
 // Refresh every open style-preset dropdown so the new list of styles is
-// immediately reflected after add/edit/delete — without requiring the user
+// immediately reflected after add/edit/delete â€” without requiring the user
 // to switch tabs. Implemented as a class query so detached dropdowns
 // (from rebuilt tabs) are automatically ignored.
 function _refreshAllStyleDropdowns() {
@@ -1339,8 +2634,8 @@ TABS.image = {
 
     // Prompt
     const prompt = buildParamRow('Prompt (prefilled, editable)',
-      { kind: 'textarea', value: this.prefilled, help: 'The description of the image to generate. Sent as --prompt. Max ~1500 chars (mmx image API limit).' });
-    const styleRow = buildStyleRow('image', 'Select a style preset. Its value is prepended (with a comma) to your manual prompt before being sent to mmx.');
+      { kind: 'textarea', value: this.prefilled, help: 'The description of the image to generate. Sent as --prompt. Max 1500 characters.' });
+    const styleRow = buildStyleRow('image', 'Select a style preset. Its value is prepended (with a comma) to your manual prompt before the request is sent.');
     const stylePreview = buildStylePreviewBlock();
     const tabState = { previewEl: stylePreview._previewEl, selEl: styleRow.sel, manualEl: prompt.input };
     const updatePreview = () => updateStylePreview(tabState);
@@ -1361,25 +2656,25 @@ TABS.image = {
     const model = buildParamRow('--model', {
       kind: 'enum', default: 'image-01',
       options: [
-        { value: 'image-01', label: 'image-01 (default — general purpose)' },
+        { value: 'image-01', label: 'image-01 (default â€” general purpose)' },
         { value: 'image-01-live', label: 'image-01-live (hand-drawn, cartoon, style control)' },
       ],
-      help: 'Image generation model.\n\nimage-01 (default):\n  • General-purpose text-to-image\n  • Aspect ratios: 1:1, 16:9, 9:16, 4:3, 3:4, 2:3, 3:2, 21:9\n  • Custom width/height: 512-2048 px (multiple of 8)\n  • --subject-ref, --prompt-optimizer, --aigc-watermark, --seed\n\nimage-01-live:\n  • Hand-drawn / cartoon / stylized outputs\n  • Finer style control\n  • Same flags as image-01',
+      help: 'Image generation model.\n\nimage-01 (default):\n  â€¢ General-purpose text-to-image\n  â€¢ Aspect ratios: 1:1, 16:9, 9:16, 4:3, 3:4, 2:3, 3:2, 21:9\n  â€¢ Custom width/height: 512-2048 px (multiple of 8)\n  â€¢ --subject-ref, --prompt-optimizer, --aigc-watermark, --seed\n\nimage-01-live:\n  â€¢ Hand-drawn / cartoon / stylized outputs\n  â€¢ Finer style control\n  â€¢ Same flags as image-01',
     });
     const aspect = buildParamRow('--aspect-ratio', {
-      kind: 'enum', default: '16:9',
+      kind: 'enum', default: '',
       options: [
-        { value: '', label: '(default)' },
-        { value: '1:1', label: '1:1 — square' },
-        { value: '16:9', label: '16:9 — widescreen' },
-        { value: '9:16', label: '9:16 — portrait / phone' },
-        { value: '4:3', label: '4:3 — classic' },
-        { value: '3:4', label: '3:4 — portrait classic' },
-        { value: '2:3', label: '2:3 — photo portrait' },
-        { value: '3:2', label: '3:2 — photo landscape' },
-        { value: '21:9', label: '21:9 — ultrawide / cinematic' },
+        { value: '', label: '(default — let the model pick)' },
+        { value: '1:1', label: '1:1 â€” square' },
+        { value: '16:9', label: '16:9 â€” widescreen' },
+        { value: '9:16', label: '9:16 â€” portrait / phone' },
+        { value: '4:3', label: '4:3 â€” classic' },
+        { value: '3:4', label: '3:4 â€” portrait classic' },
+        { value: '2:3', label: '2:3 â€” photo portrait' },
+        { value: '3:2', label: '3:2 â€” photo landscape' },
+        { value: '21:9', label: '21:9 â€” ultrawide / cinematic' },
       ],
-      help: 'Output aspect ratio. Ignored if you set both --width and --height.',
+      help: 'Output aspect ratio. The default (empty) lets the model pick its own ratio (image-01 falls back to 1:1). Ignored if you set both --width and --height. The 21:9 ultrawide option is image-01 only.',
     });
     const n = buildParamRow('--n (count)', {
       kind: 'number', default: 1, min: 1, max: 4, customDefault: 1, step: 1,
@@ -1398,7 +2693,7 @@ TABS.image = {
         { value: 1920, label: '1920' },
         { value: 2048, label: '2048' },
       ],
-      help: 'Pixel width (512–2048, multiple of 8). Overrides --aspect-ratio when paired with --height. image-01 only.',
+      help: 'Pixel width (512â€“2048, multiple of 8). Overrides --aspect-ratio when paired with --height. image-01 only.',
     });
     const height = buildParamRow('--height (px)', {
       kind: 'number', default: '', min: 512, max: 2048, step: 8,
@@ -1412,7 +2707,7 @@ TABS.image = {
         { value: 1080, label: '1080' },
         { value: 2048, label: '2048' },
       ],
-      help: 'Pixel height (512–2048, multiple of 8). Overrides --aspect-ratio when paired with --width. image-01 only.',
+      help: 'Pixel height (512â€“2048, multiple of 8). Overrides --aspect-ratio when paired with --width. image-01 only.',
     });
     const seed = buildParamRow('--seed', {
       kind: 'number', default: '', min: 0, max: 2_147_483_647, step: 1,
@@ -1441,7 +2736,7 @@ TABS.image = {
         { name: 'All files', extensions: ['*'] },
       ],
       browseTitle: 'Select character reference image',
-      help: 'Character consistency reference.\nFormat passed to mmx: type=character,image=<value>\nYou can also paste a public URL (https://...).\nSupported formats: PNG, JPG, JPEG, WebP.',
+      help: 'Character consistency reference.\nFormat: type=character,image=<value>\nYou can also paste a public URL (https://...).\nSupported formats: PNG, JPG, JPEG, WebP.',
     });
     const respFmt = buildParamRow('--response-format', {
       kind: 'enum', default: 'url',
@@ -1456,7 +2751,7 @@ TABS.image = {
       el('h3', {}, 'Parameters'),
       buildFilePrefixRow(),
       el('div', { class: 'grid' }, [aspect.row, n.row, width.row, height.row, seed.row, respFmt.row, promptOpt.row, watermark.row, subjRef.row]),
-      // Live validity warnings for the W × H combo and the subject
+      // Live validity warnings for the W Ã— H combo and the subject
       // ref field. attachImageDimGuards wires the aspect/W/H
       // listeners (auto-fill on aspect change, ratio-mismatch
       // warning, div-by-8 warning) and returns the warning div
@@ -1477,18 +2772,18 @@ TABS.image = {
     const upscaleCb = el('input', { type: 'checkbox', title: 'Upscale the generated image after creation' });
     const upscaleLabel = el('label', { class: 'upscale-checkbox', title: 'Click to configure upscale settings' });
     const upscaleMult = el('span', { class: 'upscale-mult' }, '');
-    upscaleLabel.append(upscaleCb, '🔍 Upscale', upscaleMult);
+    upscaleLabel.append(upscaleCb, 'ðŸ” Upscale', upscaleMult);
     // Reflect persisted state
     if (state.upscaleEnabled) upscaleCb.checked = true;
     function refreshUpscaleCheckboxUI() {
       const m = (state.upscaleSettings && state.upscaleSettings.multiplier) || 2;
-      upscaleMult.textContent = state.upscaleEnabled ? ` (${m}×)` : '';
+      upscaleMult.textContent = state.upscaleEnabled ? ` (${m}Ã—)` : '';
       upscaleLabel.classList.toggle('active', !!state.upscaleEnabled);
     }
     refreshUpscaleCheckboxUI();
     upscaleLabel.addEventListener('click', (e) => {
       // Only open the settings overlay when the user clicks the label
-      // text (not the input itself — clicking the input toggles it).
+      // text (not the input itself â€” clicking the input toggles it).
       if (e.target === upscaleCb) return; // let the input toggle
       e.preventDefault();
       showUpscaleSettings();
@@ -1510,7 +2805,14 @@ TABS.image = {
 
     // Sticky footer: actions + preview stay visible while the rest of the
     // tab scrolls. CSS uses position: sticky on .tab-footer.
-    const tabFooter = el('div', { class: 'tab-footer' }, [actions, preview]);
+    // Tab footer: the preview area goes ABOVE the actions row so
+    // the Generate / +Add / batch controls sit at the very bottom
+    // of the tab. The user asked to move them down so there is
+    // no visible "scrolling content behind a small area below
+    // them" — the fix is to keep the actions row as the LAST
+    // element in the sticky footer. The preview is still sticky-
+    // attached to the actions row via the tab-footer flex column.
+    const tabFooter = el('div', { class: 'tab-footer' }, [preview, actions]);
     root.appendChild(tabFooter);
 
     // ---- Generate handler ----
@@ -1522,6 +2824,30 @@ TABS.image = {
       if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
       const promptText = buildFinalPrompt(styleRow.sel, prompt.input);
       if (!promptText) { toast('Prompt is required (style or manual input).', 'warn'); return; }
+      // Pre-flight: validate every visible parameter against the
+      // MODEL_SPECS registry. We do this BEFORE building argv so
+      // the user sees a precise "X exceeds max Y" toast instead of
+      // a cryptic 400 from the API. The registry also tells us
+      // which rows are supported on the selected model — a flag
+      // that's been left over from a different model would otherwise
+      // be sent verbatim and rejected by the backend.
+      const imageParams = {
+        '--prompt': prompt.input,
+        '--model': model.input,
+        '--aspect-ratio': aspect.input,
+        '--n': n.input,
+        '--width': width.input,
+        '--height': height.input,
+        '--seed': seed.input,
+        '--prompt-optimizer': promptOpt.input,
+        '--aigc-watermark': watermark.input,
+        '--subject-reference-file': subjRef.input,
+      };
+      const preErrs = validateTabAgainstSpec('image', imageParams, model.input.getValue(), null);
+      if (preErrs.length) {
+        for (const e of preErrs) toast(e, 'err', 6000);
+        return;
+      }
       const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
       const seedVal = seed.input.getValue();
       const seedLocked = String(seedVal) !== '' && variantsCount > 1;
@@ -1535,6 +2861,24 @@ TABS.image = {
       catch (e) { toast('No output directory set. Open Settings.', 'err'); return; }
       const slug = slugify(promptText).slice(0, 60) || 'image';
       const cancel = armGenBtnWithCancel(genBtn, 'Generate');
+      // Log a "generation started" event up front so the user
+      // sees one row per click in the new structured log pane,
+      // and so the "completed" / "failed" events below can be
+      // read as part of the same group. We use the prompt text
+      // (truncated) as the headline; the full prompt stays
+      // available in the expand-on-click details.
+      const promptShort = (promptText || '').replace(/\s+/g, ' ').slice(0, 120);
+      const genStartEvId = addLogEvent({
+        category: 'gen',
+        headline: `Image generation started: ${promptShort}${promptText && promptText.length > 120 ? 'â€¦' : ''}`,
+        details: [
+          `Variants: ${variantsCount}`,
+          `Seed: ${seedVal === '' ? '(random)' : String(seedVal)}`,
+          `Aspect: ${aspect.input.getValue() || '(default)'}`,
+          `Model: ${model.input.getValue() || '(default)'}`,
+          `Reference: ${subjRef.input.value && subjRef.input.value.trim() ? subjRef.input.value.trim() : '(none)'}`,
+        ],
+      });
       let allOk = true;
       let lastPreview = null;
       let lastOutFile = null;
@@ -1544,7 +2888,7 @@ TABS.image = {
       // files are unknown at gen time, so we scan the directory at the
       // end of the loop (see resolveOutDirFiles). After the upscale +
       // crop step, the original file is replaced by the upscaled (and
-      // optionally cropped) one — we update the list in place.
+      // optionally cropped) one â€” we update the list in place.
       const outFiles = [];
       // lastFailedR captures the most recent failed mmxRun result so the
       // error UI (preview + toast) can surface its full details, including
@@ -1573,7 +2917,7 @@ TABS.image = {
       if ((wv0 && !hv0) || (!wv0 && hv0)) {
         toast('Width and height must both be set (or both unset). Width/height ignored.', 'warn');
       }
-      // Build the argv once and reuse it across variant attempts — the prompt
+      // Build the argv once and reuse it across variant attempts â€” the prompt
       // and parameters don't change between retries.
       function buildImageArgs() {
         const args = ['image', 'generate'];
@@ -1623,8 +2967,8 @@ TABS.image = {
           // so the ETA ticks down more accurately as the run progresses.
           const itemStart = Date.now();
           const statusMsg = variantsCount > 1
-            ? `Generating image… variant ${v}/${variantsCount}`
-            : (useOutDir ? `Generating image… (${nCount} images to ${outDir})` : 'Generating image…');
+            ? `Generating imageâ€¦ variant ${v}/${variantsCount}`
+            : (useOutDir ? `Generating imageâ€¦ (${nCount} images to ${outDir})` : 'Generating imageâ€¦');
           setStatus(statusMsg, true);
           preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(statusMsg)}</div>`;
 
@@ -1639,13 +2983,13 @@ TABS.image = {
             const isRateLimit = /rate|limit|throttl|too many|429/i.test(firstMsg);
             const maxRetries = 3;
             for (let attempt = 1; attempt <= maxRetries && !cancel.wasCancelled(); attempt++) {
-              // Exponential backoff: 1.5s, 3s, 6s (×2 if rate-limited)
+              // Exponential backoff: 1.5s, 3s, 6s (Ã—2 if rate-limited)
               const baseDelay = 1500 * Math.pow(2, attempt - 1);
               const delay = isRateLimit ? baseDelay * 2 : baseDelay;
               await new Promise((res) => setTimeout(res, delay));
               if (cancel.wasCancelled()) break;
-              setStatus(`Retrying image variant ${v}/${variantsCount} (attempt ${attempt + 1}/${maxRetries + 1})…`, true);
-              preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(`Retrying variant ${v}/${variantsCount} (attempt ${attempt + 1})…`)}</div>`;
+              setStatus(`Retrying image variant ${v}/${variantsCount} (attempt ${attempt + 1}/${maxRetries + 1})â€¦`, true);
+              preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(`Retrying variant ${v}/${variantsCount} (attempt ${attempt + 1})â€¦`)}</div>`;
               r = await window.api.mmxRun(args);
               if (r.ok) {
                 toast(`Image variant ${v}/${variantsCount} succeeded on retry ${attempt}.`, 'ok', 2500);
@@ -1662,13 +3006,13 @@ TABS.image = {
             // user can manually re-attempt this exact variant.
             allOk = false;
             lastFailedR = r;
-            preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}). Continuing with next variant…</div><div class="meta">${escapeHtml(formatMmxError(r))}</div>`;
+            preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}). Continuing with next variantâ€¦</div><div class="meta">${escapeHtml(formatMmxError(r))}</div>`;
             // Advance the queue counter even on failure so the ETA
             // doesn't keep counting this variant as "still in flight"
             // for the rest of the run. Failed variants still consume
             // wall-clock time, so we add their elapsed time to the
             // per-item average (so the ETA reflects the real pace of
-            // the call, not just the successful ones — otherwise a
+            // the call, not just the successful ones â€” otherwise a
             // string of slow failures would under-estimate the time
             // for the remaining variants).
             const failDur = (Date.now() - itemStart) / 1000;
@@ -1696,109 +3040,51 @@ TABS.image = {
           lastPreview = r.parsed;
           lastOutFile = outFile;
           if (!useOutDir) outFiles.push(outFile);
+          // Live-update the folder explorer + preview pane. The
+          // gen handler knows the output path for non-(--out-dir)
+          // runs, so we don't have to wait for the 1s polling
+          // to discover the file â€” the UI reacts on the same
+          // tick the file is written. The polling is still
+          // running in the background as a safety net for the
+          // --out-dir case (and for the post-processed upscaled
+          // / cropped / no-bg / optimised files the gen handler
+          // creates after the raw mmx call returns). Idempotent
+          // â€” calling it with the same path twice is a no-op.
+          if (!useOutDir) {
+            try { notifyImageGenerated(outFile); } catch (_) {}
+            // Add the blink class to the row for the CSS animation.
+            // We use a microtask so the row exists in the DOM
+            // (the folder explorer was re-rendered by
+            // startGenPolling's tick on the previous second, or
+            // by the user's last refresh). If the row isn't there
+            // yet, the next polling tick will add the class.
+            queueMicrotask(() => {
+              const row = document.querySelector(`.fb-item[data-path="${CSS.escape(outFile)}"]`);
+              if (row) row.classList.add('fb-item-new');
+            });
+          }
         }
-        // Post-processing INSIDE the try block — the previous layout ran
+        // Post-processing INSIDE the try block â€” the previous layout ran
         // the upscale + crop + background-removal AFTER the finally, which
         // meant cancel.cleanup() had already restored the Generate button
         // to its idle state and cleared state.generating. The post-
         // processing then ran for several seconds under a "Generate"
         // button that the user could click again, racing the still-
-        // running upscale and — when they did — the new click would
+        // running upscale and â€” when they did â€” the new click would
         // arm another cancel handler while the old run's pending
         // promises leaked. Now the button stays as "Cancel" and the
         // state.generating guard stays set until every post-processing
         // step has completed, matching what the UI promises.
         if (allOk && lastOutFile && !cancel.wasCancelled()) {
-        // If the Upscale checkbox is on, run the generated image through
-        // the local upscaler after the mmx call returns. The preview then
-        // shows the upscaled version, and the file browser gets the
-        // new "<name>_Nx.png" file next to the original.
-        let displayFile = lastOutFile;
-        if (state.upscaleEnabled && state.upscaleSettings) {
-          try {
-            setStatus(`Upscaling ${state.upscaleSettings.multiplier}×…`, true);
-            preview.innerHTML = `<div class="empty"><span class="spinner"></span> Upscaling ${state.upscaleSettings.multiplier}×…</div>`;
-            displayFile = await upscaleImageFile(lastOutFile, state.upscaleSettings.multiplier);
-            toast(`Upscaled to ${state.upscaleSettings.multiplier}× → ${displayFile}`, 'ok', 3000);
-            // If auto-crop is also on, apply it now. The flow mirrors
-            // showUpscaleDirect: load the upscaled file, compute the
-            // crop frame at the chosen anchor, write the cropped file
-            // and delete the intermediate.
-            if (state.upscaleSettings.autoCrop) {
-              const a = state.upscaleSettings;
-              const upImg = await loadImageFromFile(displayFile);
-              const uW = upImg.naturalWidth;
-              const uH = upImg.naturalHeight;
-              const wantW = a.cropWidth || uW;
-              const wantH = a.cropHeight || uH;
-              const w = Math.min(wantW, uW);
-              const h = Math.min(wantH, uH);
-              const maxX = uW - w;
-              const maxY = uH - h;
-              let x, y;
-              if (a.cropAnchorX === 'left')        x = 0;
-              else if (a.cropAnchorX === 'right') x = maxX;
-              else                                x = Math.floor(maxX / 2);
-              if (a.cropAnchorY === 'top')         y = 0;
-              else if (a.cropAnchorY === 'bottom') y = maxY;
-              else                                y = Math.floor(maxY / 2);
-              setStatus(`Cropping to ${w} × ${h}…`, true);
-              preview.innerHTML = `<div class="empty"><span class="spinner"></span> Cropping to ${w} × ${h}…</div>`;
-              const cropped = await cropImageFile(displayFile, x, y, w, h);
-              // Drop the intermediate (full-upscaled) file.
-              window.api.fbDelete(displayFile).catch(() => {});
-              displayFile = cropped;
-              toast(`Upscaled ${state.upscaleSettings.multiplier}× and cropped to ${w} × ${h} → ${cropped}`, 'ok', 4000);
-            }
-            try { await refreshBrowser(); } catch (_) {}
-          } catch (e) {
-            console.error('Upscale failed:', e);
-            toast('Upscale failed (kept original): ' + (e && e.message || e), 'warn', 4000);
-            displayFile = lastOutFile;
-          }
-        }
-        // "Remove background" stage — runs after upscale (if any) so
-        // the user gets the transparent version of their final
-        // image, not the raw generated file. Sits OUTSIDE the
-        // upscale try/catch because the user may want the
-        // background removed even when Upscale is off; in that case
-        // we run on lastOutFile directly. A failure here is
-        // non-fatal — we keep the (possibly upscaled) displayFile
-        // and surface a warning, so the user never loses the image
-        // they just paid API credits to generate.
-        if (state.removeBackgroundEnabled && displayFile) {
-          try {
-            setStatus('Removing background…', true);
-            preview.innerHTML = `<div class="empty"><span class="spinner"></span> Removing background…</div>`;
-            const noBg = await removeBackgroundFile(displayFile);
-            // The intermediate (upscaled / cropped / raw) is now
-            // redundant — the transparent version is the user's
-            // actual deliverable. Delete the intermediate to keep
-            // the output folder tidy; the user can still find it
-            // in the file browser's lastN listing if they need it
-            // back, and the original API-generated file is
-            // untouched.
-            if (noBg !== displayFile) {
-              window.api.fbDelete(displayFile).catch(() => {});
-              displayFile = noBg;
-            }
-            toast(`Background removed → ${displayFile}`, 'ok', 4000);
-            try { await refreshBrowser(); } catch (_) {}
-          } catch (e) {
-            console.error('Remove background failed:', e);
-            toast('Background removal failed (kept image): ' + (e && e.message || e), 'warn', 5000);
-          }
-        }
-        // Build the final list of files to display in the preview pane.
-        // For --out-dir runs, the per-call output filenames are unknown
-        // to the renderer (mmx writes them with its own naming scheme),
-        // so we resolve them by scanning outDir for files that were
-        // created during this run. We use the run start time + a small
-        // 1.5s pre-roll (to catch files written just before the gen
-        // handler set genStartMs) as the lower bound, and "now" as the
-        // upper bound (to avoid picking up files a future run might
-        // write after the scan).
-        let displayFiles = outFiles.slice();
+        // Resolve the full list of output files. For --out-dir runs
+        // (--n > 1), the per-call filenames are not known to the
+        // renderer (mmx writes them with its own naming scheme), so
+        // we scan outDir for files that were created during this
+        // run. We use the run start time + a small 1.5s pre-roll as
+        // the lower bound, and "now" as the upper bound. For single-
+        // file runs (useOutDir=false), we already have the file list
+        // from the variant loop in `outFiles`.
+        let sourceFiles = outFiles.slice();
         if (useOutDir) {
           try {
             const dirList = await window.api.fbList(outDir);
@@ -1812,44 +3098,138 @@ TABS.image = {
                   return m >= startMs - 1500 && m <= nowMs + 5000;
                 })
                 .sort((a, b) => (a.mtimeMs || 0) - (b.mtimeMs || 0));
-              if (matches.length) displayFiles = matches.map((m) => m.path);
+              if (matches.length) sourceFiles = matches.map((m) => m.path);
             }
           } catch (_) { /* fall back to whatever we have */ }
         }
-        // If only one file ends up in the list (the typical case), fall
-        // back to displayFile (the upscale-aware result) so we don't
-        // accidentally show the pre-upscale file in the preview pane.
-        if (displayFiles.length === 1 && displayFile) {
-          displayFiles = [displayFile];
-        } else if (displayFile && displayFiles.includes(lastOutFile)) {
-          // Replace the lastOutFile entry with the (possibly upscaled
-          // and cropped) displayFile. The user expects the preview to
-          // show the final image, not the intermediate.
-          const idx = displayFiles.indexOf(lastOutFile);
-          if (idx >= 0) displayFiles[idx] = displayFile;
-          else if (!displayFiles.includes(displayFile)) displayFiles.push(displayFile);
+        // Post-processing chain: for EVERY generated file (not just
+        // the last one â€” that was the bug fixed in this revision),
+        // run the upscale â†’ crop â†’ remove-background â†’ optimize chain
+        // and collect the final paths. Each step is independently
+        // non-fatal: a failure on variant N keeps the original file
+        // for variant N and continues with the next one, so the user
+        // never loses an image they paid API credits to generate.
+        const displayFiles = [];
+        const postProcessEach = state.upscaleEnabled
+          || state.removeBackgroundEnabled
+          || (state.optimizeSettings && state.optimizeSettings.enabled);
+        const lastIdx = sourceFiles.length - 1;
+        for (let i = 0; i < sourceFiles.length; i++) {
+          if (cancel.wasCancelled()) {
+            // Cancel mid-chain: any files we haven't processed yet
+            // stay as their raw generated path. The files we have
+            // processed stay as their processed paths.
+            for (let j = i; j < sourceFiles.length; j++) {
+              if (!displayFiles.includes(sourceFiles[j])) displayFiles.push(sourceFiles[j]);
+            }
+            break;
+          }
+          const src = sourceFiles[i];
+          const tag = sourceFiles.length > 1 ? ` (${i + 1}/${sourceFiles.length})` : '';
+          try {
+            if (postProcessEach) {
+              const finalPath = await runPostProcessChain(src, {
+                label: tag,
+                onStatus: (msg) => {
+                  setStatus(msg, true);
+                  preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(msg)}</div>`;
+                },
+                onRefresh: () => { try { refreshBrowser(); } catch (_) {} },
+              });
+              displayFiles.push(finalPath);
+            } else {
+              displayFiles.push(src);
+            }
+          } catch (e) {
+            // runPostProcessChain is supposed to swallow per-step
+            // errors and return the best-available path, so we only
+            // land here on a truly unexpected throw. Be defensive:
+            // fall back to the source file so the user still gets
+            // the raw generated image in the preview pane.
+            console.error('Post-process failed for', src, e);
+            displayFiles.push(src);
+          }
+          // Refresh the folder browser once per processed file so
+          // the new (upscaled / no-bg / optimised) files appear in
+          // the right-hand file list as soon as they're written.
+          // Cheap, and the user explicitly asked for live updates
+          // during batchgen (see feature #6).
+          if (i === lastIdx) {
+            try { await refreshBrowser(); } catch (_) {}
+          }
         }
+        // The last entry of displayFiles is the most recently
+        // processed path â€” treat it as the canonical "last preview"
+        // for legacy callers (toast messages that reference it, the
+        // preview-ready message at the end, etc.). For a single-
+        // file run, this is the same file as the raw generated
+        // output (or its post-processed replacement).
+        const displayFile = displayFiles.length ? displayFiles[displayFiles.length - 1] : lastOutFile;
         // The image tab's left-side preview no longer shows the
-        // generated image — per the user's request, the picture
+        // generated image â€” per the user's request, the picture
         // preview lives in the right-side folder-explorer's preview
         // pane (which subdivides into N thumbnails for N images).
         // The left-side area only carries a short status line so the
         // layout doesn't collapse but the prompt / parameter inputs
         // are no longer obscured.
         preview.innerHTML = '';
-        preview.appendChild(el('div', { class: 'empty' },
-          el('div', { class: 'preview-ready-msg' }, [
-            '✅ ',
-            String(displayFiles.length),
-            (displayFiles.length === 1 ? ' image' : ' images'),
-            ' ready — see the preview pane on the right. Click any thumbnail to open it at 1:1.',
-          ]),
-        ));
+        // v1.1.1 polish: include a "â†» Regenerate" button on the
+        // success state so the user can re-run the same prompt
+        // with one click instead of scrolling up to the Generate
+        // button. Power users iterate a lot on the same prompt
+        // (e.g. trying different aspect ratios, switching the
+        // seed off, etc.) and this is the single biggest workflow
+        // improvement we can make to the success state.
+        const readyWrap = el('div', { class: 'empty' });
+        const readyMsg = el('div', { class: 'preview-ready-msg' }, [
+          'âœ… ',
+          String(displayFiles.length),
+          (displayFiles.length === 1 ? ' image' : ' images'),
+          ' ready â€” see the preview pane on the right. Click any thumbnail to open it at 1:1.',
+        ]);
+        const regenBtn = el('button', { class: 'btn-mini preview-regen-btn', type: 'button' }, 'â†» Regenerate');
+        regenBtn.title = 'Re-run the same prompt (no changes to inputs)';
+        regenBtn.addEventListener('click', () => { try { genBtn.click(); } catch (_) {} });
+        readyWrap.appendChild(readyMsg);
+        readyWrap.appendChild(el('div', { class: 'preview-ready-actions' }, [regenBtn]));
+        preview.appendChild(readyWrap);
         try { previewImagesFromFiles(displayFiles); } catch (_) {}
         bumpGenerationCounter('image', totalImages);
+        // Log a "generation completed" event so the user has
+        // a single row to copy / expand that summarises the
+        // run. The full file list is in the details (one per
+        // line) so the user can paste it into a support
+        // ticket.
+        addLogEvent({
+          category: 'gen',
+          result: 'ok',
+          headline: `Generated ${displayFiles.length} image${displayFiles.length === 1 ? '' : 's'}`,
+          details: displayFiles.map((p) => 'â€¢ ' + p),
+        });
       } else if (!allOk) {
+        // Log a "generation failed" event so the user can copy
+        // the structured error from the log pane (e.g. into a
+        // support ticket). The full classified error message +
+        // stderr / stdout are included in the details so the
+        // helper doesn't have to ask the user "what did it
+        // say?".
+        try {
+          const failedMsg = formatMmxError(lastFailedR || { stderr: '', stdout: '', code: -1 });
+          const failedClass = classifyMmxError(lastFailedR || {}, failedMsg);
+          addLogEvent({
+            category: 'error',
+            result: 'err',
+            headline: `Image generation failed: ${failedMsg}`,
+            details: [
+              `Classification: ${failedClass}`,
+              `Stderr: ${(lastFailedR && lastFailedR.stderr) || '(empty)'}`,
+              `Stdout: ${(lastFailedR && lastFailedR.stdout) || '(empty)'}`,
+              `Exit code: ${(lastFailedR && lastFailedR.code) != null ? String(lastFailedR.code) : '(unknown)'}`,
+            ],
+          });
+        } catch (_) { /* never block the rest of the error UI on log */ }
         // Build a detailed, actionable error block. The user has been
-        // hitting "API error: system error (HTTP 200)" which is opaque —
+        // hitting "API error: system error (HTTP 200)" which is opaque â€”
         // we now classify the error (auth, rate, quota, network, server,
         // unknown) and show targeted tips + buttons to diagnose / retry /
         // copy the raw error for support.
@@ -1859,30 +3239,30 @@ TABS.image = {
           auth: [
             'Your API key may be invalid, expired, or revoked.',
             'Click "Test connection" below to verify.',
-            'Re-paste your key in ⚙ Settings if needed.',
+            'Re-paste your key in âš™ Settings if needed.',
           ],
           rate: [
-            'mmx is rate-limiting your account.',
-            'Wait 30–60 seconds, then click Retry.',
+            'The service is rate-limiting your account.',
+            'Wait 30â€“60 seconds, then click Retry.',
             'Avoid running many batches back-to-back.',
           ],
           quota: [
             'Your Token Plan quota is exhausted for this model.',
             'Wait for the rolling window to reset, or upgrade your plan.',
-            'Check the ⚡ quota display in the top bar.',
+            'Check the âš¡ quota display in the top bar.',
           ],
           network: [
-            'Could not reach the mmx API (DNS / firewall / offline).',
+            'Could not reach the service (DNS / firewall / offline).',
             'Verify your internet connection and any VPN / proxy settings.',
-            'Click "Diagnose" below to check the mmx installation.',
+            'Click "Diagnose" below to check the installation.',
           ],
           server: [
-            'mmx returned a server-side error. Usually transient.',
+            'The service returned a server-side error. Usually transient.',
             'Wait a few seconds and click Retry.',
-            'If it persists, the mmx service may be degraded — try again later.',
+            'If it persists, the service may be degraded â€” try again later.',
           ],
           unknown: [
-            'mmx returned an unrecognised error.',
+            'The service returned an unrecognised error.',
             'Click "Copy error" to share the details with support.',
             'Click "Diagnose" to verify the mmx installation.',
           ],
@@ -1890,27 +3270,27 @@ TABS.image = {
         const tipList = tips[classification] || tips.unknown;
         preview.innerHTML = '';
         const wrap = el('div', { class: 'empty preview-error' });
-        wrap.appendChild(el('div', { class: 'preview-error-title' }, '⚠ Generation failed'));
+        wrap.appendChild(el('div', { class: 'preview-error-title' }, 'âš  Generation failed'));
         const detail = el('div', { class: 'preview-error-message' });
         detail.textContent = lastErrMsg || 'Unknown error (see log pane for details).';
         wrap.appendChild(detail);
         // Classified troubleshooting tips
         const tipsBlock = el('div', { class: 'preview-error-tips' });
         for (const t of tipList) {
-          const li = el('div', { class: 'preview-error-tip' }, '• ' + t);
+          const li = el('div', { class: 'preview-error-tip' }, 'â€¢ ' + t);
           tipsBlock.appendChild(li);
         }
         wrap.appendChild(tipsBlock);
         // Action buttons: Retry / Test connection / Diagnose / Copy error
-        const retryBtn = el('button', { class: 'primary' }, '🔄 Retry');
-        const testBtn = el('button', { class: 'btn-mini' }, '🔑 Test connection');
-        const diagBtn = el('button', { class: 'btn-mini' }, '🩺 Diagnose');
-        const copyBtn = el('button', { class: 'btn-mini' }, '📋 Copy error');
+        const retryBtn = el('button', { class: 'primary' }, 'ðŸ”„ Retry');
+        const testBtn = el('button', { class: 'btn-mini' }, 'ðŸ”‘ Test connection');
+        const diagBtn = el('button', { class: 'btn-mini' }, 'ðŸ©º Diagnose');
+        const copyBtn = el('button', { class: 'btn-mini' }, 'ðŸ“‹ Copy error');
         retryBtn.addEventListener('click', () => genBtn.click());
         testBtn.addEventListener('click', async () => {
-          testBtn.disabled = true; testBtn.textContent = 'Testing…';
+          testBtn.disabled = true; testBtn.textContent = 'Testingâ€¦';
           const r = await window.api.authStatus();
-          testBtn.disabled = false; testBtn.textContent = '🔑 Test connection';
+          testBtn.disabled = false; testBtn.textContent = 'ðŸ”‘ Test connection';
           if (r.ok) {
             toast(r.message || 'API key is valid.', 'ok', 4000);
           } else {
@@ -1933,7 +3313,7 @@ TABS.image = {
             toast('Error details copied to clipboard.', 'ok', 1500);
           } catch (_) {
             // Fallback: just toast the message
-            toast('Clipboard unavailable — error: ' + lastErrMsg, 'warn', 6000);
+            toast('Clipboard unavailable â€” error: ' + lastErrMsg, 'warn', 6000);
           }
         });
         const actions = el('div', { class: 'preview-error-actions' }, [retryBtn, testBtn, diagBtn, copyBtn]);
@@ -1957,7 +3337,7 @@ TABS.image = {
       } finally {
         cancel.cleanup();
         setStatus('Ready', false);
-        // Always refresh — even on cancel/failure, partial files may exist
+        // Always refresh â€” even on cancel/failure, partial files may exist
         // on disk and the user should see them.
         try { await refreshBrowser(); } catch {}
         try { await refreshQuota(); } catch {}
@@ -1979,14 +3359,14 @@ TABS.image = {
 
 // ----------------- SPEECH TAB -----------------
 TABS.speech = {
-  prefilled: 'Welcome to MiniMax Token Plan',
+  prefilled: 'Welcome to MiniMax â€” Token Plan or PAYG, both work here.',
   build() {
     const root = $('#tab-speech');
     root.innerHTML = '';
 
     const text = buildParamRow('Text to read (prefilled, editable)',
-      { kind: 'textarea', value: this.prefilled, help: 'What the voice will say. Max 10 000 chars.' });
-    const styleRow = buildStyleRow('speech', 'Select a style preset. Its value is prepended (with a comma) to your text before being sent to mmx. Useful for narration tone, language hints, etc.');
+      { kind: 'textarea', value: this.prefilled, help: 'What the voice will say. Up to 10 000 characters across all models.' });
+    const styleRow = buildStyleRow('speech', 'Select a style preset. Its value is prepended (with a comma) to your text before the request is sent. Useful for narration tone, language hints, etc.');
     const stylePreview = buildStylePreviewBlock();
     const tabState = { previewEl: stylePreview._previewEl, selEl: styleRow.sel, manualEl: text.input };
     const update = () => updateStylePreview(tabState);
@@ -2007,7 +3387,7 @@ TABS.speech = {
     const model = buildParamRow('--model', {
       kind: 'enum', default: 'speech-2.8-hd',
       options: [
-        { value: 'speech-2.8-hd', label: 'speech-2.8-hd (newest, best quality — default)' },
+        { value: 'speech-2.8-hd', label: 'speech-2.8-hd (newest, best quality â€” default)' },
         { value: 'speech-2.8-turbo', label: 'speech-2.8-turbo (faster, lower latency)' },
         { value: 'speech-2.6-hd', label: 'speech-2.6-hd' },
         { value: 'speech-2.6-turbo', label: 'speech-2.6-turbo' },
@@ -2021,7 +3401,7 @@ TABS.speech = {
     const voice = buildParamRow('--voice', {
       kind: 'enum', default: 'English_expressive_narrator',
       options: [{ value: 'English_expressive_narrator', label: 'English_expressive_narrator (default)' }],
-      help: 'Which voice speaks. 300+ voices available — list loaded from `mmx speech voices`.',
+      help: 'Which voice speaks. 300+ voices available â€” list loaded from `mmx speech voices`.',
     });
     const speed = buildParamRow('--speed', {
       kind: 'number', default: 1.0, step: 0.05,
@@ -2031,7 +3411,7 @@ TABS.speech = {
     const volume = buildParamRow('--volume', {
       kind: 'number', default: 1, min: 0, max: 10, step: 1,
       options: [0, 1, 2, 3, 5, 7, 10].map((v) => ({ value: v, label: String(v) })),
-      help: 'Volume level 0 (silent) – 10 (loudest).',
+      help: 'Volume level 0 (silent) â€“ 10 (loudest).',
     });
     const pitch = buildParamRow('--pitch', {
       kind: 'number', default: 0, min: -12, max: 12, step: 1,
@@ -2119,7 +3499,10 @@ TABS.speech = {
     const variants = buildVariantsRow({ id: 'variants-speech' });
     actions.append(buildAddToBatchBtn('speech'), genBtn, variants.row, batchControls, lastCmd);
     const preview = el('div', { class: 'preview' }, el('div', { class: 'empty' }, 'No audio generated yet.'));
-    const tabFooter = el('div', { class: 'tab-footer' }, [actions, preview]);
+    // Preview ABOVE the actions row so the Generate / +Add buttons
+    // sit at the very bottom of the tab. See the image tab's
+    // tabFooter comment for the rationale.
+    const tabFooter = el('div', { class: 'tab-footer' }, [preview, actions]);
     root.appendChild(tabFooter);
 
     // Populate voices list
@@ -2131,6 +3514,52 @@ TABS.speech = {
       if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
       const txt = text.input.value.trim();
       if (!txt) { toast('Text is required.', 'warn'); return; }
+      // Pre-flight: validate visible parameters against MODEL_SPECS.
+      // --emotion only exists on 2.6+ speech models; the row is
+      // hidden in the form via isFlagVisibleForCurrentModel, but
+      // an old saved value could still be set when the user
+      // switches models — we strip it here so the API never
+      // receives an unsupported flag.
+      const speechParams = {
+        '--text': text.input,
+        '--model': model.input,
+        '--voice': voice.input,
+        '--speed': speed.input,
+        '--volume': volume.input,
+        '--pitch': pitch.input,
+        '--format': format.input,
+        '--sample-rate': sampleRate.input,
+        '--bitrate': bitrate.input,
+        '--channels': channels.input,
+        '--language': language.input,
+        '--subtitles': subtitles.input,
+        '--sound-effect': soundEffect.input,
+        '--pronunciation': pronunciation.input,
+        '--emotion': emotion && emotion.input ? emotion.input : null,
+      };
+      const speechModel = model.input.getValue();
+      const speechErrs = [];
+      for (const k of Object.keys(speechParams)) {
+        if (!speechParams[k]) { delete speechParams[k]; continue; }
+      }
+      const preErrs = validateTabAgainstSpec('speech', speechParams, speechModel, null);
+      if (preErrs.length) {
+        for (const e of preErrs) toast(e, 'err', 6000);
+        return;
+      }
+      // Speech-specific gate: --bitrate only matters when the
+      // output format is a lossy codec (mp3 / opus). The spec
+      // table's perRowOverrides flags this so we suppress a
+      // useless --bitrate send when the user picked WAV / PCM /
+      // FLAC, otherwise the API may reject it or ignore it
+      // silently.
+      const speechFormat = (format.input.value || 'mp3').split('_')[0];
+      if (!['mp3', 'opus'].includes(speechFormat)) {
+        // Clear the value so appendFlag skips it (we keep the
+        // dropdown visible because the spec is "always show,
+        // greyed when irrelevant").
+        bitrate.input.value = '';
+      }
       const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
       let outDir;
       try { outDir = await ensureSubDir('speech'); }
@@ -2180,8 +3609,8 @@ TABS.speech = {
           args.push('--out', outFile);
           lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
           const statusMsg = variantsCount > 1
-            ? `Generating speech… variant ${v}/${variantsCount}`
-            : 'Generating speech…';
+            ? `Generating speechâ€¦ variant ${v}/${variantsCount}`
+            : 'Generating speechâ€¦';
           setStatus(statusMsg, true);
           preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(statusMsg)}</div>`;
           const r = await window.api.mmxRun(args);
@@ -2258,8 +3687,8 @@ TABS.music = {
     root.innerHTML = '';
 
     const prompt = buildParamRow('Music prompt (prefilled, editable)',
-      { kind: 'textarea', value: this.prefilled, help: 'Style/genre/mood description. Set length here (e.g. "30 seconds", "2 minutes"). Max 5 min. Max 2000 chars combined with structured flags.' });
-    const styleRow = buildStyleRow('music', 'Select a style preset. Its value is prepended (with a comma) to your music prompt before being sent to mmx. Use it for repeated genre/mood tags.');
+      { kind: 'textarea', value: this.prefilled, help: 'Describe the music: genre, mood, instruments, tempo, length (e.g. "30 seconds", "2 minutes"). The most up-to-date model (music-2.6) supports up to about 6 minutes. Max 2 000 characters.' });
+    const styleRow = buildStyleRow('music', 'Select a style preset. Its value is prepended (with a comma) to your music prompt before the request is sent. Use it for repeated genre/mood tags.');
     const stylePreview = buildStylePreviewBlock();
     const tabState = { previewEl: stylePreview._previewEl, selEl: styleRow.sel, manualEl: prompt.input };
     // extraPrefix is filled in AFTER the vocal-mode `mode` row is defined below.
@@ -2288,23 +3717,35 @@ TABS.music = {
       counter.wrap,
     ]));
 
-    // === Prominent Instrumental toggle (the most common music request) ===
-    // The user-facing "make this song voice-less" button. ON sets the vocal
-    // mode to "instrumental" and prepends a strong no-vocals clause to the
-    // prompt, which the music-2.6 model honors more reliably than
-    // `--instrumental` alone (per MiniMax docs).
-    const instrumental = buildParamRow('🎵 Instrumental mode (voice-less)', {
+    // === Instrumental toggle (a normal parameter entry) ===
+    // The user-facing "make this song voice-less" toggle. ON sets
+    // the vocal mode to "instrumental" and prepends a strong
+    // no-vocals clause to the prompt, which the music-2.6 model
+    // honors more reliably than `--instrumental` alone (per
+    // MiniMax docs).
+    //
+    // Layout: rendered as a regular row in the Vocals & Lyrics
+    // section (same `.row` styling as every other param), with a
+    // small 🎵 marking + a per-row warning banner that appears
+    // when the toggle is ON. No more separate "prominent" section
+    // — the user wanted it in the normal parameter list.
+    const instrumental = buildParamRow('🎵 Instrumental (voice-less)', {
       kind: 'boolean',
       default: false,
       help: 'Generate a voice-less / instrumental track. ON sets the vocal mode to "instrumental" AND auto-prepends "no vocals, no lyrics, no human voice," to the prompt — the model-2.6 API ignores --instrumental without this hint. Requires music-2.5+ or music-2.6.',
     });
-    // Banner that appears under the toggle when ON
+    // Per-row warning that appears directly under the
+    // instrumental row when the toggle is ON. Same
+    // .info-banner styling as the lyrics-mode banner so the
+    // visual weight is identical (instead of the old
+    // bigger "prominent section" treatment that used to break
+    // the normal parameter rhythm).
     const instrBanner = el('div', { class: 'info-banner instrumental-banner', style: 'display:none;' });
-    instrBanner.appendChild(el('div', { class: 'info-banner-title' }, '🎵 Instrumental mode active'));
+    instrBanner.appendChild(el('div', { class: 'info-banner-title' }, '🎵 Instrumental mode is on'));
     instrBanner.appendChild(el('div', {}, [
       'Lyrics will be ignored and ',
       el('strong', {}, '"no vocals, no lyrics, no human voice, "'),
-      ' will be prepended to the prompt.',
+      ' will be prepended to the prompt so the model stays voice-less.',
     ]));
 
     // Mode
@@ -2358,7 +3799,7 @@ TABS.music = {
     });
     // Lyrics-mode info banner (shown only when mode === 'lyrics')
     const lyricsModeBanner = el('div', { class: 'info-banner', style: 'display:none;' });
-    lyricsModeBanner.appendChild(el('div', { class: 'info-banner-title' }, '🎤 Custom Lyrics mode'));
+    lyricsModeBanner.appendChild(el('div', { class: 'info-banner-title' }, 'ðŸŽ¤ Custom Lyrics mode'));
     const bannerBody = el('div', {});
     const bannerText = document.createTextNode('Fill the textarea above (or use a .txt file). Ensure --model is set to ');
     bannerBody.appendChild(bannerText);
@@ -2385,18 +3826,15 @@ TABS.music = {
     mode.input.addEventListener('change', updateLyricsBanner);
     updateLyricsBanner();
 
-    // Prominent "Instrumental" section — visible right after the Prompt
-    // section so the user can immediately see the voice-less option.
-    const instrumentalSection = el('div', { class: 'section instrumental-section' }, [
-      el('h3', {}, '🎵 Instrumental (voice-less)'),
-      instrumental.row,
-      instrBanner,
-    ]);
-    root.appendChild(instrumentalSection);
-
-    // Vocals & Lyrics section (with the lyrics-mode banner inside)
+    // Vocals & Lyrics section. The Instrumental toggle is now a
+    // normal entry INSIDE this section (not a separate prominent
+    // box). It still has the 🎵 prefix + a per-row warning banner
+    // when ON, so the user gets the same visual cue without the
+    // rhythm-breaking separate-section layout.
     const lyricsSection = el('div', { class: 'section' }, [
       el('h3', {}, 'Vocals & Lyrics'),
+      instrumental.row,
+      instrBanner,
       mode.row,
       lyrics.row,
       lyricsFile.row,
@@ -2406,7 +3844,7 @@ TABS.music = {
     const model = buildParamRow('--model', {
       kind: 'enum', default: 'music-2.6',
       options: [
-        { value: 'music-2.6', label: 'music-2.6 (newest — cover, instrumental, lyrics-optimizer, default)' },
+        { value: 'music-2.6', label: 'music-2.6 (newest â€” cover, instrumental, lyrics-optimizer, default)' },
         { value: 'music-2.5+', label: 'music-2.5+ (instrumental unlocked, richer arrangements)' },
         { value: 'music-2.5', label: 'music-2.5 (paragraph-level precision, 14+ structure tags)' },
         { value: 'music-2.0', label: 'music-2.0 (legacy)' },
@@ -2432,7 +3870,7 @@ TABS.music = {
         { value: 'metal', label: 'metal' },
         { value: 'indie', label: 'indie' },
       ],
-      help: 'Music genre tag. Free-text fallback if you pick "Custom…".',
+      help: 'Music genre tag. Free-text fallback if you pick "Customâ€¦".',
     });
     const mood = buildParamRow('--mood', {
       kind: 'enum-text', default: '',
@@ -2449,7 +3887,7 @@ TABS.music = {
         { value: 'uplifting', label: 'uplifting' },
         { value: 'dreamy', label: 'dreamy' },
       ],
-      help: 'Mood or emotion. Free-text fallback if you pick "Custom…".',
+      help: 'Mood or emotion. Free-text fallback if you pick "Customâ€¦".',
     });
     const vocals = buildParamRow('--vocals', {
       kind: 'enum-text', default: '',
@@ -2460,7 +3898,7 @@ TABS.music = {
         { value: 'duet with harmonies', label: 'duet with harmonies' },
         { value: 'choir', label: 'choir' },
       ],
-      help: 'Vocal style descriptor. Free-text fallback if you pick "Custom…".',
+      help: 'Vocal style descriptor. Free-text fallback if you pick "Customâ€¦".',
     });
     const instruments = buildParamRow('--instruments', {
       kind: 'enum-text', default: '',
@@ -2474,7 +3912,7 @@ TABS.music = {
         { value: 'synth', label: 'synth' },
         { value: 'orchestral', label: 'orchestral' },
       ],
-      help: 'Featured instruments. Free-text fallback if you pick "Custom…".',
+      help: 'Featured instruments. Free-text fallback if you pick "Customâ€¦".',
     });
     const bpm = buildParamRow('--bpm', {
       kind: 'number', default: '', min: 40, max: 220, step: 1,
@@ -2504,7 +3942,7 @@ TABS.music = {
         { value: 'A minor', label: 'A minor' },
         { value: 'B major', label: 'B major' },
       ],
-      help: 'Musical key. Free-text fallback if you pick "Custom…".',
+      help: 'Musical key. Free-text fallback if you pick "Customâ€¦".',
     });
     const tempo = buildParamRow('--tempo', {
       kind: 'enum-text', default: '',
@@ -2572,7 +4010,7 @@ TABS.music = {
       kind: 'enum', default: 'hex',
       options: [
         { value: 'hex', label: 'hex (default, saved to file)' },
-        { value: 'url', label: 'url (24h expiry — download promptly)' },
+        { value: 'url', label: 'url (24h expiry â€” download promptly)' },
       ],
       help: 'How audio bytes come back. hex is saved directly; url requires separate download.',
     });
@@ -2603,7 +4041,10 @@ TABS.music = {
     const variants = buildVariantsRow({ id: 'variants-music' });
     actions.append(buildAddToBatchBtn('music'), genBtn, variants.row, batchControls, lastCmd);
     const preview = el('div', { class: 'preview' }, el('div', { class: 'empty' }, 'No audio generated yet.'));
-    const tabFooter = el('div', { class: 'tab-footer' }, [actions, preview]);
+    // Preview ABOVE the actions row so the Generate / +Add buttons
+    // sit at the very bottom of the tab. See the image tab's
+    // tabFooter comment for the rationale.
+    const tabFooter = el('div', { class: 'tab-footer' }, [preview, actions]);
     root.appendChild(tabFooter);
 
     genBtn.addEventListener('click', async () => {
@@ -2619,6 +4060,35 @@ TABS.music = {
           return;
         }
       }
+      // Pre-flight: validate against MODEL_SPECS so the user
+      // never gets a cryptic 400 for an out-of-range prompt,
+      // unsupported flag for the current model, or a too-long
+      // lyrics block. --instrumental / --lyrics-optimizer only
+      // exist on the 2.5+ / 2.6 models; --lyrics is supported
+      // on every model but unreliable on music-2.0.
+      const musicModel = model.input.getValue();
+      const musicParams = {
+        '--model': model.input,
+        '--prompt': prompt.input,
+        '--lyrics': lyrics.input,
+        '--instrumental': instrumental.input,
+        '--lyrics-optimizer': mode.input, // mode maps to --lyrics-optimizer
+        '--sample-rate': sampleRate.input,
+        '--bitrate': audioBitrate.input,
+        '--format': audioFormat.input,
+      };
+      const preErrs = validateTabAgainstSpec('music', musicParams, musicModel, null);
+      if (preErrs.length) {
+        for (const e of preErrs) toast(e, 'err', 6000);
+        return;
+      }
+      // music-2.0 doesn't have --sample-rate 8000 in its accepted
+      // set, so we already validate. But for safety: if the user
+      // picked music-2.0 and a 8000Hz sample rate, the API
+      // returns the closest supported rate. We don't block it.
+      // Lyrics length: 3500 chars max for music-2.6; shorter for
+      // older models. The spec table's lyrics.max covers all
+      // models in one number (3500).
 
       const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
       let outDir;
@@ -2679,8 +4149,8 @@ TABS.music = {
           args.push('--out', outFile);
           lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
           const statusMsg = variantsCount > 1
-            ? `Generating music… variant ${v}/${variantsCount} (may take 30s–2min each)`
-            : 'Generating music… (may take 30s–2min)';
+            ? `Generating musicâ€¦ variant ${v}/${variantsCount} (may take 30sâ€“2min each)`
+            : 'Generating musicâ€¦ (may take 30sâ€“2min)';
           setStatus(statusMsg, true);
           preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(statusMsg)}</div>`;
           const r = await window.api.mmxRun(args);
@@ -2736,7 +4206,7 @@ TABS.music = {
 
 // ----------------- Previews -----------------
 // Build a file:// URL that works in the renderer. The path may contain
-// characters that are special in a URL (#, ?, %, &) — these MUST be percent-
+// characters that are special in a URL (#, ?, %, &) â€” these MUST be percent-
 // encoded or the file fails to load (e.g. a folder named "v2 #3" would
 // otherwise have the "#3" parsed as a fragment).
 function fileUrl(p) {
@@ -2745,20 +4215,29 @@ function fileUrl(p) {
   // scheme uses forward slashes, regardless of OS).
   let normalized = p.replace(/\\/g, '/');
   // encodeURI keeps '/' and ':' intact, encodes everything else. That's
-  // almost right but it does NOT escape '#' or '?' — those are reserved
+  // almost right but it does NOT escape '#' or '?' â€” those are reserved
   // URL characters, so a filename with '#' (e.g. "render#001.png")
   // would have the URL truncated at the '#', silently loading the
   // wrong file (or nothing). Manually escape them after encodeURI.
   const encoded = encodeURI(normalized)
     .replace(/#/g, '%23')
     .replace(/\?/g, '%3F');
-  return 'file:///' + encoded;
+  // file:// URLs use 3 slashes after the scheme for absolute paths:
+  //   - Windows: "file:///C:/Users/me/file.png"  â† drive letter stays
+  //   - POSIX:   "file:///home/me/file.png"      â† no leading slash in path
+  // Concatenating "file:///" with an absolute POSIX path (which already
+  // starts with "/") would produce 4 slashes (file:////home/...) which
+  // Chromium accepts but some Chromium-based clients (and Electron's
+  // older image-loader) reject as malformed. Strip a single leading
+  // slash so the result is always exactly 3 slashes after "file:".
+  const body = encoded.startsWith('/') ? encoded.slice(1) : encoded;
+  return 'file:///' + body;
 }
 
 function showImagePreview(rootEl, file, parsed) {
   // Use file:// to let the renderer display the local file.
   // We add a cache-busting query string in case the same path is regenerated.
-  // The preview now renders a 400×400 thumbnail instead of the full image
+  // The preview now renders a 400Ã—400 thumbnail instead of the full image
   // (the preview pane was locking the screen when the generation produced
   // a large image). Clicking the thumbnail opens the image overlay at
   // 1:1 pixel mode with a zoom dropdown.
@@ -2771,16 +4250,16 @@ function showImagePreview(rootEl, file, parsed) {
       src: url,
       alt: filename,
       class: 'preview-thumb',
-      title: `${preLoad.naturalWidth}×${preLoad.naturalHeight} — click to view full size`,
+      title: `${preLoad.naturalWidth}Ã—${preLoad.naturalHeight} â€” click to view full size`,
     });
     thumb.addEventListener('click', () => {
-      openImageOverlay(url, filename, preLoad.naturalWidth, preLoad.naturalHeight);
+      openImageOverlay(url, filename, preLoad.naturalWidth, preLoad.naturalHeight, file);
     });
     rootEl.appendChild(thumb);
     const meta = el('div', { class: 'meta' });
     meta.appendChild(document.createTextNode(file));
     meta.appendChild(el('div', { class: 'preview-thumb-size' },
-      `${preLoad.naturalWidth}×${preLoad.naturalHeight} — click for 1:1 view`));
+      `${preLoad.naturalWidth}Ã—${preLoad.naturalHeight} â€” click for 1:1 view`));
     if (parsed) meta.appendChild(el('div', {}, '[mmx] ' + safeStringify(parsed)));
     rootEl.appendChild(meta);
   };
@@ -2788,7 +4267,7 @@ function showImagePreview(rootEl, file, parsed) {
     // Fallback when pre-loading fails (e.g. file still being written to disk).
     rootEl.innerHTML = '';
     const thumb = el('img', { src: url, alt: filename, class: 'preview-thumb' });
-    thumb.addEventListener('click', () => openImageOverlay(url, filename));
+    thumb.addEventListener('click', () => openImageOverlay(url, filename, 0, 0, file));
     rootEl.appendChild(thumb);
     const meta = el('div', { class: 'meta' }, file);
     rootEl.appendChild(meta);
@@ -2818,7 +4297,50 @@ function showAudioPreview(rootEl, file, parsed) {
 // press Esc N times to dismiss a single overlay after N re-opens.
 let _openImageOverlayClose = null;
 
-function openImageOverlay(src, filename, naturalWidth, naturalHeight) {
+// Set of extensions the overlay's arrow-key navigation considers
+// "browsable" â€” i.e. an image file the user can step through.
+// Mirrors the same set the file browser / preview pane use to
+// decide what to render.
+const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'];
+
+// Build the list of image paths the user can step through with
+// the arrow keys in the overlay. Prefers the active multi-image
+// batch (state._previewBatch) when the current path is in it;
+// otherwise falls back to the folder explorer's currently-rendered
+// image list, which is sorted the same way as the folder explorer
+// (because the file browser sorts server-side and the renderer
+// displays the items in the order it received them).
+//
+// Returns { paths: string[], index: number } or null when no list
+// could be built (e.g. no folder context, no batch, no match).
+function buildOverlayNavList(currentPath) {
+  const cur = (currentPath || '').toLowerCase();
+  // 1) Multi-image batch â€” only if the current path is actually in it.
+  if (state._previewBatch && Array.isArray(state._previewBatch.paths) && state._previewBatch.paths.length > 1) {
+    const idx = state._previewBatch.paths.findIndex((p) => (p || '').toLowerCase() === cur);
+    if (idx >= 0) {
+      return { paths: state._previewBatch.paths, index: idx };
+    }
+  }
+  // 2) Fallback: all image files in the current folder, in the
+  //    same order the folder explorer renders them. The
+  //    file-browser renderer stores the items on state._fbItems
+  //    (added in feature #2) and they arrive pre-sorted from the
+  //    main process (name + dirs-first). We further filter to
+  //    image files so the arrow keys only step through images
+  //    and not, say, the user's text notes.
+  if (Array.isArray(state._fbItems) && state._fbItems.length) {
+    const paths = state._fbItems
+      .filter((it) => !it.isDir && IMAGE_EXTS.includes((it.ext || '').toLowerCase()))
+      .map((it) => it.path);
+    if (!paths.length) return null;
+    const idx = paths.findIndex((p) => (p || '').toLowerCase() === cur);
+    return { paths, index: idx >= 0 ? idx : 0 };
+  }
+  return null;
+}
+
+function openImageOverlay(src, filename, naturalWidth, naturalHeight, filePath) {
   // If there's already an overlay open, close it cleanly (this
   // removes the previous keydown listener before we open a new one).
   if (_openImageOverlayClose) {
@@ -2826,14 +4348,23 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight) {
     _openImageOverlayClose = null;
   }
   // The previous code did `existing.remove()` here, which
-  // removed the DOM but never called close() — so the keydown
+  // removed the DOM but never called close() â€” so the keydown
   // listener stayed attached forever. The cleanup is now in
   // _openImageOverlayClose above.
   const overlay = el('div', { class: 'image-overlay', id: 'image-overlay' });
   // Header
   const fname = el('span', { class: 'image-overlay-filename', title: filename || '' }, filename || '');
   const size = el('span', { class: 'image-overlay-size' },
-    (naturalWidth && naturalHeight) ? `${naturalWidth}×${naturalHeight}` : '');
+    (naturalWidth && naturalHeight) ? `${naturalWidth}Ã—${naturalHeight}` : '');
+  // Position counter (e.g. "3 / 12") on the overlay header. Shown
+  // when the arrow keys can navigate, hidden otherwise. Built
+  // from the same nav list the arrow keys use, so the two stay
+  // in lock-step.
+  const navList = buildOverlayNavList(filePath);
+  const pos = el('span', { class: 'image-overlay-pos' }, '');
+  if (navList && navList.paths.length > 1) {
+    pos.textContent = ` (${navList.index + 1} / ${navList.paths.length})`;
+  }
   const zoom = el('select', { class: 'image-overlay-zoom', title: 'Zoom level' });
   for (const [val, label] of [
     ['100', '100% (1:1)'],
@@ -2846,8 +4377,19 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight) {
     if (val === '100') opt.selected = true;
     zoom.appendChild(opt);
   }
-  const closeBtn = el('button', { class: 'btn-mini image-overlay-close', title: 'Close (Esc)' }, '×');
-  const header = el('div', { class: 'image-overlay-header' }, [fname, size, zoom, closeBtn]);
+  const closeBtn = el('button', { class: 'btn-mini image-overlay-close', title: 'Close (Esc)' }, 'Ã—');
+  // Prev / next arrow buttons on the header. Same keyboard / click
+  // behaviour â€” the buttons exist so the user can navigate on a
+  // touch device or with the mouse without using the keyboard.
+  const prevBtn = el('button', { class: 'btn-mini image-overlay-prev', title: 'Previous (â†)' }, 'â€¹');
+  const nextBtn = el('button', { class: 'btn-mini image-overlay-next', title: 'Next (â†’)' }, 'â€º');
+  if (!navList || navList.paths.length <= 1) {
+    // Single-image overlay â€” hide the nav controls so the user
+    // doesn't think there's more to see.
+    prevBtn.style.display = 'none';
+    nextBtn.style.display = 'none';
+  }
+  const header = el('div', { class: 'image-overlay-header' }, [fname, pos, size, prevBtn, nextBtn, zoom, closeBtn]);
   // Content
   const img = el('img', { class: 'image-overlay-img zoom-100', src, alt: filename || '' });
   if (naturalWidth && naturalHeight) {
@@ -2872,15 +4414,142 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight) {
   closeBtn.addEventListener('click', close);
   // Close on background click (not on the image)
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  // Close on Esc
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  // The keyboard handler covers:
+  //   Esc   â†’ close the overlay
+  //   â† / â†’ â†’ step to the previous / next image (with wrap-around
+  //           when the user reaches the ends, so the keyboard
+  //           navigation matches what the user expects from a
+  //           typical image viewer)
+  // Other keys are ignored. We compute the nav list lazily on
+  // each arrow press so a newly-shown multi-image batch is picked
+  // up the moment the user opens the overlay (and so the list
+  // stays accurate even if the user clicks into a different
+  // thumbnail in the preview pane while the overlay is open â€”
+  // which is currently not possible, but defensive code is cheap).
+  const onKey = (e) => {
+    if (e.key === 'Escape') { close(); return; }
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const list = buildOverlayNavList(filePath);
+    if (!list || list.paths.length <= 1) return;
+    const delta = e.key === 'ArrowLeft' ? -1 : +1;
+    // Wrap-around: at the end, â† jumps to the last; at the start,
+    // â†’ jumps to the first. The preview-pane highlight + the
+    // folder-explorer .selected row follow.
+    const nextIdx = (list.index + delta + list.paths.length) % list.paths.length;
+    navigateToOverlayImage(list.paths[nextIdx], { wrap: true });
+  };
   document.addEventListener('keydown', onKey);
+  // Wire the prev/next header buttons to the same navigateToOverlayImage
+  // path so mouse-only users get the same behaviour.
+  if (navList && navList.paths.length > 1) {
+    prevBtn.addEventListener('click', () => {
+      const list = buildOverlayNavList(filePath);
+      if (!list || list.paths.length <= 1) return;
+      const nextIdx = (list.index - 1 + list.paths.length) % list.paths.length;
+      navigateToOverlayImage(list.paths[nextIdx], { wrap: true });
+    });
+    nextBtn.addEventListener('click', () => {
+      const list = buildOverlayNavList(filePath);
+      if (!list || list.paths.length <= 1) return;
+      const nextIdx = (list.index + 1) % list.paths.length;
+      navigateToOverlayImage(list.paths[nextIdx], { wrap: true });
+    });
+  }
   // Stop propagation on the image so clicking the image doesn't close
   // the overlay (the user is likely trying to interact with the image).
   img.addEventListener('click', (e) => e.stopPropagation());
+  // Right-click on the overlay image: open the same
+  // folder-browser context menu (Upscale / Crop / Convert /
+  // Optimize / Remove background + file-level Copy / Cut /
+  // Rename / Move / Delete). Mirrors the preview-pane-thumbnail
+  // right-click behaviour so the user gets the same options
+  // from either entry point.
+  if (filePath) {
+    img.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try { showItemContextMenuForPath(filePath, e.clientX, e.clientY); }
+      catch (_) { /* best-effort */ }
+    });
+    // Same right-click on the header filename (the "Image.png"
+    // label in the overlay's top bar) — useful when the user
+    // wants the context menu without aiming at the image.
+    fname.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try { showItemContextMenuForPath(filePath, e.clientX, e.clientY); }
+      catch (_) { /* best-effort */ }
+    });
+  }
   // Hand the close function to the next open call so a re-open
   // disposes this one cleanly.
   _openImageOverlayClose = close;
+}
+
+// Open the next / previous image in the current overlay nav list.
+// Called by the arrow-key / prev-next-button handlers inside
+// openImageOverlay. Closes the current overlay, re-opens a new
+// one for `path`, and updates the multi-image preview-pane
+// highlight (if a batch is shown) + the folder-explorer's
+// .selected row. The "wrap" option is accepted for future use
+// (e.g. disabling wrap-around when the user explicitly clicks
+// a thumbnail), but currently the keyboard always wraps.
+function navigateToOverlayImage(path, opts) {
+  if (!path) return;
+  // Update the multi-image preview-pane highlight so the new
+  // "current" thumbnail gets the .preview-active class. We
+  // update _previewBatch.index even if the path is not in the
+  // batch â€” buildOverlayNavList falls back to the folder list
+  // in that case.
+  if (state._previewBatch && Array.isArray(state._previewBatch.paths)) {
+    const idx = state._previewBatch.paths.findIndex((p) => (p || '').toLowerCase() === path.toLowerCase());
+    if (idx >= 0) state._previewBatch.index = idx;
+  }
+  // Folder-explorer's .selected row follows the user, so the
+  // file they're navigating to is always the active row.
+  markFbItemActive(path);
+  // Re-render the preview-pane highlight (the .preview-active
+  // class on the thumbnail). We do this by walking the
+  // current grid and toggling the class.
+  const grid = document.querySelector('#fb-preview-content .preview-pane-grid');
+  if (grid) {
+    let activeSlot = null;
+    $$('.preview-pane-thumb', grid).forEach((slot) => {
+      // The slot's `title` attribute is the filename, which is
+      // not a reliable key. Instead, the click handler stores
+      // the path on a data attribute when it binds; for the
+      // public path we read it from the slot's stored state.
+      // As a fallback, the slot's first child <img> has a
+      // src that includes a cache-buster; we can't reverse
+      // that into a path. So we just look up by data-path
+      // if the slot has it (we set it below in
+      // previewImagesFromFiles).
+      const slotPath = slot.getAttribute('data-path');
+      const isMatch = slotPath && slotPath.toLowerCase() === path.toLowerCase();
+      slot.classList.toggle('preview-active', !!isMatch);
+      if (isMatch) activeSlot = slot;
+    });
+    if (activeSlot) {
+      try { activeSlot.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
+    }
+  }
+  // Close the current overlay (which also unregisters the
+  // keyboard listener) and open a new one for the new path.
+  // The close() inside openImageOverlay() handles the
+  // _openImageOverlayClose cleanup; we then load the natural
+  // size async so the new overlay's title shows the right
+  // dimensions.
+  const url = fileUrl(path) + '?t=' + Date.now();
+  const filename = (path || '').split(/[\\/]/).pop() || 'image';
+  const probe = new Image();
+  probe.onload = () => {
+    openImageOverlay(url, filename, probe.naturalWidth, probe.naturalHeight, path);
+  };
+  probe.onerror = () => {
+    openImageOverlay(url, filename, 0, 0, path);
+  };
+  probe.src = url;
 }
 
 function safeStringify(o) {
@@ -2892,7 +4561,7 @@ function escapeHtml(s) {
 }
 
 // ----------------- Image pipeline (Upscale / Crop / Convert) -----------------
-// All three operations are pure browser/Electron — no external libraries,
+// All three operations are pure browser/Electron â€” no external libraries,
 // no network calls, fully open source. They all use the HTML5 Canvas
 // API to read the source image into a canvas, then export it to the
 // target format via canvas.toDataURL. The main process only handles
@@ -2913,7 +4582,7 @@ function loadImageFromFile(filePath) {
 // Tries `basePath`, `basePath (2)`, `basePath (3)`, ... via
 // window.api.fbExists. Caps at 1000 attempts (which would only
 // realistically happen if a script is bulk-renaming to the same
-// stem — the user can still rename / move existing files). On
+// stem â€” the user can still rename / move existing files). On
 // exhaustion, falls back to a timestamp suffix so the operation
 // never silently overwrites a file.
 async function uniqueOutputPath(basePath) {
@@ -2927,10 +4596,10 @@ async function uniqueOutputPath(basePath) {
   return `${stem}_${Date.now()}${ext}`;
 }
 
-// Module-level re-render of the "🔍 Upscale 2×" label in the image
+// Module-level re-render of the "ðŸ” Upscale 2Ã—" label in the image
 // tab. The label is created (and its refreshUpscaleCheckboxUI
 // closure is defined) inside the image tab's build(), so by the
-// time the user opens the ⚙ Settings → Upscale popup, that
+// time the user opens the âš™ Settings â†’ Upscale popup, that
 // closure is long gone. This module-level helper re-queries the
 // DOM by class and updates the label + .active class on save
 // and on every render-pass. (For "one-off" upscale/crop flows
@@ -2941,7 +4610,7 @@ function refreshUpscaleLabel() {
   if (!label) return;
   const mult = label.querySelector('.upscale-mult');
   const m = (state.upscaleSettings && state.upscaleSettings.multiplier) || 2;
-  if (mult) mult.textContent = state.upscaleEnabled ? ` (${m}×)` : '';
+  if (mult) mult.textContent = state.upscaleEnabled ? ` (${m}Ã—)` : '';
   label.classList.toggle('active', !!state.upscaleEnabled);
 }
 
@@ -2988,7 +4657,7 @@ function derivedOutputPath(srcPath, infix) {
 }
 
 // One resize step. Prefers createImageBitmap with resizeQuality: 'high'
-// — Chromium uses a Lanczos-style resampler for that, which is
+// â€” Chromium uses a Lanczos-style resampler for that, which is
 // noticeably sharper than the default canvas drawImage path. Falls
 // back to canvas drawImage with imageSmoothingQuality = 'high' for
 // older runtimes that don't expose createImageBitmap.
@@ -3014,7 +4683,7 @@ async function upscaleStep(src, w, h) {
 
 // Toast-once latch: don't re-spam the user with the "Real-ESRGAN
 // missing" message on every upscale. Resetting it requires a restart
-// of the app, which is what we want — a single reminder per session
+// of the app, which is what we want â€” a single reminder per session
 // is enough.
 let _reEsrganNotified = false;
 
@@ -3037,7 +4706,7 @@ async function probeIsnetbgStatus(forceRefresh = false) {
 
 // Run the optional isnetbg binary on a local image and return the
 // path to the transparent PNG it wrote. Refuses to do anything when
-// the binary / model is missing — the caller is expected to probe
+// the binary / model is missing â€” the caller is expected to probe
 // via `probeIsnetbgStatus()` first and show a precise error.
 //
 // We never overwrite the source: the output is written to
@@ -3048,7 +4717,7 @@ async function removeBackgroundFile(srcPath, opts = {}) {
   const st = await probeIsnetbgStatus();
   if (!st.checked) throw new Error('Could not contact background-removal backend.');
   if (!st.available) {
-    throw new Error('Background removal is not set up. Run `npm run setup` in the project root to download the IS-Net model into ./bin/models/. The Optional add-ons popup (⚙ Settings → Image upscaling → "Re-open add-ons") walks you through every install path.');
+    throw new Error('Background removal is not set up. Run `npm run setup` in the project root to download the IS-Net model into ./bin/models/. The Optional add-ons popup (âš™ Settings â†’ Image upscaling â†’ "Re-open add-ons") walks you through every install path.');
   }
   if (!st.modelPresent) throw new Error('Background-removal model file missing. Run `npm run setup` (or place isnet-general-use.onnx in ./bin/models/ by hand).');
 
@@ -3057,7 +4726,7 @@ async function removeBackgroundFile(srcPath, opts = {}) {
   const lastSep = srcPath.lastIndexOf(sep);
   const dir = lastSep >= 0 ? srcPath.slice(0, lastSep) : '';
   const lastDot = srcPath.lastIndexOf('.');
-  // Same infix pattern as upscale (`_2x` → `_nobg`). PNG is the
+  // Same infix pattern as upscale (`_2x` â†’ `_nobg`). PNG is the
   // only sensible output for a transparent image; we keep the
   // input extension only for human-readability (the actual file is
   // always PNG inside, since the isnetbg binary writes a PNG).
@@ -3071,11 +4740,11 @@ async function removeBackgroundFile(srcPath, opts = {}) {
   return r.outputPath || target;
 }
 
-// Upscale an image to multiplier× its original size. If the
+// Upscale an image to multiplierÃ— its original size. If the
 // realesrgan-ncnn-vulkan binary is installed (PATH or ./bin/), we
-// run it to get a high-quality 4× intermediate, then resize the
-// result down to the requested multiplier (or do an extra 2× step
-// for 8×). Real-ESRGAN's x4plus model is BSD-3-Clause licensed and
+// run it to get a high-quality 4Ã— intermediate, then resize the
+// result down to the requested multiplier (or do an extra 2Ã— step
+// for 8Ã—). Real-ESRGAN's x4plus model is BSD-3-Clause licensed and
 // produces noticeably more detail than the built-in
 // multi-step createImageBitmap pipeline. If the binary is missing,
 // we fall back to the multi-step pipeline so the tool is never
@@ -3104,7 +4773,7 @@ async function upscaleImageFile(srcPath, multiplier) {
   } else if (!_reEsrganNotified) {
     _reEsrganNotified = true;
     toast(
-      'Real-ESRGAN not installed — using the built-in upscale. ' +
+      'Real-ESRGAN not installed â€” using the built-in upscale. ' +
       'Drop the binary into ./bin/ (or add it to PATH) for noticeably higher-quality output. ' +
       'See README for the download link.',
       'info', 6000,
@@ -3159,22 +4828,22 @@ const REAL_ESRGAN_MODELS = new Set([
 ]);
 
 // Real-ESRGAN path. The ncnn-vulkan binary always outputs at the
-// model's native scale (4× for x4plus). For multipliers other than
-// 4×, we resize the intermediate using the same createImageBitmap
+// model's native scale (4Ã— for x4plus). For multipliers other than
+// 4Ã—, we resize the intermediate using the same createImageBitmap
 // step the built-in path uses:
-//   - 2×: 4× → 2×  (downscale)
-//   - 3×: 4× → 3×  (downscale)
-//   - 4×: 4× as-is
-//   - 8×: 4× → 8×  (extra 2× step)
+//   - 2Ã—: 4Ã— â†’ 2Ã—  (downscale)
+//   - 3Ã—: 4Ã— â†’ 3Ã—  (downscale)
+//   - 4Ã—: 4Ã— as-is
+//   - 8Ã—: 4Ã— â†’ 8Ã—  (extra 2Ã— step)
 async function upscaleImageFileRealesrgan(srcPath, multiplier, reStatus) {
   // Pick a model: prefer the user's saved choice, but only if it's on
   // the whitelist. Anything else (default, typo, exploit attempt)
-  // falls back to the general-purpose 4× BSD-3 model.
+  // falls back to the general-purpose 4Ã— BSD-3 model.
   const wanted = (state.realesrganModel || '').trim();
   const model = REAL_ESRGAN_MODELS.has(wanted) ? wanted : 'realesrgan-x4plus';
 
   // The Real-ESRGAN binary needs a writable output path. Write its
-  // 4× intermediate to a `.realesrgan_tmp.png` next to the source
+  // 4Ã— intermediate to a `.realesrgan_tmp.png` next to the source
   // (in output_dir, so it's already in the allowed roots) and
   // clean it up in `finally`.
   const sep = srcPath.includes('\\') ? '\\' : '/';
@@ -3197,7 +4866,7 @@ async function upscaleImageFileRealesrgan(srcPath, multiplier, reStatus) {
   }
 
   try {
-    // Load the 4× intermediate and resize to the user's multiplier.
+    // Load the 4Ã— intermediate and resize to the user's multiplier.
     const reImg = await loadImageFromFile(tempOut);
     const naturalW = reImg.naturalWidth / 4;
     const naturalH = reImg.naturalHeight / 4;
@@ -3257,7 +4926,7 @@ async function cropImageFile(srcPath, x, y, w, h) {
   const dataUrl = canvas.toDataURL(mime);
   const b64 = dataUrl.split(',')[1];
   // Same collision-avoidance as upscale: re-cropping the same file
-  // to the same W × H now produces " (2)" / " (3)" instead of
+  // to the same W Ã— H now produces " (2)" / " (3)" instead of
   // silently overwriting the previous output.
   const out = await uniqueOutputPath(derivedOutputPath(srcPath, `_cropped_${w}x${h}`));
   const r = await window.api.fbWrite(out, b64);
@@ -3295,6 +4964,250 @@ async function convertImageFile(srcPath, targetFormat) {
   return r.path;
 }
 
+// ----------------- Image optimisation / compression -----------------
+// Thin wrapper around the main-process `image:optimize` IPC. The
+// actual Sharp / libvips work happens in src/imageOptimizer.js; the
+// renderer just translates UI choices into the IPC envelope and
+// returns a structured result.
+//
+// `opts`:
+//   {
+//     quality:       1..100,                  // default 82
+//     format:        'keep'|'jpeg'|'png'|'webp'|'avif',
+//                                            // default 'keep'
+//     stripMetadata: boolean,                 // default true
+//     // `overwriteSource: true` writes the optimised bytes
+//     // back to `srcPath` (atomic temp-file + rename on the
+//     // main side). The post-generation pipeline uses this so
+//     // the file the user just paid API credits to generate
+//     // ends up as the smaller, optimised file â€” no
+//     // intermediate "_optimized" sibling cluttering the
+//     // output folder. The folder-browser right-click overlay
+//     // leaves this off and uses a sibling file instead so
+//     // the user can A/B the original against the optimised
+//     // version.
+//     overwriteSource: boolean,               // default false
+//   }
+//
+// Returns the IPC envelope (see src/imageOptimizer.js header for
+// the full shape). Throws an Error on the rare `!ok` path so the
+// caller's catch block can show a single toast; the envelope
+// itself also carries the message in `.error` for callers that
+// want to render it inline (e.g. a results block in the dialog).
+async function optimizeImageFile(srcPath, opts) {
+  opts = opts || {};
+  // Defensive: derive the actual `format` to pass to the IPC
+  // from the UI's `format: 'keep' | 'jpeg' | ...` value. The
+  // 'keep' alias is renderer-side only â€” the IPC expects
+  // either a real format string or null/undefined for
+  // "preserve source format".
+  const fmt = (opts.format === 'keep' || !opts.format) ? null : opts.format;
+  const overwrite = !!opts.overwriteSource;
+  const out = overwrite
+    ? srcPath
+    : await uniqueOutputPath(derivedOutputPath(srcPath, '_optimized' + (fmt ? ('.' + fmt) : '')));
+  const r = await window.api.optimizeImage(srcPath, {
+    quality: opts.quality,
+    format: fmt,
+    stripMetadata: opts.stripMetadata !== false,
+    outputPath: out,
+  });
+  if (!r || !r.ok) {
+    const msg = (r && r.error) || 'Image optimisation failed.';
+    const err = new Error(msg);
+    err.result = r;
+    throw err;
+  }
+  return r;
+}
+
+// Apply the full post-processing chain (upscale â†’ auto-crop â†’ remove
+// background â†’ optimize) to a single generated image. The previous
+// implementation of this chain in the image-tab gen handler only
+// applied the steps to the LAST variant, which silently dropped the
+// upscale / crop / no-bg / optimise work for variants 1..N-1. This
+// helper is the per-file version of the same chain, called once per
+// generated file by the gen handler.
+//
+// Each step is wrapped in its own try/catch and falls back to the
+// best-available path on failure. The chain returns the final path
+// (which may equal `srcPath` if every step was a no-op or failed).
+//
+// Args:
+//   srcPath: the generated file to process
+//   opts:
+//     label:    optional suffix to add to status messages (e.g. " (2/3)")
+//     onStatus: optional callback (msg) => void for the
+//               "Upscaling 2Ã—â€¦" / "Croppingâ€¦" / "Removing backgroundâ€¦"
+//               / "Optimizingâ€¦" status lines. If absent, the helper
+//               just calls setStatus() + updates the image-tab preview
+//               pane (legacy single-file behaviour).
+//     onRefresh: optional callback to call after a step that writes
+//               a new file (so the folder explorer can update right
+//               away). The legacy code called refreshBrowser() after
+//               each successful step; this helper calls onRefresh()
+//               instead so callers (the image-tab gen handler, the
+//               right-click "Optimize" overlay, etc.) can decide when
+//               to refresh.
+async function runPostProcessChain(srcPath, opts) {
+  opts = opts || {};
+  const label = opts.label || '';
+  const onStatus = opts.onStatus || ((msg) => {
+    setStatus(msg, true);
+    const preview = $(`#tab-${state.currentTab} .preview`);
+    if (preview) preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(msg)}</div>`;
+  });
+  const onRefresh = opts.onRefresh || (() => { try { refreshBrowser(); } catch (_) {} });
+  let displayFile = srcPath;
+  // If the Upscale checkbox is on, run the generated image through
+  // the local upscaler after the mmx call returns. The preview then
+  // shows the upscaled version, and the file browser gets the
+  // new "<name>_Nx.png" file next to the original.
+  if (state.upscaleEnabled && state.upscaleSettings) {
+    try {
+      onStatus(`Upscaling ${state.upscaleSettings.multiplier}Ã—${label}â€¦`);
+      displayFile = await upscaleImageFile(displayFile, state.upscaleSettings.multiplier);
+      addLogEvent({
+        category: 'upscale',
+        result: 'ok',
+        headline: `Upscaled ${state.upscaleSettings.multiplier}Ã—${label ? ' ' + label.trim() : ''} â†’ ${displayFile.split(/[\\/]/).pop()}`,
+        details: [
+          `Source: ${srcPath}`,
+          `Output: ${displayFile}`,
+          `Multiplier: ${state.upscaleSettings.multiplier}Ã—`,
+        ],
+      });
+      toast(`Upscaled to ${state.upscaleSettings.multiplier}Ã— â†’ ${displayFile}`, 'ok', 3000);
+      // If auto-crop is also on, apply it now. The flow mirrors
+      // showUpscaleDirect: load the upscaled file, compute the
+      // crop frame at the chosen anchor, write the cropped file
+      // and delete the intermediate.
+      if (state.upscaleSettings.autoCrop) {
+        const a = state.upscaleSettings;
+        const upImg = await loadImageFromFile(displayFile);
+        const uW = upImg.naturalWidth;
+        const uH = upImg.naturalHeight;
+        const wantW = a.cropWidth || uW;
+        const wantH = a.cropHeight || uH;
+        const w = Math.min(wantW, uW);
+        const h = Math.min(wantH, uH);
+        const maxX = uW - w;
+        const maxY = uH - h;
+        let x, y;
+        if (a.cropAnchorX === 'left')        x = 0;
+        else if (a.cropAnchorX === 'right') x = maxX;
+        else                                x = Math.floor(maxX / 2);
+        if (a.cropAnchorY === 'top')         y = 0;
+        else if (a.cropAnchorY === 'bottom') y = maxY;
+        else                                y = Math.floor(maxY / 2);
+        onStatus(`Cropping to ${w} Ã— ${h}${label}â€¦`);
+        const cropped = await cropImageFile(displayFile, x, y, w, h);
+        // Drop the intermediate (full-upscaled) file.
+        window.api.fbDelete(displayFile).catch(() => {});
+        displayFile = cropped;
+        toast(`Upscaled ${state.upscaleSettings.multiplier}Ã— and cropped to ${w} Ã— ${h} â†’ ${cropped}`, 'ok', 4000);
+      }
+      onRefresh();
+    } catch (e) {
+      console.error('Upscale failed:', e);
+      toast('Upscale failed (kept original): ' + (e && e.message || e), 'warn', 4000);
+      displayFile = srcPath;
+    }
+  }
+  // "Remove background" stage â€” runs after upscale (if any) so
+  // the user gets the transparent version of their final
+  // image, not the raw generated file. Runs even when Upscale
+  // is off (in that case the input is the raw generated file).
+  // A failure here is non-fatal â€” we keep the (possibly
+  // upscaled) displayFile and surface a warning, so the user
+  // never loses the image they just paid API credits to
+  // generate.
+  if (state.removeBackgroundEnabled && displayFile) {
+    try {
+      onStatus(`Removing background${label}â€¦`);
+      const noBg = await removeBackgroundFile(displayFile);
+      // The intermediate (upscaled / cropped / raw) is now
+      // redundant â€” the transparent version is the user's
+      // actual deliverable. Delete the intermediate to keep
+      // the output folder tidy; the user can still find it
+      // in the file browser's lastN listing if they need it
+      // back, and the original API-generated file is
+      // untouched.
+      if (noBg !== displayFile) {
+        window.api.fbDelete(displayFile).catch(() => {});
+        displayFile = noBg;
+      }
+      addLogEvent({
+        category: 'bg',
+        result: 'ok',
+        headline: `Background removed${label ? ' ' + label.trim() : ''} â†’ ${displayFile.split(/[\\/]/).pop()}`,
+        details: [
+          `Source: ${srcPath}`,
+          `Output: ${displayFile}`,
+        ],
+      });
+      toast(`Background removed â†’ ${displayFile}`, 'ok', 4000);
+      onRefresh();
+    } catch (e) {
+      console.error('Remove background failed:', e);
+      toast('Background removal failed (kept image): ' + (e && e.message || e), 'warn', 5000);
+    }
+  }
+  // "Optimize / Compress" stage â€” runs as the LAST step of the
+  // post-processing chain (generate â†’ upscale â†’ crop â†’ remove
+  // background â†’ optimize) so the user's final deliverable
+  // ends up in the smallest possible file. Uses the Sharp +
+  // libvips pipeline in src/imageOptimizer.js, with
+  // overwriteSource: true so the optimised bytes replace
+  // the post-background-removal file in place (atomic
+  // temp-file + rename on the main side). A failure here is
+  // non-fatal â€” we keep the (possibly upscaled / no-bg)
+  // displayFile and surface a warning, so the user never
+  // loses the image they just paid API credits to generate.
+  if (state.optimizeSettings && state.optimizeSettings.enabled && displayFile) {
+    try {
+      const oSet = state.optimizeSettings;
+      const inFmt = (displayFile.split('.').pop() || '').toLowerCase();
+      const fmtLbl = (oSet.format && oSet.format !== 'keep') ? oSet.format.toUpperCase() : inFmt.toUpperCase();
+      onStatus(`Optimizing${label} (Q${oSet.quality} â†’ ${fmtLbl})â€¦`);
+      const r = await optimizeImageFile(displayFile, {
+        quality: oSet.quality,
+        format: oSet.format,
+        stripMetadata: oSet.stripMetadata !== false,
+        overwriteSource: true,
+      });
+      // The Sharp wrapper always writes to outputPath; with
+      // overwriteSource: true that's the same path as the
+      // input. The renderer doesn't get a new path back, so
+      // displayFile stays the same â€” the bytes behind it
+      // are now the smaller, optimised version.
+      const inSize = humanSize(r.inputSize);
+      const outSize = humanSize(r.outputSize);
+      const saved = r.savedPercent || 0;
+      const tone = saved >= 1 ? 'ok' : 'info';
+      const savedSuffix = saved >= 1 ? ` (âˆ’${saved}%)` : '';
+      addLogEvent({
+        category: 'optimize',
+        result: 'ok',
+        headline: `Optimized${label ? ' ' + label.trim() : ''} ${fmtLbl} ${inSize} â†’ ${outSize}${savedSuffix}`,
+        details: [
+          `File: ${displayFile}`,
+          `Quality: ${oSet.quality}`,
+          `Format: ${fmtLbl}`,
+          `Strip metadata: ${oSet.stripMetadata !== false ? 'yes' : 'no'}`,
+          `Size: ${inSize} â†’ ${outSize} (${saved >= 0 ? 'âˆ’' : '+'}${Math.abs(saved)}%)`,
+        ],
+      });
+      toast(`Optimized ${fmtLbl} ${inSize} â†’ ${outSize}${savedSuffix}`, tone, 4000);
+      onRefresh();
+    } catch (e) {
+      console.error('Optimize failed:', e);
+      toast('Optimize failed (kept image): ' + (e && e.message || e), 'warn', 5000);
+    }
+  }
+  return displayFile;
+}
+
 // =================== Image-pipeline overlays ===================
 // All three (Upscale settings, Crop, Convert) are pure modals built on
 // showModal(). They share the same panel layout: title, description,
@@ -3317,14 +5230,14 @@ function showUpscaleSettings() {
   if (typeof s.cropAnchorY !== 'string') s.cropAnchorY = 'center';
 
   showModal((m, close) => {
-    m.appendChild(el('h2', {}, '🔍 Upscale settings'));
+    m.appendChild(el('h2', {}, 'ðŸ” Upscale settings'));
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-      'When the Upscale checkbox is on, every generated image is upscaled locally with the settings below before being shown. Pure browser Canvas — no API call, no network. The "auto-crop" options here are also picked up by the "Add" button on the image tab and applied to every entry in a batch.'));
+      'When the Upscale checkbox is on, every generated image is upscaled locally with the settings below before being shown. Pure browser Canvas â€” no API call, no network. The "auto-crop" options here are also picked up by the "Add" button on the image tab and applied to every entry in a batch.'));
 
     // Multiplier
     const multSel = el('select', {});
     for (const m2 of [2, 3, 4]) {
-      const opt = el('option', { value: String(m2) }, `${m2}× (larger)`);
+      const opt = el('option', { value: String(m2) }, `${m2}Ã— (larger)`);
       if (m2 === s.multiplier) opt.selected = true;
       multSel.appendChild(opt);
     }
@@ -3341,26 +5254,26 @@ function showUpscaleSettings() {
     const cropWInput = el('input', { type: 'number', min: '0', value: String(s.cropWidth || 0) });
     const cropHInput = el('input', { type: 'number', min: '0', value: String(s.cropHeight || 0) });
     const cropSizeRow = el('div', { class: 'row auto-crop-only' }, [
-      el('label', {}, 'Crop target W × H (0 = use post-upscale target)'),
-      cropWInput, el('span', {}, ' × '), cropHInput,
+      el('label', {}, 'Crop target W Ã— H (0 = use post-upscale target)'),
+      cropWInput, el('span', {}, ' Ã— '), cropHInput,
     ]);
     cropSizeRow.style.display = s.autoCrop ? '' : 'none';
     m.appendChild(cropSizeRow);
 
-    // 3×3 anchor grid (hidden by default)
+    // 3Ã—3 anchor grid (hidden by default)
     const anchor = { x: s.cropAnchorX, y: s.cropAnchorY };
     const anchorGrid = el('div', { class: 'anchor-grid' });
     const cells = [];
     const GLYPHS = [
-      ['↖', 'top-left',     'left',    'top'],
-      ['↑', 'top-center',   'center',  'top'],
-      ['↗', 'top-right',    'right',   'top'],
-      ['←', 'middle-left',  'left',    'center'],
-      ['·', 'center',       'center',  'center'],
-      ['→', 'middle-right', 'right',   'center'],
-      ['↙', 'bottom-left',  'left',    'bottom'],
-      ['↓', 'bottom-center','center',  'bottom'],
-      ['↘', 'bottom-right', 'right',   'bottom'],
+      ['â†–', 'top-left',     'left',    'top'],
+      ['â†‘', 'top-center',   'center',  'top'],
+      ['â†—', 'top-right',    'right',   'top'],
+      ['â†', 'middle-left',  'left',    'center'],
+      ['Â·', 'center',       'center',  'center'],
+      ['â†’', 'middle-right', 'right',   'center'],
+      ['â†™', 'bottom-left',  'left',    'bottom'],
+      ['â†“', 'bottom-center','center',  'bottom'],
+      ['â†˜', 'bottom-right', 'right',   'bottom'],
     ];
     for (let i = 0; i < GLYPHS.length; i++) {
       const [glyph, name, x, y] = GLYPHS[i];
@@ -3390,7 +5303,7 @@ function showUpscaleSettings() {
 
     // ---- "Remove background" sub-section ----
     // Sits BELOW the upscale + auto-crop controls because it's the
-    // last step in the pipeline (generate → upscale → crop →
+    // last step in the pipeline (generate â†’ upscale â†’ crop â†’
     // background removal). The checkbox only saves the boolean
     // (and gates the whole section); the right-click "Remove
     // background" item still works regardless of this toggle.
@@ -3402,7 +5315,7 @@ function showUpscaleSettings() {
     removeBgCb.checked = !!state.removeBackgroundEnabled;
     const removeBgStatus = el('span', { class: 'meta', style: 'color: var(--fg-2); font-size: 11px; margin-left: 8px;' }, '');
     const removeBgRow = el('div', { class: 'row' }, [
-      el('label', { class: 'auto-crop-label' }, [removeBgCb, ' ✨ Remove background after upscale']),
+      el('label', { class: 'auto-crop-label' }, [removeBgCb, ' âœ¨ Remove background after upscale']),
       removeBgStatus,
     ]);
     m.appendChild(removeBgRow);
@@ -3437,10 +5350,10 @@ function showUpscaleSettings() {
         }
         removeBgStatus.style.color = 'var(--fg-2)';
       } else if (st.available && !st.modelPresent) {
-        removeBgStatus.textContent = '(binary installed, model missing — see README)';
+        removeBgStatus.textContent = '(binary installed, model missing â€” see README)';
         removeBgStatus.style.color = 'var(--warn, #d9a300)';
       } else {
-        removeBgStatus.textContent = '(not installed — see README)';
+        removeBgStatus.textContent = '(not installed â€” see README)';
         removeBgStatus.style.color = 'var(--warn, #d9a300)';
       }
     });
@@ -3456,8 +5369,85 @@ function showUpscaleSettings() {
       class: 'btn-mini',
       style: 'margin-top: 6px;',
       onclick: () => openOptionalAddons({ autoOpened: false }),
-    }, '🧩 Re-open add-ons manager…');
+    }, 'ðŸ§© Re-open add-ons managerâ€¦');
     m.appendChild(reopenLink);
+
+    // ---- Section 3: ðŸ—œ Optimize / Compress (post-generation) ----
+    // Re-encodes every generated image with the Sharp + libvips
+    // pipeline in src/imageOptimizer.js. Sits at the END of the
+    // post-processing chain (generate â†’ upscale â†’ crop â†’ remove
+    // background â†’ optimize) so the user's final deliverable
+    // lands in the smallest possible file. The right-click
+    // "Optimize / Compressâ€¦" entry in the folder browser uses
+    // the same settings as defaults.
+    if (!state.optimizeSettings) {
+      state.optimizeSettings = { enabled: false, quality: 82, format: 'keep', stripMetadata: true };
+    }
+    const oSet = state.optimizeSettings;
+    if (typeof oSet.enabled !== 'boolean') oSet.enabled = false;
+    if (typeof oSet.quality !== 'number') oSet.quality = 82;
+    if (typeof oSet.format !== 'string') oSet.format = 'keep';
+    if (typeof oSet.stripMetadata !== 'boolean') oSet.stripMetadata = true;
+
+    const optimizeCb = el('input', { type: 'checkbox' });
+    optimizeCb.checked = !!oSet.enabled;
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', { class: 'auto-crop-label' }, [optimizeCb, ' ðŸ—œ Optimize / compress the final image']),
+    ]));
+    m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 11px; margin: 2px 0 0;' },
+      'Re-encodes the final image with Sharp + libvips to shrink its file size while preserving best-possible visual quality. Runs as the LAST step of the post-generation pipeline so the output you end up with is the smallest version that still looks the same.'));
+
+    // Quality slider (1..100, default 82 â€” the perceptual sweet
+    // spot for JPEG / WebP). Visible only when the master
+    // checkbox is on, so we don't tease a knob the user can't
+    // currently act on.
+    const qualityInput = el('input', { type: 'range', min: '1', max: '100', step: '1', value: String(oSet.quality) });
+    const qualityLabel = el('span', { class: 'meta', style: 'min-width: 32px; text-align: right;' }, String(qualityInput.value));
+    function syncQuality() { qualityLabel.textContent = String(qualityInput.value); }
+    qualityInput.addEventListener('input', syncQuality);
+    const qualityRow = el('div', { class: 'row auto-crop-only' }, [
+      el('label', {}, 'Quality'),
+      qualityInput,
+      qualityLabel,
+    ]);
+    qualityRow.style.display = optimizeCb.checked ? '' : 'none';
+    m.appendChild(qualityRow);
+
+    // Format dropdown (Keep / JPEG / PNG / WebP / AVIF). Same
+    // shape as the right-click overlay; "Keep" preserves the
+    // source format.
+    const fmtSel = el('select', {});
+    for (const [v, lbl] of [
+      ['keep', 'Keep source format'],
+      ['jpeg', 'JPEG (smallest lossy, no transparency)'],
+      ['png',  'PNG  (lossless, supports transparency)'],
+      ['webp', 'WebP (modern, ~30% smaller than JPEG)'],
+      ['avif', 'AVIF (newest, smallest files, slow encode)'],
+    ]) {
+      const opt = el('option', { value: v }, lbl);
+      if (oSet.format === v) opt.selected = true;
+      fmtSel.appendChild(opt);
+    }
+    const fmtRow = el('div', { class: 'row auto-crop-only' }, [el('label', {}, 'Output format'), fmtSel]);
+    fmtRow.style.display = optimizeCb.checked ? '' : 'none';
+    m.appendChild(fmtRow);
+
+    // Strip-metadata checkbox. On by default â€” drops EXIF
+    // (camera model, GPS, software tag) but keeps the ICC
+    // colour profile.
+    const stripCb = el('input', { type: 'checkbox' });
+    stripCb.checked = oSet.stripMetadata !== false;
+    const stripRow = el('div', { class: 'row auto-crop-only' }, [
+      el('label', { class: 'auto-crop-label' }, [stripCb, ' Strip non-essential EXIF (keeps ICC colour profile)']),
+    ]);
+    stripRow.style.display = optimizeCb.checked ? '' : 'none';
+    m.appendChild(stripRow);
+    function setOptimizeVisible(on) {
+      qualityRow.style.display = on ? '' : 'none';
+      fmtRow.style.display = on ? '' : 'none';
+      stripRow.style.display = on ? '' : 'none';
+    }
+    optimizeCb.addEventListener('change', () => setOptimizeVisible(optimizeCb.checked));
 
     // Save
     const saveBtn = el('button', { class: 'primary' }, 'Save');
@@ -3473,20 +5463,29 @@ function showUpscaleSettings() {
       };
       state.removeBackgroundEnabled = !!removeBgCb.checked;
       state.removeBackgroundUseGpu = !!useGpuCb.checked;
+      state.optimizeSettings = {
+        enabled: !!optimizeCb.checked,
+        quality: Math.max(1, Math.min(100, parseInt(qualityInput.value, 10) || 82)),
+        format: ['keep', 'jpeg', 'png', 'webp', 'avif'].includes(fmtSel.value) ? fmtSel.value : 'keep',
+        stripMetadata: !!stripCb.checked,
+      };
       state.upscaleEnabled = true;
       await scheduleStateSave();
       if (typeof refreshUpscaleCheckboxUI === 'function') refreshUpscaleCheckboxUI();
       const extras = [];
       if (state.upscaleSettings.autoCrop) extras.push('auto-crop');
       if (state.removeBackgroundEnabled) extras.push('remove-background');
+      if (state.optimizeSettings.enabled) {
+        extras.push('optimize Q' + state.optimizeSettings.quality);
+      }
       const extra = extras.length ? ' + ' + extras.join(' + ') : '';
-      // The "🔍 Upscale 2×" label in the image tab was updated by
+      // The "ðŸ” Upscale 2Ã—" label in the image tab was updated by
       // a closure inside build(); that closure is long gone by
       // the time the user opens this modal. refreshUpscaleLabel
       // is the module-level re-render that picks up the new
       // multiplier + .active class via DOM query.
       if (typeof refreshUpscaleLabel === 'function') refreshUpscaleLabel();
-      toast(`Upscale settings saved (${state.upscaleSettings.multiplier}×${extra}).`, 'ok', 2000);
+      toast(`Upscale settings saved (${state.upscaleSettings.multiplier}Ã—${extra}).`, 'ok', 2000);
       close();
     });
     m.appendChild(el('div', { class: 'footer' }, [cancelBtn, saveBtn]));
@@ -3496,7 +5495,7 @@ function showUpscaleSettings() {
 // Direct upscale overlay used by the right-click menu on an image
 // in the file browser. Shows the source resolution + the target
 // resolution after upscaling, an "auto-crop to resolution" toggle,
-// and (when that toggle is on) a 3×3 anchor grid + W/H inputs so
+// and (when that toggle is on) a 3Ã—3 anchor grid + W/H inputs so
 // the user can upscale AND crop in one step. The flow:
 //   1. upscaleImageFile() writes `<name>_Nx.png` to output_dir.
 //   2. If auto-crop is on, cropImageFile() reads it back, places
@@ -3506,8 +5505,8 @@ function showUpscaleSettings() {
 //   3. The cropped file is shown in the preview pane.
 async function showUpscaleDirect(srcPath) {
   // We need the source's natural resolution to compute the target.
-  // If the image is unreadable, surface the error and bail — the
-  // dialog needs a known sourceW × sourceH to do anything useful.
+  // If the image is unreadable, surface the error and bail â€” the
+  // dialog needs a known sourceW Ã— sourceH to do anything useful.
   let srcW = 0, srcH = 0;
   try {
     const img = await loadImageFromFile(srcPath);
@@ -3526,7 +5525,7 @@ async function showUpscaleDirect(srcPath) {
   // the new values.
   const us = state.upscaleSettings || { multiplier: 2, autoCrop: false, cropWidth: 0, cropHeight: 0, cropAnchorX: 'center', cropAnchorY: 'center' };
   showModal((m, close) => {
-    m.appendChild(el('h2', {}, '🔍 Upscale image'));
+    m.appendChild(el('h2', {}, 'ðŸ” Upscale image'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
       'Source: ' + srcPath));
 
@@ -3545,16 +5544,16 @@ async function showUpscaleDirect(srcPath) {
       const cropH = (isNaN(wantCropH) || wantCropH <= 0) ? tH : wantCropH;
       const w = Math.min(cropW, tW);
       const h = Math.min(cropH, tH);
-      const cropNote = autoCropCb.checked ? ` · after auto-crop: ${w} × ${h} px` : '';
-      targetText.textContent = `Source ${srcW} × ${srcH} px  →  after upscale: ${tW} × ${tH} px${cropNote}`;
+      const cropNote = autoCropCb.checked ? ` Â· after auto-crop: ${w} Ã— ${h} px` : '';
+      targetText.textContent = `Source ${srcW} Ã— ${srcH} px  â†’  after upscale: ${tW} Ã— ${tH} px${cropNote}`;
     }
 
     m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Resolution'), targetText]));
 
-    // Multiplier selector (2× / 3× / 4× / 8×).
+    // Multiplier selector (2Ã— / 3Ã— / 4Ã— / 8Ã—).
     const multSel = el('select', {});
     for (const m2 of [2, 3, 4, 8]) {
-      const opt = el('option', { value: String(m2) }, `${m2}×`);
+      const opt = el('option', { value: String(m2) }, `${m2}Ã—`);
       if (m2 === (us.multiplier || 2)) opt.selected = true;
       multSel.appendChild(opt);
     }
@@ -3573,28 +5572,28 @@ async function showUpscaleDirect(srcPath) {
     const cropWInput = el('input', { type: 'number', min: '0', value: String(us.cropWidth || 0) });
     const cropHInput = el('input', { type: 'number', min: '0', value: String(us.cropHeight || 0) });
     const cropSizeRow = el('div', { class: 'row auto-crop-only' }, [
-      el('label', {}, 'Crop target W × H (0 = use post-upscale target)'),
-      cropWInput, el('span', {}, ' × '), cropHInput,
+      el('label', {}, 'Crop target W Ã— H (0 = use post-upscale target)'),
+      cropWInput, el('span', {}, ' Ã— '), cropHInput,
     ]);
     cropSizeRow.style.display = us.autoCrop ? '' : 'none';
     m.appendChild(cropSizeRow);
 
-    // 3×3 anchor grid. Each cell = an (x, y) anchor in {left,
-    // center, right} × {top, center, bottom}. The selected cell
+    // 3Ã—3 anchor grid. Each cell = an (x, y) anchor in {left,
+    // center, right} Ã— {top, center, bottom}. The selected cell
     // comes from state.upscaleSettings.
     const anchor = { x: us.cropAnchorX || 'center', y: us.cropAnchorY || 'center' };
     const anchorGrid = el('div', { class: 'anchor-grid' });
     const cells = [];
     const GLYPHS = [
-      ['↖', 'top-left',     'left',    'top'],
-      ['↑', 'top-center',   'center',  'top'],
-      ['↗', 'top-right',    'right',   'top'],
-      ['←', 'middle-left',  'left',    'center'],
-      ['·', 'center',       'center',  'center'],
-      ['→', 'middle-right', 'right',   'center'],
-      ['↙', 'bottom-left',  'left',    'bottom'],
-      ['↓', 'bottom-center','center',  'bottom'],
-      ['↘', 'bottom-right', 'right',   'bottom'],
+      ['â†–', 'top-left',     'left',    'top'],
+      ['â†‘', 'top-center',   'center',  'top'],
+      ['â†—', 'top-right',    'right',   'top'],
+      ['â†', 'middle-left',  'left',    'center'],
+      ['Â·', 'center',       'center',  'center'],
+      ['â†’', 'middle-right', 'right',   'center'],
+      ['â†™', 'bottom-left',  'left',    'bottom'],
+      ['â†“', 'bottom-center','center',  'bottom'],
+      ['â†˜', 'bottom-right', 'right',   'bottom'],
     ];
     for (let i = 0; i < GLYPHS.length; i++) {
       const [glyph, name, x, y] = GLYPHS[i];
@@ -3617,21 +5616,21 @@ async function showUpscaleDirect(srcPath) {
     m.appendChild(anchorGrid);
 
     // A short explanation of the cropping section, so the user
-    // doesn't have to guess what the 3×3 grid + W × H inputs
+    // doesn't have to guess what the 3Ã—3 grid + W Ã— H inputs
     // actually do. Uses inline <code> tags for the glyphs.
     const cropExplanation = el('div', { class: 'crop-explanation' }, [
       'When you click Upscale, the image is first scaled up by ',
-      el('strong', {}, `${us.multiplier || 2}×`),
+      el('strong', {}, `${us.multiplier || 2}Ã—`),
       ' (using the Real-ESRGAN binary if installed, otherwise multi-step canvas upscaling), then ',
       el('strong', {}, 'cropped'),
-      ' to the target W × H at the chosen anchor. The 3×3 grid above picks the anchor: ',
-      el('code', {}, '↖'),
+      ' to the target W Ã— H at the chosen anchor. The 3Ã—3 grid above picks the anchor: ',
+      el('code', {}, 'â†–'),
       ' keeps the ',
       el('strong', {}, 'top-left'),
       ' corner, ',
-      el('code', {}, '·'),
+      el('code', {}, 'Â·'),
       ' keeps equal borders on all four sides, ',
-      el('code', {}, '↘'),
+      el('code', {}, 'â†˜'),
       ' keeps the ',
       el('strong', {}, 'bottom-right'),
       '.',
@@ -3639,11 +5638,11 @@ async function showUpscaleDirect(srcPath) {
     cropExplanation.style.display = us.autoCrop ? '' : 'none';
     m.appendChild(cropExplanation);
 
-    // Blank-image crop preview: a fixed 200×150 "source" with a
+    // Blank-image crop preview: a fixed 200Ã—150 "source" with a
     // green crop frame overlay that updates whenever the user
-    // picks a different anchor (or changes the W × H inputs).
+    // picks a different anchor (or changes the W Ã— H inputs).
     // The frame is sized proportionally to the post-upscale
-    // target W × H so the user can see how much of the image
+    // target W Ã— H so the user can see how much of the image
     // is actually kept.
     const cropPreviewBlock = el('div', { class: 'crop-preview' });
     const stage = el('div', { class: 'crop-preview-stage' });
@@ -3680,7 +5679,7 @@ async function showUpscaleDirect(srcPath) {
       }
       const srcOffsetX = (stageW - dispSrcW) / 2;
       const srcOffsetY = (stageH - dispSrcH) / 2;
-      // Frame size: use the user's W × H if set, otherwise the
+      // Frame size: use the user's W Ã— H if set, otherwise the
       // full post-upscale target.
       const tW = srcW * mult;
       const tH = srcH * mult;
@@ -3715,7 +5714,7 @@ async function showUpscaleDirect(srcPath) {
       const name = ANCHOR_LABELS[anchor.x + '-' + anchor.y] || 'center';
       legend.appendChild(document.createTextNode('Anchor: '));
       legend.appendChild(el('span', { class: 'crop-preview-anchor-name' }, name));
-      legend.appendChild(document.createTextNode(' — the green frame shows what will be kept.'));
+      legend.appendChild(document.createTextNode(' â€” the green frame shows what will be kept.'));
     }
     cropPreviewBlock.style.display = us.autoCrop ? '' : 'none';
     m.appendChild(cropPreviewBlock);
@@ -3730,7 +5729,7 @@ async function showUpscaleDirect(srcPath) {
       cropPreviewBlock.style.display = on ? '' : 'none';
       if (on) {
         // The preview depends on a few derived values; recompute
-        // on show so the user sees the current W × H + anchor.
+        // on show so the user sees the current W Ã— H + anchor.
         refreshCropPreview();
       }
       refreshTarget();
@@ -3760,7 +5759,7 @@ async function showUpscaleDirect(srcPath) {
     noBgCb.checked = !!state.removeBackgroundEnabled;
     const noBgStatus = el('span', { class: 'meta', style: 'color: var(--fg-2); font-size: 11px; margin-left: 8px;' }, '');
     m.appendChild(el('div', { class: 'row' }, [
-      el('label', { class: 'auto-crop-label' }, [noBgCb, ' ✨ Remove background after upscale']),
+      el('label', { class: 'auto-crop-label' }, [noBgCb, ' âœ¨ Remove background after upscale']),
       noBgStatus,
     ]));
     probeIsnetbgStatus().then((st) => {
@@ -3776,7 +5775,7 @@ async function showUpscaleDirect(srcPath) {
         }
         noBgStatus.style.color = 'var(--fg-2)';
       } else if (st.available && !st.modelPresent) {
-        noBgStatus.textContent = '(model missing — see README)';
+        noBgStatus.textContent = '(model missing â€” see README)';
         noBgStatus.style.color = 'var(--warn, #d9a300)';
       } else {
         noBgStatus.textContent = '(not installed)';
@@ -3789,7 +5788,7 @@ async function showUpscaleDirect(srcPath) {
     upscaleBtn.addEventListener('click', async () => {
       const multiplier = parseInt(multSel.value, 10) || 2;
       // Persist whatever the user just configured so the next
-      // right-click / next batch / next ⚙ Settings visit sees
+      // right-click / next batch / next âš™ Settings visit sees
       // the same values. We don't scheduleStateSave() here
       // (the action is fire-and-forget and the user can cancel);
       // scheduleStateSave() is called below on success.
@@ -3807,7 +5806,7 @@ async function showUpscaleDirect(srcPath) {
       // the next image.
       state.removeBackgroundEnabled = !!noBgCb.checked;
       state.upscaleEnabled = true;
-      upscaleBtn.disabled = true; upscaleBtn.textContent = 'Upscaling…';
+      upscaleBtn.disabled = true; upscaleBtn.textContent = 'Upscalingâ€¦';
       // `final` is the path to the file we want to preview at the
       // end of the pipeline. It gets reassigned by the optional
       // crop + background-removal steps, and is the only file
@@ -3818,7 +5817,7 @@ async function showUpscaleDirect(srcPath) {
         const upscaled = await upscaleImageFile(srcPath, multiplier);
         // Step 2: optionally crop.
         if (autoCropCb.checked) {
-          upscaleBtn.textContent = 'Cropping…';
+          upscaleBtn.textContent = 'Croppingâ€¦';
           const cropW = Math.max(1, parseInt(cropWInput.value, 10) || 1);
           const cropH = Math.max(1, parseInt(cropHInput.value, 10) || 1);
           // Need the actual upscaled dimensions to anchor correctly.
@@ -3838,7 +5837,7 @@ async function showUpscaleDirect(srcPath) {
           else if (anchor.y === 'bottom') y = maxY;
           else                            y = Math.floor(maxY / 2);
           const cropped = await cropImageFile(upscaled, x, y, w, h);
-          // Drop the intermediate (full-upscaled) file — the user
+          // Drop the intermediate (full-upscaled) file â€” the user
           // asked for the cropped one, not the raw intermediate.
           window.api.fbDelete(upscaled).catch(() => {});
           final = cropped;
@@ -3851,20 +5850,20 @@ async function showUpscaleDirect(srcPath) {
         // so the user never loses the image they already paid
         // API credits to generate.
         if (noBgCb.checked) {
-          upscaleBtn.textContent = 'Removing background…';
+          upscaleBtn.textContent = 'Removing backgroundâ€¦';
           try {
             const noBg = await removeBackgroundFile(final);
             if (noBg !== final) {
               window.api.fbDelete(final).catch(() => {});
               final = noBg;
             }
-            toast(`Upscaled ${multiplier}× + background removed → ${final}`, 'ok', 4500);
+            toast(`Upscaled ${multiplier}Ã— + background removed â†’ ${final}`, 'ok', 4500);
           } catch (e) {
             console.error('Remove background failed:', e);
             toast('Background removal failed (kept upscaled image): ' + (e && e.message || e), 'warn', 5000);
           }
         } else {
-          toast(`Upscaled to ${multiplier}× → ${final}`, 'ok', 4000);
+          toast(`Upscaled to ${multiplier}Ã— â†’ ${final}`, 'ok', 4000);
         }
         await refreshBrowser();
         if (typeof updatePreviewPane === 'function' && final) {
@@ -3893,7 +5892,7 @@ async function showUpscaleDirect(srcPath) {
 // user can drag the frame to position it; clicking Crop finalizes.
 function showCropOverlay(srcPath) {
   showModal((m, close) => {
-    m.appendChild(el('h2', {}, '✂ Crop image'));
+    m.appendChild(el('h2', {}, 'âœ‚ Crop image'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
       'Source: ' + srcPath));
 
@@ -3982,7 +5981,7 @@ function showCropOverlay(srcPath) {
       const w = Math.max(1, parseInt(wInput.value, 10) || 1);
       const h = Math.max(1, parseInt(hInput.value, 10) || 1);
       if (img.naturalW && (w > img.naturalW || h > img.naturalH)) {
-        toast(`Frame size ${w}×${h} exceeds image size ${img.naturalW}×${img.naturalH}.`, 'warn', 4000);
+        toast(`Frame size ${w}Ã—${h} exceeds image size ${img.naturalW}Ã—${img.naturalH}.`, 'warn', 4000);
         return;
       }
       if (frame) frame.remove();
@@ -4008,10 +6007,10 @@ function showCropOverlay(srcPath) {
       if (!frame) { toast('Click Apply first to position the crop frame.', 'warn'); return; }
       const w = parseInt(wInput.value, 10) || 1;
       const h = parseInt(hInput.value, 10) || 1;
-      cropBtn.disabled = true; cropBtn.textContent = 'Cropping…';
+      cropBtn.disabled = true; cropBtn.textContent = 'Croppingâ€¦';
       try {
         const out = await cropImageFile(srcPath, frameX, frameY, w, h);
-        toast(`Cropped to ${w}×${h} → ${out}`, 'ok', 4000);
+        toast(`Cropped to ${w}Ã—${h} â†’ ${out}`, 'ok', 4000);
         await refreshBrowser();
         if (typeof updatePreviewPane === 'function') {
           try { previewImageFromFile(out); } catch (_) {}
@@ -4089,7 +6088,7 @@ function showConvertOverlay(srcPath) {
   const ext = (srcPath.split('.').pop() || '').toLowerCase();
   const srcFmt = ext.toUpperCase() || '?';
   showModal((m, close) => {
-    m.appendChild(el('h2', {}, '⇄ Convert image format'));
+    m.appendChild(el('h2', {}, 'â‡„ Convert image format'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
       'Source: ' + srcPath));
     const srcFmtLabel = el('input', { type: 'text', value: srcFmt, readonly: '' });
@@ -4113,13 +6112,13 @@ function showConvertOverlay(srcPath) {
     convertBtn.addEventListener('click', async () => {
       const target = outSel.value;
       if (target === ext) {
-        toast('Source and target format are the same — nothing to do.', 'warn', 3000);
+        toast('Source and target format are the same â€” nothing to do.', 'warn', 3000);
         return;
       }
-      convertBtn.disabled = true; convertBtn.textContent = 'Converting…';
+      convertBtn.disabled = true; convertBtn.textContent = 'Convertingâ€¦';
       try {
         const out = await convertImageFile(srcPath, target);
-        toast(`Converted to ${target.toUpperCase()} → ${out}`, 'ok', 4000);
+        toast(`Converted to ${target.toUpperCase()} â†’ ${out}`, 'ok', 4000);
         await refreshBrowser();
         if (typeof updatePreviewPane === 'function') {
           try { previewImageFromFile(out); } catch (_) {}
@@ -4131,6 +6130,193 @@ function showConvertOverlay(srcPath) {
       }
     });
     m.appendChild(el('div', { class: 'footer' }, [cancelBtn, convertBtn]));
+  });
+}
+
+// Image-optimisation overlay used by the folder-browser right-click
+// menu ("ðŸ—œ Optimize / Compressâ€¦"). Lets the user re-encode a
+// single image to shrink its file size while preserving best-
+// possible visual quality, using the Sharp-backed `image:optimize`
+// IPC.
+//
+// Three controls, matching the spec:
+//   - Quality slider (1..100, default 82 â€” the perceptual sweet
+//     spot for JPEG / WebP).
+//   - Format dropdown (Keep / JPEG / PNG / WebP / AVIF). "Keep"
+//     preserves the source format; the other four re-encode the
+//     image to the target format (e.g. PNG â†’ WebP for ~30%
+//     smaller files at the same Q).
+//   - "Strip non-essential EXIF (keep ICC profile)" checkbox, on
+//     by default â€” drops camera model / GPS / software tags but
+//     keeps the colour profile so the image still renders
+//     correctly on colour-managed displays.
+//
+// On success, the dialog stays open and shows a results block
+// ("4.2 MB â†’ 612 KB Â· 85% smaller") with a one-click "Open
+// folder" link. The user can keep clicking "Run" with different
+// settings without re-opening the dialog (the slider
+// reposition would otherwise re-trigger the action).
+function showOptimizeOverlay(srcPath) {
+  const ext = (srcPath.split('.').pop() || '').toLowerCase();
+  const srcFmt = (ext === 'jpg' ? 'jpeg' : ext) || 'jpeg';
+  // Pre-fill from the persisted settings so the user only has to
+  // override the field they care about on a given run. The
+  // settings dialog (Upscale settings â†’ "Optimize" sub-section)
+  // shares the same state, so a user who picked Q=70 for
+  // "all generated images" gets the same starting point here.
+  const cfg = state.optimizeSettings || { quality: 82, format: 'keep', stripMetadata: true };
+  showModal((m, close) => {
+    m.appendChild(el('h2', {}, 'ðŸ—œ Optimize / Compress image'));
+    m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
+      'Source: ' + srcPath));
+
+    // ---- Quality slider ----
+    // The slider's range is 1..100. We display the current value
+    // next to the slider so the user always knows the exact
+    // number they're picking. Default 82 (perceptually lossless
+    // on photographic content).
+    const qualityInput = el('input', { type: 'range', min: '1', max: '100', step: '1', value: String(cfg.quality || 82) });
+    const qualityLabel = el('span', { class: 'meta', style: 'min-width: 32px; text-align: right;' }, String(qualityInput.value));
+    function syncQuality() { qualityLabel.textContent = String(qualityInput.value); }
+    qualityInput.addEventListener('input', syncQuality);
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', {}, 'Quality'),
+      qualityInput,
+      qualityLabel,
+    ]));
+    // Tiny "presets" row so a user who's new to the concept can
+    // jump to the canonical "sweet spot" with one click. The
+    // explicit slider next to it is still the source of truth.
+    const presetRow = el('div', { class: 'row', style: 'gap: 4px; flex-wrap: wrap;' });
+    for (const [q, lbl] of [[60, 'small (60)'], [75, 'balanced (75)'], [82, 'max quality (82)'], [95, 'near-lossless (95)']]) {
+      const b = el('button', { class: 'btn-mini', type: 'button' }, lbl);
+      b.addEventListener('click', () => {
+        qualityInput.value = String(q);
+        syncQuality();
+      });
+      presetRow.appendChild(b);
+    }
+    m.appendChild(presetRow);
+
+    // ---- Format dropdown ----
+    // "Keep" preserves the source format; the other four re-encode
+    // the image. We never show the current source format as a
+    // separate "Same" option â€” that's exactly what "Keep" means.
+    const fmtSel = el('select', {});
+    const fmtDefs = [
+      ['keep', `Keep source (${srcFmt.toUpperCase()})`],
+      ['jpeg', 'JPEG (smallest lossy, no transparency)'],
+      ['png',  'PNG  (lossless, supports transparency)'],
+      ['webp', 'WebP (modern, ~30% smaller than JPEG)'],
+      ['avif', 'AVIF (newest, smallest files, slow encode)'],
+    ];
+    for (const [v, lbl] of fmtDefs) {
+      const opt = el('option', { value: v }, lbl);
+      if ((cfg.format || 'keep') === v) opt.selected = true;
+      fmtSel.appendChild(opt);
+    }
+    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Output format'), fmtSel]));
+
+    // ---- Strip-metadata checkbox ----
+    // On by default. Drops EXIF (camera model, GPS, software
+    // tag) but keeps the ICC colour profile (see
+    // src/imageOptimizer.js for the exact pipeline).
+    const stripCb = el('input', { type: 'checkbox' });
+    stripCb.checked = cfg.stripMetadata !== false;
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', { class: 'auto-crop-label' }, [stripCb, ' Strip non-essential EXIF (keeps ICC colour profile)']),
+    ]));
+
+    // ---- Run / status / results block ----
+    // The status row + results block live inside the same
+    // container so the dialog can be re-used for multiple
+    // consecutive runs (e.g. user picks a different Q, hits
+    // Run again). Results are wiped on each click.
+    const runBtn = el('button', { class: 'primary' }, 'ðŸ—œ Optimize');
+    const cancelBtn = el('button', { onclick: close }, 'Cancel');
+    const status = el('div', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; min-height: 16px; margin: 4px 0;' }, '');
+    const resultsBox = el('div', { style: 'margin: 8px 0; display: none;' });
+    m.appendChild(status);
+    m.appendChild(resultsBox);
+
+    // Run handler. Catches failures into a single toast and
+    // keeps the dialog open (with the Run button re-enabled) so
+    // the user can fix a corrupt file or change settings and
+    // retry without re-opening the dialog.
+    runBtn.addEventListener('click', async () => {
+      const quality = Math.max(1, Math.min(100, parseInt(qualityInput.value, 10) || 82));
+      const format = fmtSel.value;
+      const stripMetadata = stripCb.checked;
+      // Persist the latest values so a subsequent "Optimize" run
+      // from the right-click menu pre-fills the same settings.
+      state.optimizeSettings = { quality, format, stripMetadata };
+      await scheduleStateSave();
+
+      runBtn.disabled = true;
+      runBtn.textContent = 'Optimizingâ€¦';
+      status.textContent = `Re-encoding at quality ${quality}â€¦`;
+      resultsBox.style.display = 'none';
+      resultsBox.innerHTML = '';
+      try {
+        const r = await optimizeImageFile(srcPath, { quality, format, stripMetadata });
+        // Build a human-friendly results block. The exact bytes
+        // and percent saved are shown so the user can see
+        // whether the slider change was worth it. The link
+        // re-selects the optimised file in the file browser
+        // and opens its containing folder in Explorer.
+        const fmtLbl = (r.format || '').toUpperCase() || '?';
+        const inSize = humanSize(r.inputSize);
+        const outSize = humanSize(r.outputSize);
+        const saved = r.savedPercent || 0;
+        const colorClass = saved >= 30 ? 'ok' : (saved >= 10 ? 'meta' : 'warn');
+        const dimLbl = r.width && r.height ? `${r.width} Ã— ${r.height}` : '';
+        resultsBox.innerHTML = '';
+        resultsBox.style.display = '';
+        resultsBox.appendChild(el('div', { class: 'fb-item-info' }, [
+          el('div', { class: 'fb-info-row' }, [
+            el('span', { class: 'fb-info-key' }, 'Result'),
+            el('span', { style: 'color: var(--' + (saved >= 30 ? 'ok' : 'fg-1') + ');' },
+              `${inSize} â†’ ${outSize}  (âˆ’${saved}%)`),
+          ]),
+          el('div', { class: 'fb-info-row' }, [
+            el('span', { class: 'fb-info-key' }, 'Format'),
+            el('span', {}, fmtLbl + (dimLbl ? ` Â· ${dimLbl}` : '')),
+          ]),
+          el('div', { class: 'fb-info-row' }, [
+            el('span', { class: 'fb-info-key' }, 'Output'),
+            el('span', { style: 'word-break: break-all;' }, r.outputPath),
+          ]),
+        ]));
+        // "Reveal in Explorer" + "Preview" buttons, so the user
+        // doesn't have to dig through the folder browser to
+        // find the result.
+        const revealBtn = el('button', { class: 'btn-mini', onclick: () => window.api.fbReveal(r.outputPath) }, 'â†— Reveal in Explorer');
+        const previewBtn = el('button', { class: 'btn-mini', onclick: () => { try { previewImageFromFile(r.outputPath); } catch (_) {} } }, 'ðŸ–¼ Preview');
+        resultsBox.appendChild(el('div', { class: 'row', style: 'margin-top: 6px; gap: 6px;' }, [revealBtn, previewBtn]));
+        // Refresh the file browser so the new sibling shows up
+        // in the listing.
+        try { await refreshBrowser(); } catch (_) {}
+        // Toast + status so the user gets a clear "it worked"
+        // signal even if they missed the inline result block.
+        const tone = saved >= 1 ? 'ok' : 'info';
+        toast(`Optimized ${inSize} â†’ ${outSize} (âˆ’${saved}%) â†’ ${r.outputPath}`, tone, 4000);
+        status.textContent = `Done. ${inSize} â†’ ${outSize} (âˆ’${saved}%).`;
+        // Mark the saved settings as "the ones the user just
+        // ran with" so a follow-up right-click on the optimised
+        // file pre-fills the same choices.
+        runBtn.disabled = false;
+        runBtn.textContent = 'ðŸ—œ Optimize';
+      } catch (e) {
+        // Structured failure from the IPC. Show the precise
+        // message in the status line (toast is redundant here
+        // because the user is staring at the dialog).
+        status.textContent = 'Failed: ' + (e && e.message || e);
+        toast('Optimize failed: ' + (e && e.message || e), 'err', 6000);
+        runBtn.disabled = false;
+        runBtn.textContent = 'ðŸ—œ Optimize';
+      }
+    });
+    m.appendChild(el('div', { class: 'footer' }, [cancelBtn, runBtn]));
   });
 }
 
@@ -4213,7 +6399,7 @@ async function refreshBrowser(opts = {}) {
   let startDir = state.fbDir || saved || state.config.output_dir || '';
   let out = await window.api.fbList(startDir);
   // If the user had a per-tab folder persisted but it's gone (deleted,
-  // drive removed, etc.) — fall back to the output root instead of just
+  // drive removed, etc.) â€” fall back to the output root instead of just
   // showing an error and forcing the user to click "Refresh". Same
   // fallback if the live fbDir fails for the same reason.
   if (!out.ok && startDir && startDir !== (state.config.output_dir || '')) {
@@ -4237,7 +6423,7 @@ async function refreshBrowser(opts = {}) {
   // Skip this when:
   //   - opts.keepCurrent is set (e.g. the Up button)
   //   - we already have a saved per-tab folder (the user has navigated
-  //     within this tab before — respect their choice)
+  //     within this tab before â€” respect their choice)
   let target = out;
   if (!opts.keepCurrent && !saved) {
     const sub = pathJoin(target.dir, state.currentTab);
@@ -4255,9 +6441,326 @@ async function refreshBrowser(opts = {}) {
   }
   $('#fb-path').textContent = target.dir;
   $('#fb-path').title = target.dir;
-  renderFbList(target.items);
+  // Apply the user's preferred sort before rendering so the DOM
+  // is created in the right order on the first paint (avoids a
+  // flicker of "server-side default" â†’ "user's sort" on every
+  // refresh). sortFbItems never mutates the input array.
+  const sorted = sortFbItems(target.items, state.fbSort);
+  renderFbList(sorted);
   // Apply current search filter if any
   applyFileSearch();
+}
+
+// Whitelist of valid sort modes. The dropdown only ever offers one
+// of these, but we re-validate on read so a corrupted state.json
+// can't inject an arbitrary string into the comparator. The value
+// `null` / `undefined` / unknown falls through to the default
+// (name-asc, dirs-first).
+const FB_SORT_MODES = new Set([
+  'name-asc', 'name-desc',
+  'size-desc', 'size-asc',
+  'mtime-desc', 'mtime-asc',
+  'created-desc', 'created-asc',
+  'type-asc',
+]);
+function normalizeFbSort(mode) {
+  return (typeof mode === 'string' && FB_SORT_MODES.has(mode)) ? mode : 'name-asc';
+}
+// "Natural" name comparison: file_2.png sorts before file_10.png.
+// Plain String.localeCompare is lexicographic and would sort
+// file_10.png before file_2.png. We split each name into runs of
+// digits and non-digits, compare the non-digit runs as strings and
+// the digit runs as numbers â€” close to what Windows Explorer does.
+function naturalCompare(a, b) {
+  const re = /(\d+)|(\D+)/g;
+  const aParts = String(a || '').toLowerCase().match(re) || [];
+  const bParts = String(b || '').toLowerCase().match(re) || [];
+  const len = Math.min(aParts.length, bParts.length);
+  for (let i = 0; i < len; i++) {
+    const ap = aParts[i], bp = bParts[i];
+    const an = /^\d/.test(ap), bn = /^\d/.test(bp);
+    if (an && bn) {
+      // Numeric compare â€” strip leading zeros so "001" and "1" tie.
+      const an2 = parseInt(ap, 10), bn2 = parseInt(bp, 10);
+      if (an2 !== bn2) return an2 - bn2;
+    } else if (ap !== bp) {
+      return ap.localeCompare(bp);
+    }
+  }
+  return aParts.length - bParts.length;
+}
+// Re-sort an array of fs-items according to the user's preferred
+// sort mode. Always returns a NEW array; the input is never
+// mutated. The default is "name-asc, dirs-first" (the same order
+// the main process returns), so a no-op call (mode === 'name-asc'
+// on a list that was already sorted by name) is cheap.
+function sortFbItems(items, mode) {
+  const m = normalizeFbSort(mode);
+  const arr = Array.isArray(items) ? items.slice() : [];
+  // Directories always come first, regardless of the chosen sort.
+  // (Windows Explorer behaviour: the user expects to find folders
+  // at the top.) We honour this by sorting on the dir-flag first
+  // and the user's chosen key second.
+  const cmp = (a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    switch (m) {
+      case 'name-desc':
+        return naturalCompare(b.name, a.name);
+      case 'size-desc':
+        // Files only â€” directories have size 0 and shouldn't dominate.
+        return (Number(b.size) || 0) - (Number(a.size) || 0);
+      case 'size-asc':
+        return (Number(a.size) || 0) - (Number(b.size) || 0);
+      case 'mtime-desc':
+        return (Number(b.mtimeMs) || 0) - (Number(a.mtimeMs) || 0);
+      case 'mtime-asc':
+        return (Number(a.mtimeMs) || 0) - (Number(b.mtimeMs) || 0);
+      case 'created-desc': {
+        // Fall back to mtimeMs when birthtime isn't available
+        // (FAT32 / some non-NTFS volumes return 0).
+        const av = Number(a.birthtimeMs) || Number(a.mtimeMs) || 0;
+        const bv = Number(b.birthtimeMs) || Number(b.mtimeMs) || 0;
+        return bv - av;
+      }
+      case 'created-asc': {
+        const av = Number(a.birthtimeMs) || Number(a.mtimeMs) || 0;
+        const bv = Number(b.birthtimeMs) || Number(b.mtimeMs) || 0;
+        return av - bv;
+      }
+      case 'type-asc': {
+        // Sort by extension (case-insensitive), then by name. Files
+        // with no extension sort to the end.
+        const ae = (a.ext || '').toLowerCase();
+        const be = (b.ext || '').toLowerCase();
+        if (ae !== be) return ae.localeCompare(be);
+        return naturalCompare(a.name, b.name);
+      }
+      case 'name-asc':
+      default:
+        return naturalCompare(a.name, b.name);
+    }
+  };
+  arr.sort(cmp);
+  return arr;
+}
+
+// ----------------- File-browser columns -----------------
+// Each column is a self-describing object that tells the renderer
+//   1. its stable id (key into state.fbColumns),
+//   2. its user-visible label (header + overlay checkbox),
+//   3. the CSS grid template it occupies in the row,
+//   4. a render(item) function that produces the cell's DOM
+//      children (text + optional title for the full value).
+// The "name" column is mandatory and is NOT in this list â€” the
+// row always renders it. Adding it here would let the user turn
+// it off, which would make the row unscannable.
+const FB_COLUMNS = [
+  {
+    id: 'size',
+    label: 'Size',
+    // "auto" so the column shrinks to the longest byte-string
+    // we have. The row uses min-width to keep the column from
+    // collapsing to 0.
+    gridTemplate: 'minmax(70px, auto)',
+    render: (it) => {
+      if (it.isDir) return ['', ''];
+      const text = humanSize(it.size);
+      return [text, String(it.size || 0)];
+    },
+  },
+  {
+    id: 'type',
+    label: 'Type',
+    gridTemplate: 'minmax(60px, auto)',
+    render: (it) => {
+      if (it.isDir) return ['â€”', 'folder'];
+      const ext = (it.ext || '').replace(/^\./, '').toUpperCase();
+      return [ext || 'â€”', ext];
+    },
+  },
+  {
+    id: 'mtime',
+    label: 'Modified',
+    gridTemplate: 'minmax(130px, auto)',
+    render: (it) => {
+      const ms = Number(it.mtimeMs) || 0;
+      if (!ms) return ['â€”', ''];
+      // Locale date + short time, e.g. "2024-03-15 14:30".
+      // The full ISO is on the title so the user can inspect.
+      const d = new Date(ms);
+      const text = d.toLocaleString();
+      return [text, d.toISOString()];
+    },
+  },
+  {
+    id: 'created',
+    label: 'Created',
+    gridTemplate: 'minmax(130px, auto)',
+    render: (it) => {
+      const ms = Number(it.birthtimeMs) || 0;
+      if (!ms) return ['â€”', ''];
+      const d = new Date(ms);
+      const text = d.toLocaleString();
+      return [text, d.toISOString()];
+    },
+  },
+  {
+    id: 'path',
+    label: 'Path',
+    // The path column is wide; allow it to grow to fit long
+    // folder names but cap at a reasonable max so the row
+    // doesn't always horizontally scroll.
+    gridTemplate: 'minmax(220px, 1fr)',
+    render: (it) => {
+      return [it.path || '', it.path || ''];
+    },
+  },
+];
+// Sanitise state.fbColumns: coerce every known id to a boolean,
+// and ignore any unknown id (corrupted state.json / future
+// version). The "name" column is always implicitly on.
+function normalizeFbColumns(cols) {
+  const out = {};
+  for (const c of FB_COLUMNS) {
+    out[c.id] = !!(cols && cols[c.id]);
+  }
+  return out;
+}
+// Build the CSS grid-template-columns string for the file
+// browser rows. Order: icon + name (mandatory), then the
+// user-enabled columns in declaration order.
+//
+// The icon column is wider (40px) when the image-thumbnail
+// toggle is on so a small thumbnail can be centered in the
+// cell. The 16px default matches the old behaviour for plain
+// icons â€” the change is invisible to the user unless they
+// enable thumbnails.
+function buildFbGridTemplate() {
+  const iconW = state.fbThumbnails ? '44px' : '16px';
+  const cols = [iconW, 'minmax(120px, 1fr)'];
+  const fbCols = normalizeFbColumns(state.fbColumns);
+  for (const c of FB_COLUMNS) {
+    if (fbCols[c.id]) cols.push(c.gridTemplate);
+  }
+  return cols.join(' ');
+}
+// Helper: true if `ext` is one of the image formats the
+// thumbnail renderer can preview. Duplicated from iconForFile
+// so the two lists stay in sync at the call site; we do not
+// import from iconForFile because that returns the unicode
+// emoji and we need the extension list directly.
+function _isImageExt(ext) {
+  return ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes((ext || '').toLowerCase());
+}
+// Build the icon cell (the first column) for a file-browser row.
+// Renders either a centered thumbnail of the actual image file or
+// the regular text icon. The cell carries a CSS class
+// ('fb-thumb' or 'fb-icon') so styles.css can pick the right
+// alignment per mode.
+function _buildFbIconCell(it) {
+  if (state.fbThumbnails && !it.isDir && _isImageExt(it.ext)) {
+    const wrap = el('span', { class: 'icon fb-thumb', title: it.name + ' â€” thumbnail' });
+    const img = el('img', {
+      src: fileUrl(it.path),
+      alt: '',
+      loading: 'lazy',
+      // Decoding async keeps the list scroll smooth even when a
+      // folder contains hundreds of images.
+      decoding: 'async',
+    });
+    img.addEventListener('error', () => {
+      // If the thumbnail can't load (deleted file, permission
+      // problem) fall back to the regular icon so the row still
+      // shows something. We replace the <img> in-place rather
+      // than recreating the row so the row's click handlers stay
+      // attached.
+      wrap.classList.remove('fb-thumb');
+      wrap.classList.add('fb-icon');
+      wrap.textContent = iconForFile(it.ext);
+      wrap.title = it.name;
+    });
+    wrap.appendChild(img);
+    return wrap;
+  }
+  return el('span', { class: 'icon fb-icon', title: '' }, it.isDir ? 'ðŸ“' : iconForFile(it.ext));
+}
+
+// Open the folder-options overlay. Lists every optional column
+// as a checkbox (the "name" column is shown but locked on), and
+// the "Sort" dropdown. The user toggles a column, clicks
+// "Apply" (or just sees the change live via the change event),
+// and the folder explorer re-renders with the new layout. The
+// overlay re-renders the folder explorer immediately on every
+// change so the user can see the columns appear / disappear
+// before closing the modal.
+function openFolderOptions() {
+  showModal((m, close) => {
+    m.classList.add('folder-options-modal');
+    m.appendChild(el('h2', {}, 'ðŸ“ Folder options'));
+    m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+      'Pick which columns the folder explorer shows. The file-name column is always visible â€” turning it off would make the list unscannable. The horizontal scroll bar at the bottom of the list appears automatically when the columns don\'t fit the available width. Changes apply immediately.'));
+
+    // Image-thumbnail toggle. When on, image rows in the file
+    // browser show a centered thumbnail of the actual file
+    // instead of the ðŸ–¼ icon. Row heights grow automatically so
+    // the thumbnail is fully visible even when every column is
+    // enabled. Folder rows and non-image files are unaffected.
+    const thumbCb = el('input', { type: 'checkbox', class: 'folder-options-thumbnail-cb' });
+    thumbCb.checked = !!state.fbThumbnails;
+    thumbCb.addEventListener('change', () => {
+      state.fbThumbnails = !!thumbCb.checked;
+      scheduleStateSave();
+      if (Array.isArray(state._fbItems) && state._fbItems.length) {
+        renderFbList(sortFbItems(state._fbItems, state.fbSort));
+        applyFileSearch();
+      }
+    });
+    const thumbLabel = el('label', { class: 'folder-options-thumbnail-label' }, [
+      thumbCb,
+      el('span', {}, 'Show image thumbnails in the folder list'),
+    ]);
+    m.appendChild(thumbLabel);
+
+    // Column checkboxes
+    const cols = normalizeFbColumns(state.fbColumns);
+    const colGrid = el('div', { class: 'folder-options-cols' });
+    for (const c of FB_COLUMNS) {
+      const cb = el('input', { type: 'checkbox', class: 'folder-options-col-cb' });
+      cb.checked = !!cols[c.id];
+      cb.addEventListener('change', () => {
+        state.fbColumns[c.id] = !!cb.checked;
+        scheduleStateSave();
+        // Re-render the live list so the user sees the column
+        // appear / disappear immediately, without having to
+        // close the modal first.
+        if (Array.isArray(state._fbItems) && state._fbItems.length) {
+          renderFbList(sortFbItems(state._fbItems, state.fbSort));
+          applyFileSearch();
+        }
+      });
+      const label = el('label', { class: 'folder-options-col-label' }, [
+        cb,
+        el('span', { class: 'folder-options-col-name' }, c.label),
+      ]);
+      colGrid.appendChild(label);
+    }
+    // "Name" column (mandatory) â€” shown but locked, so the user
+    // knows the column order but can't accidentally remove it.
+    {
+      const cb = el('input', { type: 'checkbox', checked: 'checked', disabled: 'disabled' });
+      const label = el('label', { class: 'folder-options-col-label folder-options-col-locked' }, [
+        cb,
+        el('span', { class: 'folder-options-col-name' }, 'File name (always shown)'),
+      ]);
+      colGrid.appendChild(label);
+    }
+    m.appendChild(colGrid);
+
+    // Footer with Close.
+    m.appendChild(el('div', { class: 'footer' }, [
+      el('button', { class: 'primary', onclick: close }, 'Close'),
+    ]));
+  });
 }
 
 function parentDir(p) {
@@ -4325,12 +6828,63 @@ function _attachDropTarget(elNode, destDir) {
 function renderFbList(items) {
   const ul = $('#fb-list');
   ul.innerHTML = '';
+  // v1.1.1 polish: empty-state hint. The previous version
+  // rendered an empty <ul> with no message, which made a
+  // new or empty folder look like a broken page. The hint
+  // tells the user what to do next (pick a folder, or
+  // generate an image) and dismisses itself as soon as a
+  // file appears. Rendered inside the <ul> so the layout
+  // flexes correctly with the splitter resizes.
+  if (!items || items.length === 0) {
+    const empty = el('li', { class: 'fb-empty' });
+    const isOutput = state.fbDir && state.config.output_dir
+      && state.fbDir.toLowerCase() === state.config.output_dir.toLowerCase();
+    empty.appendChild(el('div', { class: 'fb-empty-title' }, isOutput ? 'This folder is empty' : 'No items'));
+    empty.appendChild(el('div', { class: 'fb-empty-hint' },
+      isOutput
+        ? 'Click Generate on a tab above to create your first asset.'
+        : 'Click ðŸ“‚ to pick a folder, or â†‘ to go up.'));
+    ul.appendChild(empty);
+    return;
+  }
+  // Apply the user's selected columns by setting a CSS
+  // grid-template-columns on the <ul>. The column definitions in
+  // FB_COLUMNS (see above) drive the template string. The
+  // <ul> uses `min-width: max-content` so the grid expands
+  // beyond the available width when necessary â€” the
+  // overflow-x: auto on the list then kicks in to provide a
+  // horizontal scroll bar (see styles.css). The "name" column
+  // uses minmax(120px, 1fr) so the file name always gets at
+  // least 120px, and the path column (when enabled) takes the
+  // remaining 1fr.
+  ul.style.gridTemplateColumns = buildFbGridTemplate();
+  // Tag the <ul> so CSS knows which alignment to apply: thumbs
+  // get a taller row + centered image; plain icons are
+  // left-aligned (the user explicitly asked for left-alignment
+  // when thumbnails are off). The class is also useful for the
+  // zebra-striping rule which uses :nth-child(even) and would
+  // otherwise re-paint the wrong row in the wider thumbnail
+  // variant.
+  ul.classList.toggle('fb-thumbs-on', !!state.fbThumbnails);
+  ul.classList.toggle('fb-thumbs-off', !state.fbThumbnails);
+  // Snapshot the rendered items on state so other helpers (e.g.
+  // markFbItemActive when the user is shown a preview/overlay for a
+  // path) can look up the full fs-item record (size, ext, mtime)
+  // without re-fetching from the main process. This was previously
+  // only available via DOM lookups, which limited context-menu code
+  // to operations that only needed the path.
+  state._fbItems = Array.isArray(items) ? items.slice() : [];
   // Show ".. (up)" whenever we're inside a real subdir of the output root.
   const outRoot = state.config.output_dir || '';
   if (state.fbDir && outRoot && state.fbDir.toLowerCase() !== outRoot.toLowerCase()) {
     const parent = el('li', { class: 'fb-item' }, [
-      el('span', { class: 'icon' }, '↩'),
+      el('span', { class: 'icon fb-icon' }, 'â†©'),
       el('span', { class: 'name' }, '.. (up)'),
+      // .. gets a "size" column so the row stays aligned with
+      // the regular rows below it; the other columns (if any)
+      // are not rendered for the parent row to keep the visual
+      // noise down.
+      el('span', { class: 'size' }, 'â€”'),
     ]);
     parent.addEventListener('click', () => {
       // Go up one level
@@ -4347,12 +6901,32 @@ function renderFbList(items) {
   } else if (state.fbDir && outRoot && state.fbDir.toLowerCase() === outRoot.toLowerCase()) {
     // At the output root, but allow one "Open in Explorer" hint as a no-op row? Skip.
   }
+  // Sanitise the column flags once per render so the inner loop
+  // can read the booleans without re-checking the object shape.
+  const fbCols = normalizeFbColumns(state.fbColumns);
   for (const it of items) {
-    const li = el('li', { class: 'fb-item', 'data-path': it.path, 'data-isdir': it.isDir ? '1' : '0', 'data-name': it.name, draggable: it.isDir ? 'false' : 'true' }, [
-      el('span', { class: 'icon' }, it.isDir ? '📁' : iconForFile(it.ext)),
+    // Build the row's children. Icon + name are mandatory; the
+    // rest of the cells come from FB_COLUMNS, in order, with a
+    // CSS class matching the column id (so user styles can
+    // target e.g. ".fb-item .col-size" without false-positives
+    // on incidental matches).
+    const cellEls = [
+      _buildFbIconCell(it),
       el('span', { class: 'name', title: it.name }, it.name),
-      el('span', { class: 'size' }, it.isDir ? '' : humanSize(it.size)),
-    ]);
+    ];
+    for (const c of FB_COLUMNS) {
+      if (!fbCols[c.id]) continue;
+      const [text, title] = c.render(it);
+      const cls = `col-${c.id}`;
+      cellEls.push(el('span', { class: cls, title: title || '' }, text));
+    }
+    const li = el('li', {
+      class: 'fb-item',
+      'data-path': it.path,
+      'data-isdir': it.isDir ? '1' : '0',
+      'data-name': it.name,
+      draggable: it.isDir ? 'false' : 'true',
+    }, cellEls);
     li.addEventListener('click', (e) => {
       $$('.fb-item', ul).forEach((n) => n.classList.remove('selected'));
       li.classList.add('selected');
@@ -4393,11 +6967,11 @@ function renderFbList(items) {
 }
 
 function iconForFile(ext) {
-  if (['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(ext)) return '🖼';
-  if (['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.opus', '.pcm'].includes(ext)) return '🎵';
-  if (['.mp4', '.mov', '.webm', '.mkv'].includes(ext)) return '🎬';
-  if (['.srt', '.txt', '.json', '.md'].includes(ext)) return '📄';
-  return '📄';
+  if (['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(ext)) return 'ðŸ–¼';
+  if (['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.opus', '.pcm'].includes(ext)) return 'ðŸŽµ';
+  if (['.mp4', '.mov', '.webm', '.mkv'].includes(ext)) return 'ðŸŽ¬';
+  if (['.srt', '.txt', '.json', '.md'].includes(ext)) return 'ðŸ“„';
+  return 'ðŸ“„';
 }
 
 function humanSize(n) {
@@ -4426,6 +7000,57 @@ async function openItem(it) {
   }
 }
 
+// Mark the file-browser row that corresponds to `path` as the
+// currently-active item (the same `.selected` class that the click
+// handler in renderFbList applies when the user clicks the row).
+// Also scrolls the row into view if it's currently off-screen.
+//
+// The user's spec is: "the file clicked and shown last in the image
+// preview element (and its full image viewer) should always be marked
+// as active in the folder explorer". This helper is the single place
+// that enforces that. Every preview path / overlay open should call
+// it with the path the user is currently looking at, so the row in
+// the file browser never lags behind the preview pane.
+//
+// `path` is matched case-insensitively (Windows paths are
+// case-insensitive in practice) and against the `data-path` attribute
+// set by renderFbList. We deliberately ignore the `..` (up) row
+// because it has no data-path.
+function markFbItemActive(path) {
+  if (!path || typeof path !== 'string') return;
+  const ul = $('#fb-list');
+  if (!ul) return;
+  // De-select all rows, then select the one matching `path`. The
+  // pre-existing click handler also removes `.selected` from every
+  // row first, so the behaviour is consistent.
+  const target = path.toLowerCase();
+  const rows = $$('.fb-item', ul);
+  let match = null;
+  for (const li of rows) {
+    const isMatch = (li.getAttribute('data-path') || '').toLowerCase() === target;
+    li.classList.toggle('selected', isMatch);
+    if (isMatch) match = li;
+  }
+  if (match) {
+    // Update state._selected so the right-click context menu operates
+    // on the same item the user sees as "active" in the preview pane.
+    // We only set _selected to a directory-shaped object if we have
+    // an existing fs-item record; otherwise the context menu would
+    // be missing the size/ext metadata. Look it up by path from the
+    // last-rendered list (state._fbItems is populated by
+    // refreshBrowser when we wired it up â€” see the read in the
+    // helper below).
+    if (Array.isArray(state._fbItems)) {
+      const found = state._fbItems.find((it) => (it.path || '').toLowerCase() === target);
+      if (found) state._selected = found;
+    }
+    // Scroll into view if needed. The "nearest" choice keeps the
+    // current scroll position when the row is already visible, so
+    // a click within the visible area doesn't jump the view.
+    try { match.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
+  }
+}
+
 function previewImageFromFile(p) {
   // Images from the file browser go to the new Picture preview pane
   // (bottom-right of the log bar), not the tab's generation preview.
@@ -4440,19 +7065,29 @@ function previewImageFromFile(p) {
     const content = $('#fb-preview-content');
     if (content) content.innerHTML = '<div class="preview-pane-empty">Click an image in the file browser to preview it here.</div>';
     state._lastPreviewPath = null;
+    state._previewBatch = null;
     return;
   }
   // If the user clicks the same file twice, the preview is already
-  // showing it — don't waste a re-decode + flicker on the redundant
+  // showing it â€” don't waste a re-decode + flicker on the redundant
   // click. We compare on the file path (the naturalWidth wouldn't
   // have changed since the file didn't change).
   if (state._lastPreviewPath === p) return;
   state._lastPreviewPath = p;
+  // A single-image preview always replaces the multi-image grid (if
+  // any was showing). Clear _previewBatch so the image-overlay's
+  // arrow-key handler doesn't try to navigate the now-stale batch.
+  state._previewBatch = null;
+  // Per the user's spec, the file shown in the preview pane should
+  // always be the active row in the folder explorer. We mark it
+  // BEFORE the async image decode so the highlight is instant and
+  // does not flicker after the image paints.
+  markFbItemActive(p);
   const url = fileUrl(p);
   const filename = (p || '').split(/[\\/]/).pop() || 'image';
   const preLoad = new Image();
-  preLoad.onload = () => updatePreviewPane(url, filename, preLoad.naturalWidth, preLoad.naturalHeight);
-  preLoad.onerror = () => updatePreviewPane(url, filename, 0, 0);
+  preLoad.onload = () => updatePreviewPane(url, filename, preLoad.naturalWidth, preLoad.naturalHeight, p);
+  preLoad.onerror = () => updatePreviewPane(url, filename, 0, 0, p);
   preLoad.src = url;
 }
 
@@ -4483,37 +7118,86 @@ function previewImagesFromFiles(paths) {
     return;
   }
   if (valid.length === 1) {
-    // Single image → the old behaviour, no subdivision needed.
+    // Single image â†’ the old behaviour, no subdivision needed.
     return previewImageFromFile(valid[0]);
   }
-  // N > 1 → grid of thumbnails. Build the container once, then async-
+  // N > 1 â†’ grid of thumbnails. Build the container once, then async-
   // resolve each path's natural dimensions for the title hint.
   content.innerHTML = '';
+  // Stash the current batch on state so the image overlay's
+  // arrow-key handler (added in a later feature) can navigate to
+  // the previous / next thumbnail without re-fetching the list
+  // from the DOM. The first item in the list is marked as the
+  // "currently active" one in the folder explorer (and the
+  // preview-pane highlight) until the user clicks a different
+  // thumbnail or uses the arrow keys.
+  state._previewBatch = {
+    paths: valid.slice(),
+    // Index of the path that is currently considered "selected"
+    // (mirrors what the folder explorer's .selected row is). The
+    // openImageOverlay handler updates this on every arrow press.
+    index: 0,
+  };
+  // Per the user's spec, the file shown in the preview pane (or
+  // its full image viewer) must always be the active row in the
+  // folder explorer. The first image of a freshly-shown batch is
+  // the natural default.
+  markFbItemActive(valid[0]);
   const grid = el('div', { class: 'preview-pane-grid' });
-  for (const p of valid) {
+  for (let i = 0; i < valid.length; i++) {
+    const p = valid[i];
     const filename = (p || '').split(/[\\/]/).pop() || 'image';
     const url = fileUrl(p) + '?t=' + Date.now();
-    const slot = el('div', { class: 'preview-pane-thumb', title: filename + ' — click to view 1:1' });
+    // data-path stores the filesystem path the slot represents.
+    // The overlay's arrow-key handler reads it (via
+    // navigateToOverlayImage) so the user can step through the
+    // multi-image preview-pane thumbnails without losing track of
+    // which file is currently highlighted.
+    const slot = el('div', {
+      class: 'preview-pane-thumb',
+      title: filename + ' â€” click to view 1:1',
+      'data-path': p,
+    });
+    if (i === 0) slot.classList.add('preview-active');
     const img = el('img', { src: url, alt: filename, loading: 'lazy' });
     const caption = el('div', { class: 'preview-pane-thumb-caption' }, filename);
     slot.append(img, caption);
     // Flag the click handler attachment so the slow-disk fallback
     // below doesn't double-bind (the previous code used
     // `if (!slot.onclick)`, but addEventListener doesn't write to
-    // `.onclick` — so both the onload path and the setTimeout path
+    // `.onclick` â€” so both the onload path and the setTimeout path
     // attached a listener, and a single click opened the overlay
     // twice in a row).
     let clickBound = false;
     const bind = (w, h) => {
       if (clickBound) return;
       clickBound = true;
-      if (w && h) slot.addEventListener('click', () => openImageOverlay(url, filename, w, h), { once: true });
-      else slot.addEventListener('click', () => openImageOverlay(url, filename), { once: true });
+      const open = () => {
+        // Update the "selected" thumbnail + folder-explorer's
+        // active row so both stay in sync with the user's last
+        // action. (The arrow-key handler in openImageOverlay
+        // does the same thing on every keypress.) We look up
+        // the index in `state._previewBatch.paths` (which is a
+        // slice copy of `valid`) rather than comparing array
+        // references â€” the previous `===` check was always false
+        // because `valid` is created fresh and then sliced into
+        // the batch, so the index update was silently dropped.
+        if (state._previewBatch && Array.isArray(state._previewBatch.paths)) {
+          const found = state._previewBatch.paths.findIndex((q) => (q || '').toLowerCase() === p.toLowerCase());
+          if (found >= 0) state._previewBatch.index = found;
+        }
+        $$('.preview-pane-thumb', grid).forEach((n) => n.classList.remove('preview-active'));
+        slot.classList.add('preview-active');
+        markFbItemActive(p);
+        if (w && h) openImageOverlay(url, filename, w, h, p);
+        else openImageOverlay(url, filename, 0, 0, p);
+      };
+      slot.addEventListener('click', open, { once: true });
     };
     // Resolve the natural size async so the overlay can show it.
     const probe = new Image();
     probe.onload = () => {
-      slot.title = `${filename} (${probe.naturalWidth}×${probe.naturalHeight}) — click to view 1:1`;
+      slot.title = `${filename} (${probe.naturalWidth}Ã—${probe.naturalHeight}) â€” click to view 1:1`;
       bind(probe.naturalWidth, probe.naturalHeight);
     };
     probe.onerror = () => bind(0, 0);
@@ -4527,32 +7211,264 @@ function previewImagesFromFiles(paths) {
   // Below the grid, a small summary line so the user knows how many
   // images they got (and the click hint).
   const summary = el('div', { class: 'preview-pane-summary' },
-    `${valid.length} image${valid.length === 1 ? '' : 's'} — click any thumbnail to open at 1:1.`);
+    `${valid.length} image${valid.length === 1 ? '' : 's'} â€” click any thumbnail to open at 1:1.`);
   content.appendChild(summary);
 }
 
 // Render the file-browser image into the new Picture preview pane.
 // The image is fit-to-content (object-fit: contain in the CSS) so a
 // 4K screenshot is shown shrunken and a tiny icon stays at its natural
-// size — both rendered completely, no cropping. Clicking the image
+// size â€” both rendered completely, no cropping. Clicking the image
 // (or the filename) opens the image overlay at 1:1 mode.
-function updatePreviewPane(src, filename, naturalWidth, naturalHeight) {
+function updatePreviewPane(src, filename, naturalWidth, naturalHeight, filePath) {
   const content = $('#fb-preview-content');
   if (!content) return;
   content.innerHTML = '';
-  const size = (naturalWidth && naturalHeight) ? ` (${naturalWidth}×${naturalHeight})` : '';
+  const size = (naturalWidth && naturalHeight) ? ` (${naturalWidth}Ã—${naturalHeight})` : '';
   const img = el('img', {
     src,
     alt: filename || '',
-    title: (filename || '') + size + ' — click to view 1:1',
+    title: (filename || '') + size + ' â€” click to view 1:1',
   });
   img.addEventListener('click', () => {
-    openImageOverlay(src, filename, naturalWidth, naturalHeight);
+    openImageOverlay(src, filename, naturalWidth, naturalHeight, filePath);
   });
   content.appendChild(img);
   const fname = el('div', { class: 'preview-pane-filename', title: filename || '' },
     (filename || '') + size);
   content.appendChild(fname);
+}
+
+// Track the paths that have already been pushed to the preview
+// pane for the current multi-image batch (or single-image preview).
+// Used by notifyImageGenerated() to dedupe â€” the same file can
+// arrive via the gen handler's "variant complete" callback AND
+// the 1s polling, so without this set we'd double-add thumbnails.
+// Keyed on lowercase path so a Windows path-case change doesn't
+// produce duplicates either.
+let _previewedPaths = new Set();
+function _resetPreviewedPaths() {
+  _previewedPaths = new Set();
+}
+
+// Build a single thumbnail slot for the multi-image preview pane.
+// Extracted from previewImagesFromFiles so notifyImageGenerated
+// can use the same DOM shape when appending new variants. The
+// returned slot is already wired up (click handler + data-path)
+// and the "preview-active" class is applied if `isActive` is
+// true.
+function _buildPreviewThumb(p, options) {
+  const opts = options || {};
+  const filename = (p || '').split(/[\\/]/).pop() || 'image';
+  const cacheBust = opts.cacheBust !== false ? ('?t=' + Date.now()) : '';
+  const url = fileUrl(p) + cacheBust;
+  const slot = el('div', {
+    class: 'preview-pane-thumb',
+    title: filename + ' â€” click to view 1:1',
+    'data-path': p,
+  });
+  if (opts.isActive) slot.classList.add('preview-active');
+  if (opts.isNew) slot.classList.add('preview-new');
+  const img = el('img', { src: url, alt: filename, loading: 'lazy' });
+  const caption = el('div', { class: 'preview-pane-thumb-caption' }, filename);
+  slot.append(img, caption);
+  let clickBound = false;
+  const bind = (w, h) => {
+    if (clickBound) return;
+    clickBound = true;
+    const open = () => {
+      // Update active selection â€” the user's last action wins.
+      $$('.preview-pane-thumb').forEach((n) => n.classList.remove('preview-active'));
+      slot.classList.add('preview-active');
+      if (state._previewBatch) {
+        const i = state._previewBatch.paths.findIndex((q) => (q || '').toLowerCase() === p.toLowerCase());
+        if (i >= 0) state._previewBatch.index = i;
+      }
+      markFbItemActive(p);
+      if (w && h) openImageOverlay(url, filename, w, h, p);
+      else openImageOverlay(url, filename, 0, 0, p);
+    };
+    slot.addEventListener('click', open, { once: true });
+    // Right-click: open the full folder-browser context menu
+    // for this path. The preview pane is just a shortcut to
+    // the same actions (Upscale / Crop / Convert / Optimize /
+    // Remove background + file-level Copy / Cut / Rename /
+    // Move / Delete).
+    slot.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try { showItemContextMenuForPath(p, e.clientX, e.clientY); }
+      catch (_) { /* silent — context menu is best-effort */ }
+    });
+  };
+  const probe = new Image();
+  probe.onload = () => {
+    slot.title = `${filename} (${probe.naturalWidth}Ã—${probe.naturalHeight}) â€” click to view 1:1`;
+    bind(probe.naturalWidth, probe.naturalHeight);
+  };
+  probe.onerror = () => bind(0, 0);
+  probe.src = url;
+  setTimeout(() => bind(0, 0), 3000);
+  return slot;
+}
+
+// Live-update hook: an image was just generated and the user
+// wants the UI to react instantly (folder-explorer blink +
+// preview-pane thumbnail + active-row mark) without waiting
+// for the full generation run to finish. Called from:
+//   1. The image tab's gen handler after each variant (when
+//      the output path is known in advance â€” i.e. not
+//      --out-dir runs).
+//   2. The 1s polling timer in startGenPolling() that watches
+//      the output directory for new files (catches --out-dir
+//      runs, plus any variant the gen handler missed).
+//
+// Idempotent: if the same path is reported twice (e.g. both
+// the gen handler AND the polling saw it), the second call
+// is a no-op â€” we use the lowercased path as the dedup key
+// via _previewedPaths.
+function notifyImageGenerated(p) {
+  if (!p || typeof p !== 'string') return;
+  const key = p.toLowerCase();
+  if (_previewedPaths.has(key)) return;
+  _previewedPaths.add(key);
+  // 1. Push the path to the multi-image batch so the thumbnail
+  //    shows up in the preview pane. If no batch is currently
+  //    active, we start one with just this file (the user can
+  //    then continue to add more). The new thumbnail is marked
+  //    with the "preview-new" class so the CSS can briefly
+  //    highlight it.
+  if (!state._previewBatch) {
+    state._previewBatch = { paths: [p], index: 0 };
+  } else if (!state._previewBatch.paths.includes(p)) {
+    state._previewBatch.paths.push(p);
+  }
+  // 2. Re-render the preview pane. If a grid already exists,
+  //    we APPEND a new slot instead of re-creating everything
+  //    (preserves the existing thumbnails + their click
+  //    handlers). If the grid doesn't exist yet (e.g. the
+  //    user is on a non-image tab), this is a no-op â€” the
+  //    next refreshBrowser() will pick up the file in the
+  //    folder explorer.
+  const content = $('#fb-preview-content');
+  if (content) {
+    let grid = content.querySelector('.preview-pane-grid');
+    if (!grid) {
+      // No grid yet â€” build one with just this file.
+      content.innerHTML = '';
+      grid = el('div', { class: 'preview-pane-grid' });
+      content.appendChild(grid);
+      const summary = el('div', { class: 'preview-pane-summary' }, '1 image â€” click any thumbnail to open at 1:1.');
+      content.appendChild(summary);
+    } else {
+      // Grid already there â€” update the "N images" summary line
+      // (if present) so the user can see the count grow.
+      const summary = content.querySelector('.preview-pane-summary');
+      if (summary) {
+        const n = grid.querySelectorAll('.preview-pane-thumb').length + 1;
+        summary.textContent = `${n} image${n === 1 ? '' : 's'} â€” click any thumbnail to open at 1:1.`;
+      }
+    }
+    const slot = _buildPreviewThumb(p, { isActive: true, isNew: true });
+    grid.appendChild(slot);
+  }
+  // 3. Mark the file as active in the folder explorer (and scroll
+  //    the row into view if it's off-screen).
+  markFbItemActive(p);
+}
+
+// Polling timer for "live" updates to the folder explorer while
+// a generation is in flight. We poll every 1s instead of using
+// a more reactive mechanism (chokidar / fs.watch) because:
+//   - Polling is OS-agnostic and doesn't add a dependency.
+//   - 1s is fast enough for the user to feel "live" but slow
+//     enough to be invisible on the IPC channel.
+//   - It gracefully handles the --out-dir case where the
+//     renderer doesn't know the per-call output filenames and
+//     so can't be told by the gen handler.
+//
+// The poll only runs while state.generating is set; we start
+// it from startGenPolling() and stop it from stopGenPolling(),
+// both called from armGenBtnWithCancel (start) and its cleanup
+// (stop). The poller's main work is:
+//   1. List the current fbDir.
+//   2. Diff against the previous list (state._lastPolledItems).
+//   3. For each new file, call notifyImageGenerated(path) +
+//      add a ".fb-item-new" class to its row in the folder
+//      explorer so the CSS blink animation runs.
+//   4. Refresh the folder explorer's items snapshot.
+let _genPollTimer = null;
+let _genPollBusy = false;
+async function startGenPolling() {
+  // Defensive: never start two pollers at once.
+  if (_genPollTimer) return;
+  // Snapshot the current items so the first tick doesn't see
+  // "everything is new" (the generation might have started
+  // with files already in the folder).
+  try {
+    const r = await window.api.fbList(state.fbDir);
+    if (r && r.ok) state._lastPolledItems = (r.items || []).map((it) => it.path);
+  } catch (_) {
+    state._lastPolledItems = [];
+  }
+  // Reset the dedup set so the polling starts fresh for this
+  // run (the gen handler may have already pushed some files
+  // before the poller started, which is fine â€” notifyImageGenerated
+  // is idempotent and the polling won't see them as new).
+  _resetPreviewedPaths();
+  const tick = async () => {
+    _genPollTimer = null;
+    if (!state.generating) return;
+    if (_genPollBusy) return; // skip overlapping ticks
+    _genPollBusy = true;
+    try {
+      const r = await window.api.fbList(state.fbDir);
+      if (!r || !r.ok) return;
+      const newItems = r.items || [];
+      const newPaths = newItems.map((it) => it.path);
+      const prev = new Set((state._lastPolledItems || []).map((p) => p.toLowerCase()));
+      const fresh = newPaths.filter((p) => !prev.has(p.toLowerCase()));
+      // 1. Re-render the file-browser list so the new file is
+      //    visible + get the new state._fbItems snapshot.
+      const sorted = sortFbItems(newItems, state.fbSort);
+      renderFbList(sorted);
+      applyFileSearch();
+      state._lastPolledItems = newPaths;
+      // 2. For each newly-discovered file, run it through the
+      //    same live-update pipeline the gen handler uses. This
+      //    covers the --out-dir case (where the gen handler
+      //    doesn't know the per-call output filenames).
+      for (const p of fresh) {
+        // Only push as a thumbnail if it's an image file â€”
+        // the gen pipeline produces .png / .jpg / .jpeg / .webp.
+        const ext = (p.split('.').pop() || '').toLowerCase();
+        if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
+          notifyImageGenerated(p);
+        }
+        // Add the .fb-item-new class to the matching row so the
+        // CSS blink animation runs. We look it up by data-path
+        // because the re-render above just created fresh DOM
+        // nodes (so the old node references are stale).
+        const row = document.querySelector(`.fb-item[data-path="${CSS.escape(p)}"]`);
+        if (row) row.classList.add('fb-item-new');
+      }
+    } catch (_) {
+      // Don't let a transient IPC error kill the poller â€” just
+      // try again on the next tick.
+    } finally {
+      _genPollBusy = false;
+      // Schedule the next tick only if we're still generating.
+      // The next tick is re-armed here (rather than via a
+      // setInterval) so an error inside tick() doesn't queue
+      // up overlapping polls.
+      if (state.generating) _genPollTimer = setTimeout(tick, 1000);
+    }
+  };
+  _genPollTimer = setTimeout(tick, 1000);
+}
+function stopGenPolling() {
+  if (_genPollTimer) { clearTimeout(_genPollTimer); _genPollTimer = null; }
+  state._lastPolledItems = null;
 }
 
 function previewAudioFromFile(p) {
@@ -4570,7 +7486,7 @@ async function previewTextFromFile(p) {
   const r = await window.api.fbRead(p);
   root.innerHTML = '';
   if (!r.ok) { root.innerHTML = '<div class="empty">Cannot read: ' + escapeHtml(r.error) + '</div>'; return; }
-  // Decode base64 → binary string → UTF-8 text. Plain `atob` only gives a
+  // Decode base64 â†’ binary string â†’ UTF-8 text. Plain `atob` only gives a
   // Latin-1 binary string, which mangles non-ASCII characters. TextDecoder
   // with {fatal: false} replaces invalid sequences with U+FFFD instead of
   // throwing, so partially-decodable files still display.
@@ -4647,10 +7563,15 @@ function showItemContextMenu(it, x, y) {
 
     // File-info block. Always shown. Lists the type, size, modified
     // time, and (for images) the natural resolution. Resolution
-    // has to be decoded from the file, so we render a "detecting…"
+    // has to be decoded from the file, so we render a "detectingâ€¦"
     // placeholder first and fill it in once loadImageFromFile
     // resolves.
     const isImage = !it.isDir && ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(it.ext);
+    // Same set the audio-cutter dialog + audio preview accept. The
+    // list is duplicated on purpose so a future change here doesn't
+    // silently drop a format the cutter would still handle (or vice
+    // versa).
+    const isAudio = !it.isDir && ['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.opus', '.aac', '.wma', '.aif', '.aiff'].includes(it.ext);
     const info = el('div', { class: 'fb-item-info' });
     if (it.isDir) {
       info.appendChild(el('div', { class: 'fb-info-row' }, [
@@ -4674,14 +7595,14 @@ function showItemContextMenu(it, x, y) {
       if (isImage) {
         const dimCell = el('div', { class: 'fb-info-row' }, [
           el('span', { class: 'fb-info-key' }, 'Dimensions'),
-          el('span', { class: 'fb-info-dim' }, 'detecting…'),
+          el('span', { class: 'fb-info-dim' }, 'detectingâ€¦'),
         ]);
         info.appendChild(dimCell);
         loadImageFromFile(it.path).then((img) => {
           const dim = dimCell.querySelector('.fb-info-dim');
           if (!dim) return;
           if (img.naturalWidth && img.naturalHeight) {
-            dim.textContent = `${img.naturalWidth} × ${img.naturalHeight} px`;
+            dim.textContent = `${img.naturalWidth} Ã— ${img.naturalHeight} px`;
           } else {
             dim.textContent = 'unknown';
           }
@@ -4704,16 +7625,71 @@ function showItemContextMenu(it, x, y) {
     let nextRow = 3;
     const rows = [];
     if (isImage) {
-      const rU = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); showUpscaleDirect(it.path); } }, '🔍 Upscale…'))]);
-      const rC = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); showCropOverlay(it.path); } }, '✂ Crop…'))]);
-      const rF = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); showConvertOverlay(it.path); } }, '⇄ Convert format…'))]);
-      const rB = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); runRemoveBackgroundOnItem(it); } }, '✨ Remove background'))]);
-      rows.push(rU, rC, rF, rB);
+      // Each row gets a small help "?" button next to the
+      // action button so the user can read a longer
+      // explanation of what each pipeline step does before
+      // they trigger it. This is the same helpButton factory
+      // the form labels use â€” clicking the "?" opens the
+      // help modal for the topic; the action button itself
+      // still runs the action.
+      const rU = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
+        el('button', { class: 'btn-mini', onclick: () => { close(); showUpscaleDirect(it.path); } }, 'ðŸ” Upscaleâ€¦'),
+        helpButton('ctx.upscale'),
+      ])]);
+      const rC = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
+        el('button', { class: 'btn-mini', onclick: () => { close(); showCropOverlay(it.path); } }, 'âœ‚ Cropâ€¦'),
+        helpButton('ctx.crop'),
+      ])]);
+      const rF = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
+        el('button', { class: 'btn-mini', onclick: () => { close(); showConvertOverlay(it.path); } }, 'â‡„ Convert formatâ€¦'),
+        helpButton('ctx.convert'),
+      ])]);
+      // "Optimize / Compress" â€” re-encodes the image to shrink its
+      // file size with Sharp / libvips while preserving the best-
+      // possible visual quality. Sits between "Convert format" and
+      // "Remove background" in the menu order because it's a
+      // quality / size operation (similar to convert) and the user
+      // typically runs the size-shrink BEFORE the more expensive
+      // background-removal step. The dialog is always available
+      // (no binary / model check needed) because Sharp is a hard
+      // dep of the project â€” if it isn't installed the IPC will
+      // return a precise "sharp is not installed" error.
+      const rO = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
+        el('button', { class: 'btn-mini', onclick: () => { close(); showOptimizeOverlay(it.path); } }, 'ðŸ—œ Optimize / Compressâ€¦'),
+        helpButton('ctx.optimize'),
+      ])]);
+      const rB = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
+        el('button', { class: 'btn-mini', onclick: () => { close(); runRemoveBackgroundOnItem(it); } }, 'âœ¨ Remove background'),
+        helpButton('ctx.removeBackground'),
+      ])]);
+      rows.push(rU, rC, rF, rO, rB);
+    }
+    // Audio pipeline: trim / cut with a click-free waveform editor
+    // (zero-crossing snap, micro-fade, auto-trim silence, format
+    // conversion, smart naming). The dialog opens via the global
+    // window.showAudioCutter() exposed by renderer/audioCutter.js.
+    if (isAudio) {
+      const rA = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
+        el('button', { class: 'btn-mini', onclick: () => {
+          close();
+          try {
+            if (typeof window.showAudioCutter === 'function') {
+              window.showAudioCutter(it.path);
+            } else {
+              toast('Audio cutter module not loaded.', 'err');
+            }
+          } catch (e) {
+            toast('Audio cutter failed: ' + (e && e.message || e), 'err', 5000);
+          }
+        } }, 'âœ‚ Audio cutâ€¦'),
+        helpButton('ctx.audioCut'),
+      ])]);
+      rows.push(rA);
     }
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); fbClipboardCopy([it.path]); } }, 'Copy'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); fbClipboardCut([it.path]); } }, 'Cut'))]));
-    rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); promptRename(it); } }, 'Rename…'))]));
-    rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); promptMove(it); } }, 'Move to…'))]));
+    rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); promptRename(it); } }, 'Renameâ€¦'))]));
+    rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); promptMove(it); } }, 'Move toâ€¦'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => { close(); await fbClipboardPaste(state.fbDir); } }, 'Paste here'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini danger', onclick: () => { close(); confirmDelete(it); } }, 'Delete'))]));
     m.append(...rows);
@@ -4722,12 +7698,52 @@ function showItemContextMenu(it, x, y) {
   });
 }
 
+// ----------------- Context menu for preview thumbnails + overlay -----------------
+// Right-click context menu for image thumbnails in the picture
+// preview pane and for the full-size image overlay. Mirrors the
+// folder-browser context menu (showItemContextMenu) — the same
+// Upscale / Crop / Convert / Optimize / Remove-background pipeline
+// entries are available, plus the file-level Copy / Cut / Rename /
+// Move / Delete actions. The same context menu is reused for both
+// entry points so behaviour stays consistent.
+//
+// The helpers accept either:
+//   - a full fs-item record (as returned by the main process and
+//     cached in state._fbItems), or
+//   - just a path string (for the preview pane / overlay where the
+//     caller doesn't have the full record). When only a path is
+//     given we synthesise a minimal item on the fly so the same
+//     action handlers can be reused.
+function buildItemFromPath(path) {
+  if (!path || typeof path !== 'string') return null;
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  const name = parts.length ? parts[parts.length - 1] : path;
+  const dot = name.lastIndexOf('.');
+  const ext = dot > 0 ? name.slice(dot).toLowerCase() : '';
+  return {
+    path,
+    name,
+    ext,
+    isDir: false,
+    size: 0,
+    mtimeMs: 0,
+    birthtimeMs: 0,
+    _synthesised: true,
+  };
+}
+function showItemContextMenuForPath(path, x, y) {
+  let it = (state._fbItems || []).find((it) => it.path === path);
+  if (!it) it = buildItemFromPath(path);
+  if (!it) return;
+  showItemContextMenu(it, x, y);
+}
+
 // Standalone "Remove background" action triggered by the folder
 // browser's right-click context menu. Unlike the in-tab flow
 // (which is gated on the upscaling popup's checkbox) and the
-// right-click "Upscale" dialog (which can chain upscale →
-// crop → background removal in one step), this is a single-shot
-// "drop the alpha, write <name>_nobg.png next to it" — the user
+// right-click "Upscale" dialog (which can chain upscale â†’
+// crop â†’ background removal in one step), this is a single-shot
+// "drop the alpha, write <name>_nobg.png next to it" â€” the user
 // picks an existing image, the wrapper runs, the result appears
 // in the preview pane + the file browser.
 //
@@ -4741,24 +7757,24 @@ async function runRemoveBackgroundOnItem(it) {
     return;
   }
   if (!st.available) {
-    toast('Background removal not set up. Run "npm run setup" to download the IS-Net model, or open the add-ons manager (⚙ Settings → Image upscaling → Re-open add-ons).', 'err', 8000);
+    toast('Background removal not set up. Run "npm run setup" to download the IS-Net model, or open the add-ons manager (âš™ Settings â†’ Image upscaling â†’ Re-open add-ons).', 'err', 8000);
     return;
   }
   if (!st.modelPresent) {
-    toast('isnetbg model file missing — drop isnet-general-use.onnx into ./bin/models/.', 'err', 6000);
+    toast('isnetbg model file missing â€” drop isnet-general-use.onnx into ./bin/models/.', 'err', 6000);
     return;
   }
   // Show a brief progress toast so the user knows the action was
   // received. The actual binary run can take a few seconds on CPU
   // (longer on large images), and the binary doesn't stream
-  // progress — so we rely on a single "Working…" toast and then a
+  // progress â€” so we rely on a single "Workingâ€¦" toast and then a
   // final success / failure toast.
-  setStatus('Removing background…', true);
-  toast('Removing background…', 'info', 2000);
+  setStatus('Removing backgroundâ€¦', true);
+  toast('Removing backgroundâ€¦', 'info', 2000);
   try {
     const out = await removeBackgroundFile(it.path);
     setStatus('Background removed.', false);
-    toast(`Background removed → ${out}`, 'ok', 4000);
+    toast(`Background removed â†’ ${out}`, 'ok', 4000);
     try { await refreshBrowser(); } catch (_) {}
     if (typeof previewImageFromFile === 'function') {
       try { previewImageFromFile(out); } catch (_) {}
@@ -4771,12 +7787,12 @@ async function runRemoveBackgroundOnItem(it) {
 }
 
 // Format a mtimeMs timestamp as a human-readable local string.
-// Returns "—" for null / NaN / 0 (we treat 0 as "no timestamp",
+// Returns "â€”" for null / NaN / 0 (we treat 0 as "no timestamp",
 // which happens for some FS drivers that don't expose mtime).
 function formatDate(ms) {
-  if (!ms || typeof ms !== 'number') return '—';
+  if (!ms || typeof ms !== 'number') return 'â€”';
   const d = new Date(ms);
-  if (isNaN(d.getTime())) return '—';
+  if (isNaN(d.getTime())) return 'â€”';
   // YYYY-MM-DD HH:MM in the user's local timezone. Locale-agnostic
   // on purpose so two users in different regions see the same text
   // in a shared screenshot.
@@ -4832,7 +7848,7 @@ async function confirmDelete(it) {
       const r = await window.api.fbDelete(it.path);
       if (!r.ok) toast(r.error, 'err'); else { toast('Deleted.', 'ok'); await refreshBrowser(); }
       // If the deleted file was the one being previewed, clear the
-      // preview pane — the previous code left a broken <img> with an
+      // preview pane â€” the previous code left a broken <img> with an
       // invalid file:// URL, which Chromium would log as a console
       // error every time the user opened a different file.
       if (!it.isDir && state._selected && state._selected.path === it.path) {
@@ -4871,14 +7887,14 @@ async function promptNewFolder() {
 // Each model has BOTH a daily interval AND a weekly quota:
 //   - current_interval_total_count / current_interval_usage_count
 //   - current_interval_remaining_percent  (sometimes 100% when counts=0/0 even
-//     when the model is not in plan — see MiniMax-AI/cli#173)
+//     when the model is not in plan â€” see MiniMax-AI/cli#173)
 //   - current_interval_status   (1 = in plan, 3 = not in plan)
 //   - current_weekly_total_count / current_weekly_usage_count
 //   - current_weekly_remaining_percent
 //   - current_weekly_status
 //
 // Old display logic showed "X% this week" and called anything with total=0
-// "not in plan" — but the *_status field is the source of truth, AND for
+// "not in plan" â€” but the *_status field is the source of truth, AND for
 // some models (e.g. video) the *daily* interval is what matters. We now:
 //   - use *_status to decide plan inclusion
 //   - show BOTH daily + weekly segments when both have non-zero totals
@@ -4889,11 +7905,11 @@ function _quotaSeg(name, used, total, label) {
   const remaining = Math.max(0, total - used);
   const usedPct = Math.round((used / total) * 100);
   const cls = usedPct >= 90 ? 'quota-low' : (usedPct >= 50 ? 'quota-warn' : '');
-  return `<span class="${cls}" title="${escapeHtml(`${name} · ${label}: ${used}/${total} (${usedPct}% used)`)}">${used}/${total} ${label} <small>(${usedPct}%)</small></span>`;
+  return `<span class="${cls}" title="${escapeHtml(`${name} Â· ${label}: ${used}/${total} (${usedPct}% used)`)}">${used}/${total} ${label} <small>(${usedPct}%)</small></span>`;
 }
 function _formatQuotaModel(m) {
   const name = m.model_name || m.name || m.model || '?';
-  // All values are rendered into innerHTML below — escape to avoid XSS via a
+  // All values are rendered into innerHTML below â€” escape to avoid XSS via a
   // hostile model name returned by the API.
   const e = (s) => escapeHtml(String(s == null ? '' : s));
   // mmx quota fields have changed between versions. Read them with a few
@@ -4908,7 +7924,7 @@ function _formatQuotaModel(m) {
   const wPct    = m.current_weekly_remaining_percent ?? m.weekly_remaining_percent;
   // "Not in plan" only when BOTH statuses are explicitly 3. (The previous
   // version also matched `null`, which mis-classified every model that
-  // didn't return a status field — that's why the user saw "general: not
+  // didn't return a status field â€” that's why the user saw "general: not
   // in plan" even though generations worked.) The remaining_percent fields
   // are then used as a fallback so the user still sees *something* useful.
   const explicitlyNotInPlan =
@@ -4924,7 +7940,7 @@ function _formatQuotaModel(m) {
   if (parts.length === 0) {
     // In plan but no counts (e.g. general returned 0/0 with status=1).
     // Fall back to the *_remaining_percent field (note: this is "remaining"
-    // percent — invert it to show "used" percent, which the user expects).
+    // percent â€” invert it to show "used" percent, which the user expects).
     const segs = [];
     if (iPct != null) {
       const usedPct = 100 - iPct;
@@ -4941,15 +7957,15 @@ function _formatQuotaModel(m) {
       // a hint so the user knows we got something, just no counters.
       return `<span class="quota-in-plan">${e(name)}: in plan</span>`;
     }
-    return `<span class="quota-in-plan">${e(name)}:</span> ${segs.join(' · ')}`;
+    return `<span class="quota-in-plan">${e(name)}:</span> ${segs.join(' Â· ')}`;
   }
-  return parts.join(' · ');
+  return parts.join(' Â· ');
 }
 async function refreshQuota() {
   const el2 = $('#quota-value');
   el2.innerHTML = '<span class="spinner"></span>';
   const r = await window.api.quota();
-  if (!r.ok) { el2.textContent = r.error || '—'; return; }
+  if (!r.ok) { el2.textContent = r.error || 'â€”'; return; }
   // The mmx CLI has returned the quota in a few different shapes depending
   // on the version. Try the documented one first (`model_remains` at root
   // or under `data`), then fall back to other common shapes.
@@ -4962,272 +7978,532 @@ async function refreshQuota() {
     else if (Array.isArray(data.quota)) models = data.quota;
   }
   if (!models || !models.length) {
-    // No recognizable models — log the raw response so the user can see
+    // No recognizable models â€” log the raw response so the user can see
     // exactly what the API is returning (helps diagnose shape changes
     // between mmx-cli versions). Truncate to keep the log readable.
     try {
       const raw = JSON.stringify(data).slice(0, 4000);
-      log(`[quota] unexpected response shape — raw: ${raw}${raw.length >= 4000 ? '…' : ''}`);
+      log(`[quota] unexpected response shape â€” raw: ${raw}${raw.length >= 4000 ? 'â€¦' : ''}`);
     } catch (_) { /* ignore circular refs etc. */ }
     el2.textContent = 'no data';
     return;
   }
   const parts = models.map(_formatQuotaModel);
-  el2.innerHTML = parts.join(' · ');
+  el2.innerHTML = parts.join(' Â· ');
 }
 
 // ----------------- Settings -----------------
-function openSettings() {
-  showModal((m, close) => {
-    m.appendChild(el('h2', {}, 'Settings'));
-    m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px;' }, 'Config is stored in config.txt next to the executable. API key is never embedded in the binary.'));
-
-    // API key. We use the showRevealableKey helper so the real
-    // key is hidden behind a "Show" toggle by default — see the
-    // comment on the helper for the security rationale. The
-    // input's value is always the real key, never the masked
-    // one, so a Save with no edits works as before.
-    const apiKeyRow = showRevealableKey(state.config.api_key || '', {
-      placeholder: 'sk-cp-xxxxxxxx',
-      label: 'API key (MiniMax Token Plan)',
-    });
-    const apiInput = apiKeyRow.input;
-    const outInput = el('input', { type: 'text', value: state.config.output_dir || '', placeholder: '(default: ./generated/)' });
-    const regInput = el('select', {});
-    for (const r of ['global', 'cn']) regInput.appendChild(el('option', { value: r }, r));
-    regInput.value = state.config.region || 'global';
-
-    m.appendChild(apiKeyRow.row);
-    m.appendChild(el('div', { class: 'row' }, [
-      el('label', {}, 'Output directory'),
-      el('div', { class: 'combo' }, [outInput, el('button', { class: 'btn-mini', onclick: async () => { const p = await window.api.pickFolder(); if (p) outInput.value = p; } }, 'Browse…')]),
-    ]));
-    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Region'), regInput]));
-
-    // Keyboard shortcuts reference
-    const shortcutsBox = el('div', { class: 'shortcuts-box' });
-    shortcutsBox.appendChild(el('h4', {}, '⌨ Keyboard shortcuts'));
-    const shortcuts = [
-      ['Ctrl+Enter', 'Generate on the active tab'],
-      ['Ctrl+1 / 2 / 3 / 4', 'Switch to Image / Speech / Music / Video'],
-      ['Ctrl+B', 'Open BatchGen for the active tab'],
-      ['Ctrl+T', 'Open Style Settings'],
-      ['Ctrl+S', 'Open this Settings dialog'],
-      ['Ctrl+L', 'Toggle dark / light mode'],
-      ['Ctrl+F', 'Focus the file-browser filter'],
-      ['Ctrl+R', 'Refresh quota'],
-    ];
-    for (const [keys, desc] of shortcuts) {
-      const row = el('div', { class: 'shortcut-row' }, [
-        el('kbd', {}, keys),
-        el('span', {}, desc),
-      ]);
-      shortcutsBox.appendChild(row);
+// showSettingsAndSwitchTab(tabId) opens the Settings dialog and
+// immediately switches to the named tab. Used by the legacy
+// standalone helpers (showPopupSettings, showRealesrganSettings)
+// that were replaced by inline tabs in the multi-tab layout.
+// The function still uses the same `id: 'settings'` slot as
+// openSettings() so the modal-stack dedup guarantees we don't
+// open two settings dialogs.
+function showSettingsAndSwitchTab(tabId) {
+  // Close the existing settings dialog (if any) before opening
+  // a new one with the requested tab active. We can't just
+  // activate the existing dialog's tab from here because the
+  // tab buttons live inside its DOM scope.
+  for (let i = _modalStack.length - 1; i >= 0; i--) {
+    if (_modalStack[i] && _modalStack[i].id === 'settings') {
+      try { _modalStack[i].close(); } catch (_) {}
+      break;
     }
-    m.appendChild(shortcutsBox);
+  }
+  openSettings();
+  // The modal is rendered synchronously inside openSettings, so
+  // the tab buttons are already in the DOM. Find the requested
+  // one and click it (which fires the same activateSettingsTab
+  // path a real user click would).
+  setTimeout(() => {
+    const btn = document.querySelector(`.settings-tab-button[data-tab-button="${tabId}"]`);
+    if (btn) btn.click();
+  }, 0);
+}
+function openSettings() {
+  // Multi-tab settings dialog. The previous version was a
+  // single big modal plus two layered modals on top (Real-ESRGAN
+  // + Popups) that the user had to dismiss in order. That got
+  // messy fast â€” closing the inner modal left an inconsistent
+  // half-saved settings dialog, and the layered stack could
+  // trap the focus on the wrong sub-section. The new layout is
+  // one modal with a sidebar of tabs (General / Image /
+  // Styles / Popups / Shortcuts). Switching tabs swaps the
+  // pane content without ever stacking a second modal.
+  showModal((m, close) => {
+    m.classList.add('settings-modal');
+    m.appendChild(el('h2', {}, 'âš™ Settings'));
+    m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+      'All your settings (API key, output folder, region, theme, styles, image pipeline, popups) are stored in config.txt next to the executable. Your API key is never sent to the cloud by this tool, never embedded in the binary, and is masked in the log pane by default. Click any tab on the left to switch sections.'));
 
-    const cp = el('div', { class: 'row' }, [el('label', {}, 'Config file'), el('input', { type: 'text', value: '', readonly: '' })]);
-    window.api.configPath().then((p) => { cp.querySelector('input').value = p; });
-    m.appendChild(cp);
+    // Build the tabbed layout. We render all panes up front
+    // and toggle a hidden class so switching tabs is instant
+    // (no re-render) and any half-filled inputs survive a
+    // round trip between tabs.
+    const layout = el('div', { class: 'settings-tabs' });
+    const sidebar = el('div', { class: 'settings-tabs-sidebar' });
+    const paneHost = el('div', { class: 'settings-tabs-panehost' });
 
-    const test = el('button', { class: 'btn-mini' }, 'Test connection');
-    const diag = el('button', { class: 'btn-mini' }, 'Diagnose');
-    const save = el('button', { class: 'primary' }, 'Save');
-    const cancel = el('button', { onclick: close }, 'Cancel');
-    test.addEventListener('click', async () => {
-      test.disabled = true; test.innerHTML = '<span class="spinner"></span> Testing…';
-      const r = await window.api.authStatus();
-      test.disabled = false; test.textContent = 'Test connection';
-      if (r.ok) {
-        toast((r.message || 'Authentication OK.') + (r.command ? `  (via ${r.command})` : ''), 'ok', 4000);
-      } else {
-        toast('Auth failed: ' + (r.error || 'unknown error'), 'err', 6000);
+    const tabDefs = [
+      { id: 'general',  label: 'ðŸ”‘ General',     build: () => buildSettingsGeneralPane() },
+      { id: 'image',    label: 'ðŸ–¼ Image',        build: () => buildSettingsImagePane() },
+      { id: 'styles',   label: 'ðŸŽ¨ Style presets', build: () => buildSettingsStylesPane() },
+      { id: 'popups',   label: 'ðŸ’¬ Popups',        build: () => buildSettingsPopupsPane() },
+      { id: 'shortcuts',label: 'âŒ¨ Shortcuts',      build: () => buildSettingsShortcutsPane() },
+    ];
+    const panes = {};
+    const tabButtons = {};
+    for (const tdef of tabDefs) {
+      const pane = el('div', { class: 'settings-tab-pane', 'data-tab-pane': tdef.id });
+      const built = tdef.build();
+      pane.appendChild(built.root);
+      panes[tdef.id] = { el: pane, instance: built.instance };
+      paneHost.appendChild(pane);
+      const tabBtn = el('button', { class: 'settings-tab-button', 'data-tab-button': tdef.id, type: 'button' }, tdef.label);
+      tabBtn.addEventListener('click', () => activateSettingsTab(tdef.id));
+      tabButtons[tdef.id] = tabBtn;
+      sidebar.appendChild(tabBtn);
+    }
+    layout.appendChild(sidebar);
+    layout.appendChild(paneHost);
+    m.appendChild(layout);
+
+    // Save / cancel buttons act on every pane (whichever is
+    // currently visible â€” we collect pending changes into a
+    // single setConfig call on save so config.txt is updated
+    // atomically, just like the old single-modal save).
+    const saveBtn = el('button', { class: 'primary' }, 'Save');
+    const cancelBtn = el('button', { onclick: close }, 'Cancel');
+    saveBtn.addEventListener('click', async () => {
+      const merged = { ...state.config };
+      for (const tdef of tabDefs) {
+        const inst = panes[tdef.id].instance;
+        if (inst && typeof inst.collect === 'function') {
+          Object.assign(merged, inst.collect());
+        }
       }
-    });
-    diag.addEventListener('click', async () => { showDiagnose(); });
-    save.addEventListener('click', async () => {
-      // CRITICAL: merge with the current config — do NOT replace it. The
-      // previous version of this code built a fresh {api_key,output_dir,region}
-      // object which silently dropped `theme` and `styles` on every save.
-      const cfg = {
-        ...state.config,
-        api_key: apiKeyRow.getValue().trim(),
-        output_dir: outInput.value.trim(),
-        region: regInput.value || 'global',
-      };
-      state.config = await window.api.setConfig(cfg);
+      // CRITICAL: merge with the current config â€” do NOT replace it.
+      // The previous version of this code built a fresh
+      // {api_key,output_dir,region} object which silently dropped
+      // `theme` and `styles` on every save. We preserve every
+      // unknown key so future config fields aren't wiped.
+      state.config = await window.api.setConfig(merged);
       toast('Saved.', 'ok');
       close();
       refreshQuota();
       refreshBrowser();
     });
-    m.appendChild(el('div', { class: 'footer' }, [cancel, test, diag, save]));
-  });
+    m.appendChild(el('div', { class: 'footer settings-footer' }, [cancelBtn, saveBtn]));
 
-  // After the main settings popup is built, append a "Image
-  // upscaling" section with Real-ESRGAN status + re-detect + model
-  // selector. This is a second showModal call layered on top of the
-  // outer one — the renderer's modal stack handles Esc to close the
-  // topmost first, so the user gets a clean back-out.
-  showRealesrganSettings();
+    function activateSettingsTab(id) {
+      for (const tdef of tabDefs) {
+        const isActive = tdef.id === id;
+        tabButtons[tdef.id].classList.toggle('active', isActive);
+        panes[tdef.id].el.classList.toggle('active', isActive);
+      }
+    }
+    // Default to the General tab. The previous single-modal
+    // design showed API key first so we keep that ordering.
+    activateSettingsTab('general');
+  }, { id: 'settings' });
 }
 
-// ----------------- Real-ESRGAN settings -----------------
-// A second modal layer inside ⚙ Settings, on top of the regular
-// settings popup. Shows: status (detected / not found / version),
-// a Re-detect button (re-runs the IPC probe in case the user
-// installed the binary after launch), and a model selector. The
-// model choice is persisted to state.json via scheduleStateSave.
-function showRealesrganSettings() {
-  showModal(async (m, close) => {
-    m.classList.add('realesrgan-settings-modal');
-    m.appendChild(el('h2', {}, 'Image upscaling'));
-    m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-      'The built-in pipeline (multi-step createImageBitmap) is always available. Real-ESRGAN (BSD-3-Clause) gives noticeably better detail when the binary is installed.'));
+// ----------------- Settings tab panes -----------------
+// Each pane factory returns { root, instance }. The `instance`
+// object carries a `collect()` method that returns the pane's
+// pending changes as a partial config object â€” the parent
+// `openSettings()` merges these into one setConfig call so the
+// save button works regardless of which tab the user is on.
+//
+// Panes that have no pending state (e.g. Shortcuts) return
+// { root, instance: null }.
 
-    // Status row. We probe once on open, then a "Re-detect" button
-    // re-runs the probe.
-    const statusText = el('div', { class: 're-status' }, 'Detecting…');
-    const reBtn = el('button', { class: 'btn-mini' }, 'Re-detect');
-    // Status row also carries a "Download & install" button so the
-    // "Not found" branch is one click away, not a README round-trip.
-    // We keep the button hidden once the binary is detected (no point
-    // offering a re-download) but visible otherwise.
-    const installBtnStatus = el('button', { class: 'btn-mini re-install re-install-inline' }, 'Download & install');
-    installBtnStatus.style.display = 'none';
-    m.appendChild(el('div', { class: 'row' }, [
-      el('label', {}, 'Real-ESRGAN status'), statusText, installBtnStatus, reBtn,
-    ]));
+function buildSettingsGeneralPane() {
+  // API key (with reveal toggle), output dir, region, theme.
+  const root = el('div', {});
+  const apiKeyRow = showRevealableKey(state.config.api_key || '', {
+    placeholder: 'sk-cp-xxxxxxxx  (or your PAYG key)',
+    label: 'API key',
+  });
+  try {
+    const lbl = apiKeyRow.row.querySelector('label');
+    if (lbl) lbl.appendChild(helpButton('settings.apiKey'));
+  } catch (_) {}
+  const outInput = el('input', { type: 'text', value: state.config.output_dir || '', placeholder: '(default: ./generated/)' });
+  const regInput = el('select', {});
+  for (const r of ['global', 'cn']) regInput.appendChild(el('option', { value: r }, r));
+  regInput.value = state.config.region || 'global';
+  const themeSel = el('select', {});
+  for (const [val, lbl] of [['dark', 'Dark'], ['light', 'Light']]) themeSel.appendChild(el('option', { value: val }, lbl));
+  themeSel.value = state.theme || state.config.theme || 'dark';
 
-    // Model selector — same four canonical model names as the
-    // REAL_ESRGAN_MODELS whitelist in upscaleImageFileRealesrgan.
-    const modelSel = el('select', {});
-    for (const [val, lbl] of [
-      ['realesrgan-x4plus', 'realesrgan-x4plus  (general-purpose 4×, default)'],
-      ['realesrgan-x4plus-anime', 'realesrgan-x4plus-anime  (anime / illustration)'],
-      ['realesrgan-animevideov3', 'realesrgan-animevideov3  (video frames)'],
-      ['realesr-general-x4v3', 'realesr-general-x4v3  (latest general, smaller)'],
-    ]) {
-      const opt = el('option', { value: val }, lbl);
-      if (val === (state.realesrganModel || 'realesrgan-x4plus')) opt.selected = true;
-      modelSel.appendChild(opt);
+  root.appendChild(apiKeyRow.row);
+  root.appendChild(el('div', { class: 'row' }, [
+    el('label', {}, ['Output directory', helpButton('settings.outputDir')]),
+    el('div', { class: 'combo' }, [outInput, el('button', { class: 'btn-mini', onclick: async () => { const p = await window.api.pickFolder(); if (p) outInput.value = p; } }, 'Browseâ€¦')]),
+  ]));
+  root.appendChild(el('div', { class: 'row' }, [el('label', {}, ['Region', helpButton('settings.region')]), regInput]));
+  root.appendChild(el('div', { class: 'row' }, [el('label', {}, ['Theme', helpButton('settings.theme')]), themeSel]));
+
+  // Connection-test row (same behaviour as the old inline
+  // buttons). Pushed to the bottom of the pane so the main
+  // fields are visible without scrolling.
+  const test = el('button', { class: 'btn-mini' }, 'Test connection');
+  const diag = el('button', { class: 'btn-mini' }, 'Diagnose');
+  test.addEventListener('click', async () => {
+    test.disabled = true; test.innerHTML = '<span class="spinner"></span> Testingâ€¦';
+    const r = await window.api.authStatus();
+    test.disabled = false; test.textContent = 'Test connection';
+    if (r.ok) {
+      toast((r.message || 'Authentication OK.') + (r.command ? `  (via ${r.command})` : ''), 'ok', 4000);
+    } else {
+      toast('Auth failed: ' + (r.error || 'unknown error'), 'err', 6000);
     }
-    modelSel.addEventListener('change', () => {
-      state.realesrganModel = modelSel.value;
-      scheduleStateSave();
-    });
-    m.appendChild(el('div', { class: 'row' }, [
-      el('label', {}, 'Model'), modelSel,
-    ]));
+  });
+  diag.addEventListener('click', () => { showDiagnose(); });
+  root.appendChild(el('div', { class: 'settings-pane-actions' }, [test, diag]));
 
-    async function refreshStatus() {
-      statusText.textContent = 'Detecting…';
-      try {
-        const r = await window.api.realesrganAvailable();
-        if (r && r.available) {
-          statusText.textContent = 'Detected: ' + (r.binaryPath || '') +
-            (r.version ? '  (v' + r.version + ')' : '');
-          statusText.style.color = 'var(--success)';
-          // Binary is already present — no point offering another
-          // download. Re-detect is still available.
-          installBtnStatus.style.display = 'none';
-        } else {
-          // The install path is one click away — say so. Telling the
-          // user to "see the README" made the previous version feel
-          // like a dead end, even though the button was on the same
-          // screen.
-          statusText.textContent = 'Not found. Click "Download & install" to add it to ./bin/ automatically.';
-          statusText.style.color = 'var(--fg-2)';
-          installBtnStatus.style.display = '';
-        }
-      } catch (e) {
-        statusText.textContent = 'Probe failed: ' + (e.message || e);
-        statusText.style.color = 'var(--danger)';
+  // Config-file path row (read-only, shows the user where
+  // the file lives on disk so they can back it up).
+  const cp = el('div', { class: 'row' }, [el('label', {}, 'Config file'), el('input', { type: 'text', value: '', readonly: '' })]);
+  root.appendChild(cp);
+  window.api.configPath().then((p) => { cp.querySelector('input').value = p; });
+
+  return {
+    root,
+    instance: {
+      collect() {
+        return {
+          api_key: apiKeyRow.getValue().trim(),
+          output_dir: outInput.value.trim(),
+          region: regInput.value || 'global',
+          theme: themeSel.value || 'dark',
+        };
+      },
+    },
+  };
+}
+
+function buildSettingsImagePane() {
+  // Image pipeline: Real-ESRGAN upscaler status + model
+  // selector, and (in a future change) IS-Net background-
+  // removal status. Wrapped in a single scrollable section so
+  // the pane layout matches the General pane.
+  const root = el('div', {});
+  root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+    'The built-in pipeline is always available. Real-ESRGAN (BSD-3-Clause) gives noticeably better detail when the binary is installed.'));
+
+  // ---- Real-ESRGAN status ----
+  const statusText = el('div', { class: 're-status' }, 'Detectingâ€¦');
+  const reBtn = el('button', { class: 'btn-mini' }, 'ðŸ”„ Re-detect');
+  const installBtnStatus = el('button', { class: 'btn-mini' }, 'â¬‡ Download & install');
+  installBtnStatus.style.display = 'none';
+  root.appendChild(el('div', { class: 'row' }, [
+    el('label', {}, 'Real-ESRGAN upscaler'), statusText, installBtnStatus, reBtn,
+  ]));
+
+  // ---- Real-ESRGAN model selector ----
+  const modelSel = el('select', {});
+  for (const [val, lbl] of [
+    ['realesrgan-x4plus', 'realesrgan-x4plus  (general-purpose 4Ã—, default)'],
+    ['realesrgan-x4plus-anime', 'realesrgan-x4plus-anime  (anime / illustration)'],
+    ['realesrgan-animevideov3', 'realesrgan-animevideov3  (video frames)'],
+    ['realesr-general-x4v3', 'realesr-general-x4v3  (latest general, smaller)'],
+  ]) {
+    const opt = el('option', { value: val }, lbl);
+    if (val === (state.realesrganModel || 'realesrgan-x4plus')) opt.selected = true;
+    modelSel.appendChild(opt);
+  }
+  modelSel.addEventListener('change', () => {
+    state.realesrganModel = modelSel.value;
+    scheduleStateSave();
+  });
+  root.appendChild(el('div', { class: 'row' }, [
+    el('label', {}, 'Upscale model'), modelSel,
+  ]));
+
+  // ---- One-click installer ----
+  const installBtn = el('button', { class: 'btn-mini' }, 'â¬‡ Download Real-ESRGAN');
+  const installProgress = el('div', { class: 're-progress' });
+  installProgress.style.display = 'none';
+  installProgress.style.color = 'var(--fg-2)';
+  installProgress.style.fontSize = '12px';
+  root.appendChild(el('div', { class: 'row' }, [
+    el('label', {}, 'One-click install'),
+    el('div', { style: 'display: flex; gap: 8px; align-items: center; flex-wrap: wrap;' }, [installBtn, installProgress]),
+  ]));
+
+  async function refreshStatus() {
+    statusText.textContent = 'Detectingâ€¦';
+    try {
+      const r = await window.api.realesrganAvailable();
+      if (r && r.available) {
+        const v = r.version ? '  (v' + r.version + ')' : '';
+        statusText.textContent = 'Detected: ' + (r.binaryPath || '') + v;
+        statusText.style.color = 'var(--success)';
+        installBtnStatus.style.display = 'none';
+      } else {
+        statusText.textContent = 'Not found. Click "Download & install" to add it to ./bin/ automatically.';
+        statusText.style.color = 'var(--fg-2)';
         installBtnStatus.style.display = '';
       }
+    } catch (e) {
+      statusText.textContent = 'Probe failed: ' + (e.message || e);
+      statusText.style.color = 'var(--danger)';
+      installBtnStatus.style.display = '';
     }
-    reBtn.addEventListener('click', () => { refreshStatus(); });
-    refreshStatus();
+  }
+  reBtn.addEventListener('click', () => { refreshStatus(); });
+  refreshStatus();
 
-    // One-click install of the Real-ESRGAN binary into ./bin/.
-    // Downloads the latest BSD-3-licensed release from GitHub via
-    // the main process, extracts with PowerShell's Expand-Archive,
-    // then re-probes availability so the status row above flips
-    // from "Not found" → "Detected: .../bin/realesrgan-ncnn-vulkan".
-    const installBtn = el('button', { class: 'btn-mini re-install' }, 'Download Real-ESRGAN');
-    const installProgress = el('div', { class: 're-progress' });
-    installProgress.style.display = 'none';
-    installProgress.style.color = 'var(--fg-2)';
-    installProgress.style.fontSize = '12px';
-    // Shared install handler so the inline button next to the status
-    // row AND the row below both trigger the same flow. Without this
-    // the two buttons would have to duplicate the progress-wiring
-    // code, and a future bug-fix to one wouldn't reach the other.
-    async function runInstall() {
-      installBtn.disabled = true;
-      reBtn.disabled = true;
-      installBtnStatus.disabled = true;
-      installProgress.style.display = '';
-      installProgress.textContent = 'Starting download…';
-      const offProgress = window.api.onRealesrganDownloadProgress((data) => {
-        if (data.phase === 'download') {
-          if (data.total > 0) {
-            const pct = (data.downloaded / data.total) * 100;
-            const mb = (data.downloaded / 1024 / 1024).toFixed(1);
-            const totalMb = (data.total / 1024 / 1024).toFixed(1);
-            installProgress.textContent = `Downloading… ${mb} / ${totalMb} MB (${pct.toFixed(0)}%)`;
-          } else {
-            installProgress.textContent = 'Downloading…';
-          }
-        } else if (data.phase === 'extract') {
-          installProgress.textContent = 'Extracting…';
-        } else if (data.phase === 'done') {
-          installProgress.textContent = 'Done. Refreshing status…';
-        }
-      });
-      try {
-        const r = await window.api.realesrganDownload();
-        offProgress();
-        if (r && r.ok) {
-          installProgress.textContent = 'Installed to ' + (r.binDir || './bin') + '. Re-detecting…';
-          await refreshStatus();
-          // After success, the inline button hides itself (handled
-          // by refreshStatus). The dedicated row below can stay
-          // around as a "reinstall" affordance in case the user
-          // later deletes ./bin/realesrgan-ncnn-vulkan manually.
+  async function runInstall() {
+    installBtn.disabled = true;
+    reBtn.disabled = true;
+    installBtnStatus.disabled = true;
+    installProgress.style.display = '';
+    installProgress.textContent = 'Starting downloadâ€¦';
+    const offProgress = window.api.onRealesrganDownloadProgress((data) => {
+      if (data.phase === 'download') {
+        if (data.total > 0) {
+          const pct = (data.downloaded / data.total) * 100;
+          const mb = (data.downloaded / 1024 / 1024).toFixed(1);
+          const totalMb = (data.total / 1024 / 1024).toFixed(1);
+          installProgress.textContent = `Downloadingâ€¦ ${mb} / ${totalMb} MB (${pct.toFixed(0)}%)`;
         } else {
-          installProgress.textContent = 'Download failed: ' + ((r && r.error) || 'unknown');
-          installProgress.style.color = 'var(--danger)';
+          installProgress.textContent = 'Downloadingâ€¦';
         }
-      } catch (e) {
-        offProgress();
-        installProgress.textContent = 'Download failed: ' + (e && e.message || e);
-        installProgress.style.color = 'var(--danger)';
-      } finally {
-        installBtn.disabled = false;
-        reBtn.disabled = false;
-        installBtnStatus.disabled = false;
+      } else if (data.phase === 'extract') {
+        installProgress.textContent = 'Extractingâ€¦';
+      } else if (data.phase === 'done') {
+        installProgress.textContent = 'Done. Refreshing statusâ€¦';
       }
+    });
+    try {
+      const r = await window.api.realesrganDownload();
+      offProgress();
+      if (r && r.ok) {
+        installProgress.textContent = 'Installed to ' + (r.binDir || './bin') + '. Re-detectingâ€¦';
+        await refreshStatus();
+      } else {
+        installProgress.textContent = 'Download failed: ' + ((r && r.error) || 'unknown');
+        installProgress.style.color = 'var(--danger)';
+      }
+    } catch (e) {
+      offProgress();
+      installProgress.textContent = 'Download failed: ' + (e && e.message || e);
+      installProgress.style.color = 'var(--danger)';
+    } finally {
+      installBtn.disabled = false;
+      reBtn.disabled = false;
+      installBtnStatus.disabled = false;
     }
-    installBtn.addEventListener('click', runInstall);
-    installBtnStatus.addEventListener('click', runInstall);
-    const installRow = el('div', { class: 'row' }, [
-      el('label', {}, 'Install (one-click)'),
-      el('div', { style: 'display: flex; gap: 6px; align-items: center;' }, [installBtn, installProgress]),
-    ]);
-    m.appendChild(installRow);
+  }
+  installBtn.addEventListener('click', runInstall);
+  installBtnStatus.addEventListener('click', runInstall);
 
-    m.appendChild(el('div', { class: 'footer' }, [
-      el('button', { class: 'primary', onclick: close }, 'Done'),
-    ]));
-  });
+  // ---- Optional add-ons link (opens the addons popup so the
+  // user can install IS-Net + the model file). Kept as a
+  // separate popup because the addons install can stream
+  // progress for minutes; embedding it in the settings pane
+  // would freeze the rest of the dialog. ----
+  const openAddonsBtn = el('button', { class: 'btn-mini' }, 'ðŸ§© Open add-ons installer');
+  openAddonsBtn.addEventListener('click', () => openOptionalAddons({ force: true }).catch(() => {}));
+  root.appendChild(el('div', { class: 'row' }, [
+    el('label', {}, 'Optional add-ons'),
+    openAddonsBtn,
+  ]));
+
+  // The pane does not modify config.txt directly â€” its writes
+  // go to state.json (realesrganModel), so collect() returns
+  // an empty object. The save button still works.
+  return { root, instance: { collect: () => ({}) } };
 }
 
+function buildSettingsStylesPane() {
+  // The style-presets pane shows the existing list with
+  // add/edit/delete + the "Save current prompt as style"
+  // button. Implemented as a thin wrapper that calls the
+  // existing openStyleSettings() modal â€” but here we render
+  // the same UI inline so the user doesn't have to dismiss a
+  // second modal to save settings.
+  const root = el('div', {});
+  root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+    'Style presets are short text snippets (a genre, mood, camera hint) that get prepended to every prompt so you can keep the same look across many generations without retyping.'));
+
+  // Render the list
+  const list = el('ul', { class: 'style-list' });
+  function renderList() {
+    list.innerHTML = '';
+    const styles = state.config.styles || [];
+    if (!styles.length) {
+      list.appendChild(el('li', { class: 'empty-row' }, 'No styles yet. Add one below, or click "Save current prompt as style".'));
+      return;
+    }
+    styles.forEach((s, i) => {
+      const actions = el('div', { class: 'sactions' }, [
+        el('button', { class: 'btn-mini', onclick: () => { editStyle(i); } }, 'âœŽ'),
+        el('button', { class: 'btn-mini danger', onclick: () => { deleteStyle(i, () => { renderList(); }); } }, 'âœ•'),
+      ]);
+      list.appendChild(el('li', {}, [
+        el('div', {}, [
+          el('div', { class: 'sname' }, s.name),
+          el('div', { class: 'sval' }, s.value),
+        ]),
+        actions,
+      ]));
+    });
+  }
+  renderList();
+  root.appendChild(list);
+
+  const nameInput = el('input', { type: 'text', placeholder: 'Style name (e.g. "Pixel Art Berlin")' });
+  const valInput = el('textarea', { placeholder: 'Style value â€” the text that gets prepended to your prompt (e.g. "Pixel art, neon red lighting, dramatic shadows")' });
+  valInput.style.minHeight = '70px';
+  const editingIdx = { value: -1 };
+  root.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Name'), nameInput]));
+  root.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Value (prepended to your prompt)'), valInput]));
+
+  function editStyle(i) {
+    const s = (state.config.styles || [])[i];
+    if (!s) return;
+    editingIdx.value = i;
+    nameInput.value = s.name;
+    valInput.value = s.value;
+  }
+  // (deleteStyle is shared with the standalone popup â€” it
+  // already calls persistStyles on the renderer's state.)
+  const saveBtn = el('button', { class: 'btn-mini' }, 'ðŸ’¾ Save style');
+  const saveCurrentBtn = el('button', { class: 'btn-mini' }, 'âœš Save current prompt as styleâ€¦');
+  saveBtn.addEventListener('click', async () => {
+    const name = nameInput.value.trim();
+    const value = valInput.value.trim();
+    if (!name) { toast('Name is required.', 'warn'); return; }
+    if (!value) { toast('Value is required.', 'warn'); return; }
+    if (name.includes('=')) { toast('Style name cannot contain "=" (would break config parsing).', 'err'); return; }
+    const styles = state.config.styles || [];
+    if (editingIdx.value >= 0) styles[editingIdx.value] = { name, value };
+    else styles.push({ name, value });
+    await persistStyles();
+    _refreshAllStyleDropdowns();
+    renderList();
+    toast(`Saved "${name}".`, 'ok');
+    nameInput.value = ''; valInput.value = '';
+    editingIdx.value = -1;
+  });
+  saveCurrentBtn.addEventListener('click', () => {
+    // Pull the active tab's manual prompt into the value
+    // field. The standalone popup does the same.
+    const cur = _currentManualText();
+    if (!cur) { toast('Active tab has no prompt to save.', 'warn'); return; }
+    valInput.value = cur;
+    if (!nameInput.value.trim()) nameInput.value = 'My style';
+    nameInput.focus();
+  });
+  root.appendChild(el('div', { class: 'settings-pane-actions' }, [saveBtn, saveCurrentBtn]));
+
+  return { root, instance: null /* styles persist immediately on save */ };
+}
+
+function buildSettingsPopupsPane() {
+  // Popups policy + reset history (was the standalone popup).
+  const root = el('div', {});
+  root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+    'Control how often the optional popups appear: the welcome screen on every fresh launch, the first-time setup, the optional add-ons installer, and the per-tab intro messages.'));
+
+  const polSel = el('select', { class: 'popup-policy-select' });
+  for (const [val, lbl] of [
+    ['once-fresh',  'Show once to fresh users, then never (default)'],
+    ['per-session', 'Show first time each app start'],
+    ['never',       'Never show these popups'],
+    ['always',      'Always show (even after dismissal)'],
+  ]) polSel.appendChild(el('option', { value: val }, lbl));
+  polSel.value = state.popupPolicy || 'once-fresh';
+  polSel.addEventListener('change', () => { state.popupPolicy = polSel.value; scheduleStateSave(); });
+  root.appendChild(el('div', { class: 'row' }, [
+    el('label', {}, ['Popup behaviour', helpButton('settings.popupPolicy')]),
+    polSel,
+  ]));
+
+  const resetBtn = el('button', { class: 'btn-mini' }, 'ðŸ”„ Reset popup history');
+  resetBtn.addEventListener('click', async () => {
+    if (!confirm('Reset all popup "seen" history? Every popup will fire again the next time it is triggered (until you dismiss it).')) return;
+    resetPopupSeen();
+    toast('Popup history reset.', 'ok');
+    refreshSeenCount();
+  });
+  const seenSpan = el('span', { style: 'color: var(--fg-3); font-size: 11px;' }, '');
+  function refreshSeenCount() {
+    const seenCount = (state.seenPopups && typeof state.seenPopups === 'object') ? Object.keys(state.seenPopups).length : 0;
+    seenSpan.textContent = `Currently remembers ${seenCount} popup${seenCount === 1 ? '' : 's'} as seen.`;
+  }
+  refreshSeenCount();
+  root.appendChild(el('div', { class: 'row' }, [
+    el('label', {}, 'Reset'),
+    el('div', { style: 'display: flex; gap: 8px; align-items: center;' }, [resetBtn, seenSpan]),
+  ]));
+
+  return { root, instance: { collect: () => ({}) /* popupPolicy lives in state.json */ } };
+}
+
+function buildSettingsShortcutsPane() {
+  // Read-only keyboard shortcut reference. Lives in the
+  // settings dialog so the user doesn't have to dig through
+  // the README.
+  const root = el('div', {});
+  root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+    'Keyboard shortcuts work from anywhere in the app (no need to click into a specific tab first).'));
+  const box = el('div', { class: 'shortcuts-box' });
+  box.appendChild(el('h4', {}, 'âŒ¨ Keyboard shortcuts'));
+  const shortcuts = [
+    ['Ctrl+Enter', 'Generate on the active tab'],
+    ['Ctrl+1 / 2 / 3 / 4', 'Switch to Image / Speech / Music / Video'],
+    ['Ctrl+B', 'Open BatchGen for the active tab'],
+    ['Ctrl+T', 'Open Style Settings (also in Settings â†’ Style presets)'],
+    ['Ctrl+S', 'Open this Settings dialog'],
+    ['Ctrl+L', 'Toggle dark / light mode'],
+    ['Ctrl+F', 'Focus the file-browser filter'],
+    ['Ctrl+R', 'Refresh quota'],
+  ];
+  for (const [keys, desc] of shortcuts) {
+    box.appendChild(el('div', { class: 'shortcut-row' }, [
+      el('kbd', {}, keys),
+      el('span', {}, desc),
+    ]));
+  }
+  root.appendChild(box);
+  return { root, instance: null };
+}
+
+// ----------------- Popups settings -----------------
+// Sub-modal inside âš™ Settings that lets the user change the popup
+// display policy (which controls the startup / first-time-setup /
+// optional-addons / tab-intro popups) and reset the "seen" history
+// so every popup fires again on the next trigger. Persisted to
+// state.json via scheduleStateSave â€” the policy itself is part of
+// state.popupPolicy, and the seen record is state.seenPopups.
+function showPopupSettings() {
+  // Removed: the standalone Popups modal was replaced by the
+  // Popups tab inside the new multi-tab Settings dialog
+  // (buildSettingsPopupsPane). The function stub remains so
+  // any stale references don't crash, but it just opens the
+  // settings dialog and switches to the Popups tab.
+  showSettingsAndSwitchTab('popups');
+}
+
+// ----------------- Diagnose dialog -----------------
+// Read-only diagnostic dump that walks the user through what the
+// app sees on their machine: platform, Electron + Node versions,
+// the node.exe and CLI entry it found, API key presence, region.
+// Opened from the "Diagnose" button in ⚙ Settings → General.
+// Useful when "Test connection" fails and the user wants to know
+// which prerequisite is missing (e.g. mmx-cli not installed,
+// node.js not on PATH, wrong region).
 function showDiagnose() {
   showModal(async (m, close) => {
-    m.appendChild(el('h2', {}, 'Diagnose mmx setup'));
+    m.appendChild(el('h2', {}, 'Diagnose'));
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-      'This shows what the app sees on your machine. Useful when "Test connection" fails.'));
+      'Shows what the app sees on your machine. Useful when "Test connection" fails — copy the output and share it with support if you need help.'));
     const box = el('pre', { style: 'background: var(--bg-3); padding: 10px; border-radius: var(--radius); font-size: 12px; white-space: pre-wrap; max-height: 50vh; overflow: auto;' }, 'Loading…');
     m.appendChild(box);
 
@@ -5242,1597 +8518,29 @@ function showDiagnose() {
       `API key present:        ${d.apiKeyPresent ? 'yes' : 'no'}`,
       `API key length:         ${d.apiKeyLength} chars`,
       '',
-      d.error ? `⚠ ${d.error}` : '✓ All mmx prerequisites found.',
+      d.error ? '⚠ ' + d.error : '✓ All prerequisites found.',
     ];
     box.textContent = lines.join('\n');
 
     if (d.nodePath && d.mmxEntry) {
-      // Also run a real test
-      const test = el('button', { class: 'btn-mini' }, 'Run real mmx quota test');
+      const test = el('button', { class: 'btn-mini' }, 'Run real quota test');
       m.appendChild(el('div', { style: 'margin-top: 12px;' }, test));
       const out = el('pre', { style: 'background: var(--bg-3); padding: 10px; border-radius: var(--radius); font-size: 12px; white-space: pre-wrap; max-height: 200px; overflow: auto; margin-top: 8px; display: none;' });
       m.appendChild(out);
       test.addEventListener('click', async () => {
         test.disabled = true; test.innerHTML = '<span class="spinner"></span> Running…';
         out.style.display = 'block';
-        out.textContent = 'Calling mmx quota --output json…\n';
+        out.textContent = 'Running quota check…\n';
         const r = await window.api.authStatus();
         out.textContent += `exit code: ${r.code ?? 'n/a'}\n`;
         out.textContent += `ok flag:   ${r.ok}\n`;
         out.textContent += `error:     ${r.error || '(none)'}\n`;
         out.textContent += `command:   ${r.command || '(none)'}\n`;
         if (r.argv) out.textContent += `argv:      ${r.argv.join(' ')}\n`;
-        test.disabled = false; test.textContent = 'Run real mmx quota test';
+        test.disabled = false; test.textContent = 'Run real quota test';
       });
     }
 
     m.appendChild(el('div', { class: 'footer' }, el('button', { onclick: close }, 'Close')));
   });
 }
-
-// ----------------- Style Settings modal -----------------
-// (Style dropdown refresh moved next to refreshTabStatusDots — it now
-// queries the DOM by class instead of tracking a Set of references, so
-// detached dropdowns are never iterated and there's no leak.)
-
-function _currentManualText() {
-  // Grab the current tab's manual prompt textarea value
-  const tab = state.currentTab;
-  const root = $(`#tab-${tab}`);
-  if (!root) return '';
-  const ta = root.querySelector('textarea');
-  return ta ? ta.value.trim() : '';
-}
-
-function openStyleSettings(returnToTab) {
-  showModal((m, close) => {
-    m.appendChild(el('h2', {}, 'Style Settings'));
-    m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-      'Stored in config.txt → [styles] section. Each preset is prepended (with a comma) to your manual prompt. Example: a preset "Pixel Art Berlin" with value "Pixel art, neon red lighting" + manual input "Berliner Straßenkiller" → "Pixel art, neon red lighting, Berliner Straßenkiller".'));
-
-    const ul = el('ul', { class: 'style-list' });
-    function renderList() {
-      ul.innerHTML = '';
-      const styles = state.config.styles || [];
-      if (!styles.length) {
-        ul.appendChild(el('li', { class: 'empty-row' }, 'No styles yet. Add one below, or click "Save current as style".'));
-        return;
-      }
-      styles.forEach((s, i) => {
-        const actions = el('div', { class: 'sactions' }, [
-          el('button', { class: 'btn-mini', onclick: () => { editStyle(i, returnToTab); } }, '✎'),
-          el('button', { class: 'btn-mini danger', onclick: () => { deleteStyle(i, () => { renderList(); }); } }, '✕'),
-        ]);
-        const li = el('li', {}, [
-          el('div', {}, [
-            el('div', { class: 'sname' }, s.name),
-            el('div', { class: 'sval' }, s.value),
-          ]),
-          actions,
-        ]);
-        ul.appendChild(li);
-      });
-    }
-    renderList();
-    m.appendChild(ul);
-
-    // New / Edit form
-    const editingIdx = { value: -1 };
-    const nameInput = el('input', { type: 'text', placeholder: 'Style name (e.g. "Pixel Art Berlin")' });
-    const valInput = el('textarea', { placeholder: 'Style value — the text that gets prepended to your prompt (e.g. "Pixel art, neon red lighting, dramatic shadows")' });
-    valInput.style.minHeight = '70px';
-    const formHeader = el('h3', { style: 'margin: 14px 0 6px; font-size: 13px;' }, 'Add / edit style');
-    m.appendChild(formHeader);
-    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Name'), nameInput]));
-    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Value (prepended to your prompt)'), valInput]));
-
-    function editStyle(i, tabKey) {
-      const s = (state.config.styles || [])[i];
-      if (!s) return;
-      editingIdx.value = i;
-      nameInput.value = s.name;
-      valInput.value = s.value;
-      // jump to the right tab to remind the user which context
-      if (tabKey && tabKey !== state.currentTab) showTab(tabKey);
-      nameInput.focus();
-    }
-    function deleteStyle(i, after) {
-      const styles = state.config.styles || [];
-      if (i < 0 || i >= styles.length) return;
-      const removed = styles.splice(i, 1)[0];
-      persistStyles().then(() => { _refreshAllStyleDropdowns(); after && after(); toast(`Removed "${removed.name}".`, 'ok'); });
-    }
-    async function persistStyles() {
-      state.config.styles = state.config.styles || [];
-      await window.api.setConfig(state.config);
-    }
-
-    const saveBtn = el('button', { class: 'primary' }, 'Save style');
-    const saveCurrentBtn = el('button', {}, 'Save current prompt as style…');
-    const cancelBtn = el('button', { onclick: close }, 'Close');
-
-    saveBtn.addEventListener('click', async () => {
-      const name = nameInput.value.trim();
-      const value = valInput.value.trim();
-      if (!name) { toast('Name is required.', 'warn'); return; }
-      if (!value) { toast('Value is required.', 'warn'); return; }
-      // Reject names that contain '=' — the config.txt format uses the first
-      // '=' on each line to split name/value, so a name with '=' would
-      // silently break the round-trip.
-      if (name.includes('=')) {
-        toast('Style name cannot contain "=" (would break config parsing).', 'err');
-        return;
-      }
-      const styles = state.config.styles || [];
-      if (editingIdx.value >= 0) styles[editingIdx.value] = { name, value };
-      else {
-        // de-dupe by name
-        const existing = styles.findIndex((s) => s.name === name);
-        if (existing >= 0) {
-          if (!confirm(`A style named "${name}" already exists. Overwrite?`)) return;
-          styles[existing] = { name, value };
-        } else {
-          styles.push({ name, value });
-        }
-      }
-      editingIdx.value = -1;
-      nameInput.value = '';
-      valInput.value = '';
-      await persistStyles();
-      _refreshAllStyleDropdowns();
-      renderList();
-      toast('Style saved.', 'ok');
-    });
-
-    saveCurrentBtn.addEventListener('click', () => {
-      const current = _currentManualText();
-      if (!current) { toast('Current tab has no manual prompt text to save.', 'warn'); return; }
-      // suggest a name from the first few words
-      const suggested = current.split(/[,\.\n]/)[0].trim().slice(0, 40) || `Style ${Date.now()}`;
-      nameInput.value = suggested;
-      valInput.value = current;
-      nameInput.focus();
-      nameInput.select();
-    });
-
-    m.appendChild(el('div', { class: 'footer' }, [cancelBtn, saveCurrentBtn, saveBtn]));
-  });
-}
-
-// ----------------- BatchGen helpers -----------------
-
-// Capture the current "momentary task" for a tab: the main prompt
-// text plus a full snapshot of every per-tab form field. This is
-// what the new "Add" button (left of Generate) puts onto the batch
-// queue. The queue can also contain plain-text entries (legacy
-// format, still used by the "Bulk paste" + "+ Add prompt" buttons
-// in the popup) — those are just a string. New snapshot entries
-// are objects with { prompt, settings, ts, label }.
-//
-// The settings snapshot is the same shape captureTabState()
-// returns, so applyTabState() can rehydrate the entire form
-// before the batch runner fires Generate on each entry. That
-// keeps the user's per-entry overrides intact (e.g. a 4× upscale
-// configured when the entry was queued, not the tab's current
-// upscale state when the batch is started).
-function captureBatchEntry(tabKey) {
-  const root = $(`#tab-${tabKey}`);
-  if (!root) return null;
-  // captureTabState walks every input/select/textarea in the tab
-  // and returns { id: value, ... }. The main prompt is in there
-  // (its textarea has an id) but we hoist it to the top level
-  // so the popup can edit it without the user having to remember
-  // which id to target.
-  const raw = captureTabState(tabKey);
-  // Heuristic: the first textarea in the tab is always the main
-  // prompt. (buildParamRow only puts a textarea kind on the main
-  // prompt field; everything else is an enum/number/boolean.)
-  const promptTa = root.querySelector('textarea');
-  const promptId = promptTa ? promptTa.id : null;
-  const prompt = promptId ? (raw[promptId] || '') : '';
-  // Remove the prompt from the settings snapshot — we'll re-apply
-  // the settings first, then overwrite the promptTa.value with
-  // entry.prompt (in case the user edited it in the popup).
-  const settings = Object.assign({}, raw);
-  if (promptId) delete settings[promptId];
-  // The "Target file prefix" is shared across all four tabs and
-  // lives in state.filePrefix, not in any per-tab DOM. The
-  // per-tab inputs have class .file-prefix-input but no id, so
-  // captureTabState (which only walks [id] fields) skips them.
-  // We add it to the entry's settings dict here so the snapshot
-  // includes the prefix and the BatchGen popup's summary tag
-  // (which reads settings.filePrefix) shows it.
-  if (state.filePrefix) settings.filePrefix = state.filePrefix;
-  const entry = {
-    prompt,
-    settings,
-    ts: Date.now(),
-    label: summarizeEntrySettings(settings, tabKey),
-  };
-  // If the upscale-on-Generate flag is on, capture the full upscale
-  // settings (incl. the auto-crop options) so the batch runner
-  // applies the same upscale + crop pipeline per entry. The deep
-  // clone is so a future mutate of state.upscaleSettings doesn't
-  // retroactively change already-queued entries.
-  if (state.upscaleEnabled && state.upscaleSettings) {
-    entry.upscale = JSON.parse(JSON.stringify(state.upscaleSettings));
-  }
-  return entry;
-}
-
-// Normalize a batch entry to the canonical { prompt, settings,
-// ts, label, upscale? } shape. Accepts the legacy string form
-// (prompt only) for backwards compat with old batches.json files.
-function normalizeBatchEntry(e) {
-  if (e == null) return null;
-  if (typeof e === 'string') {
-    return { prompt: e, settings: null, ts: 0, label: '', upscale: null };
-  }
-  if (typeof e === 'object' && typeof e.prompt === 'string') {
-    // Deep-validate the upscale snapshot. A corrupted state.json
-    // could try to inject anything here; we whitelist the keys
-    // and clamp the values to safe defaults. The batch runner
-    // also re-clamps, but doing it here means the popup's
-    // summary tag is accurate.
-    let up = null;
-    if (e.upscale && typeof e.upscale === 'object') {
-      const u = e.upscale;
-      up = {
-        multiplier: Math.max(1, Math.min(8, parseInt(u.multiplier, 10) || 2)),
-        autoCrop: !!(u.autoCrop),
-        cropWidth: Math.max(0, parseInt(u.cropWidth, 10) || 0),
-        cropHeight: Math.max(0, parseInt(u.cropHeight, 10) || 0),
-        cropAnchorX: ['left', 'center', 'right'].includes(u.cropAnchorX) ? u.cropAnchorX : 'center',
-        cropAnchorY: ['top', 'center', 'bottom'].includes(u.cropAnchorY) ? u.cropAnchorY : 'center',
-      };
-    }
-    return {
-      prompt: e.prompt,
-      settings: e.settings && typeof e.settings === 'object' ? e.settings : null,
-      ts: typeof e.ts === 'number' ? e.ts : 0,
-      label: typeof e.label === 'string' ? e.label : summarizeEntrySettings(e.settings || {}, ''),
-      upscale: up,
-    };
-  }
-  return null;
-}
-
-// One-line summary of a settings snapshot for the popup's snapshot
-// tag. The goal is to make snapshot entries visually distinct
-// from legacy plain-text entries, and to give the user a quick
-// "this is what was captured" read at a glance. Unknown / missing
-// settings collapse to an empty tag.
-function summarizeEntrySettings(settings, tabKey) {
-  if (!settings) return '';
-  const parts = [];
-  // Variant count (selected via the variants dropdown — common to
-  // every tab; the id is the tab-prefixed variants select).
-  for (const k of Object.keys(settings)) {
-    const v = settings[k];
-    if (v == null) continue;
-    if (k.endsWith('.variants') || k === 'variants') {
-      const n = parseInt(v, 10);
-      if (n && n > 1) parts.push(`${n} variants`);
-      continue;
-    }
-  }
-  // Tab-specific bits.
-  if (tabKey === 'image') {
-    if (settings['image.model']) parts.push(`model ${settings['image.model']}`);
-    if (settings['image.aspect_ratio'] || settings['image.aspect']) {
-      const a = settings['image.aspect_ratio'] || settings['image.aspect'];
-      if (a) parts.push(a);
-    }
-    if (settings['image.upscale_enabled'] === 'on' || settings['image.upscale_enabled'] === true) {
-      const mult = settings['image.upscale_multiplier'] || settings.upscaleSettings?.multiplier;
-      parts.push(`upscale ${mult || ''}×`.replace(/\s+x\s*$/, '×').trim());
-    }
-  } else if (tabKey === 'speech') {
-    if (settings['speech.model']) parts.push(`model ${settings['speech.model']}`);
-    if (settings['speech.voice']) parts.push(`voice ${settings['speech.voice']}`);
-  } else if (tabKey === 'music') {
-    if (settings['music.model']) parts.push(`model ${settings['music.model']}`);
-    if (settings['music.mode'] === 'instrumental' || settings['music.mode'] === 'instr') {
-      parts.push('instr');
-    }
-  } else if (tabKey === 'video') {
-    if (settings['video.model']) parts.push(`model ${settings['video.model']}`);
-    if (settings['video.duration']) parts.push(`${settings['video.duration']}s`);
-  }
-  // Global "Target file prefix" (mirrored on every tab but the
-  // settings-dict in the snapshot uses the canonical name).
-  const prefix = settings.filePrefix || (tabKey && settings[tabKey + '.filePrefix']);
-  if (prefix) parts.unshift(`"${prefix}"`);
-  return parts.join(' · ');
-}
-
-// Build the "+ Add" button that sits LEFT of Generate on every
-// tab. Clicking it captures the current form state (prompt +
-// every per-tab input/select) via captureBatchEntry(), appends
-// the entry to state.batches[tabKey], persists via the
-// batchesSet IPC, refreshes the tab's "Start Batch" button, and
-// shows a confirmation toast with the queue size.
-function buildAddToBatchBtn(tabKey) {
-  const btn = el('button', {
-    class: 'btn-mini batch-add',
-    title: 'Queue this exact generation (current prompt + all settings) for the batch runner. The snapshot is stored, so each entry runs with the settings you had at queue time, not the ones you have at run time.',
-  }, '+ Add');
-  btn.addEventListener('click', async () => {
-    const entry = captureBatchEntry(tabKey);
-    if (!entry) { toast('Could not capture the current tab state.', 'err'); return; }
-    if (!entry.prompt.trim()) {
-      toast('Prompt is required to queue a generation. Fill in the prompt first.', 'warn', 4000);
-      return;
-    }
-    const cur = state.batches[tabKey] || [];
-    if (cur.length >= 100) { toast('Batch is full (max 100 entries).', 'warn'); return; }
-    const next = [...cur, entry];
-    const r = await window.api.batchesSet({ ...state.batches, [tabKey]: next });
-    if (!r.ok) { toast('Save failed: ' + r.error, 'err'); return; }
-    state.batches = { ...state.batches, [tabKey]: next };
-    const shortPrompt = entry.prompt.length > 30
-      ? entry.prompt.slice(0, 30) + '…'
-      : entry.prompt;
-    toast(`Queued "${shortPrompt}" (${next.length} in queue).`, 'ok', 3000);
-    _refreshBatchButtons();
-  });
-  return btn;
-}
-
-// ----------------- BatchGen Manager -----------------
-// Opens a modal with up to 100 prompt inputs for a single tab.
-// Save persists to batches.json and refreshes the tab's "Start Batch" button.
-function openBatchManager(tabKey) {
-  const tabName = tabKey.charAt(0).toUpperCase() + tabKey.slice(1);
-  // Normalize every entry to the canonical shape so the renderer
-  // doesn't have to special-case legacy strings vs new objects.
-  const current = (state.batches[tabKey] || []).map(normalizeBatchEntry).filter(Boolean);
-  showModal((m, close) => {
-    m.appendChild(el('h2', {}, `BatchGen — ${tabName} Tab`));
-    m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-      `Enter up to 100 prompts/texts. They will be generated one after another with the tab's current options + the selected style preset. Entries with the "📸 snapshot" tag were captured via the new "Add" button on the tab — they remember the form settings (model, upscale, crop, etc.) that were active at queue time and re-apply them before each generation. "Start Batch" runs them sequentially in the tab. "${tabName === 'Video' ? 'Note: your plan includes 3 free video generations per week — the rest will fail with quota errors.' : ''}"`));
-
-    // List of textareas
-    const list = el('div', { class: 'batch-list' });
-    function renderList() {
-      list.innerHTML = '';
-      if (!current.length) {
-        list.appendChild(el('div', { class: 'batch-empty' }, 'No prompts yet. Click "+ Add prompt" below to add a plain-text entry, or use the new "+ Add" button on the tab to capture the full current config.'));
-        return;
-      }
-      current.forEach((entry, i) => {
-        const row = el('div', { class: 'batch-row' });
-        const num = el('div', { class: 'batch-num' }, String(i + 1));
-        // Vertical stack: textarea on top, snapshot tags below.
-        const editor = el('div', { class: 'batch-row-editor' });
-        const ta = el('textarea', {}, entry.prompt);
-        ta.placeholder = tabKey === 'speech' ? 'Text to read…' : 'Prompt for asset…';
-        ta.addEventListener('input', () => { entry.prompt = ta.value; });
-        editor.appendChild(ta);
-        if (entry.upscale && tabKey === 'image') {
-          // Image-only — upscale only makes sense for the image tab.
-          const a = entry.upscale;
-          const autoCropStr = a.autoCrop ? ' · auto-crop' : '';
-          const cropStr = a.autoCrop
-            ? ` (${a.cropWidth || `${a.multiplier}× post-upscale W`} × ${a.cropHeight || `${a.multiplier}× post-upscale H`} @ ${a.cropAnchorX}-${a.cropAnchorY})`
-            : '';
-          const tag = el('div', { class: 'batch-snapshot-tag', title: 'Upscale + auto-crop options captured when this entry was queued. Applied to the generated image after every generation.' },
-            [`🔍 upscale ${a.multiplier}×${autoCropStr}${cropStr}`]);
-          editor.appendChild(tag);
-        }
-        if (entry.label) {
-          const tag = el('div', { class: 'batch-snapshot-tag', title: 'This entry was captured from the current tab state. The form fields will be restored to these values before this entry is generated.' },
-            ['📸 snapshot · ' + entry.label]);
-          editor.appendChild(tag);
-        }
-        const up = el('button', { class: 'btn-mini', title: 'Move up', onclick: () => { if (i > 0) { [current[i-1], current[i]] = [current[i], current[i-1]]; renderList(); } } }, '↑');
-        const down = el('button', { class: 'btn-mini', title: 'Move down', onclick: () => { if (i < current.length-1) { [current[i+1], current[i]] = [current[i], current[i+1]]; renderList(); } } }, '↓');
-        const del = el('button', { class: 'btn-mini danger', title: 'Remove', onclick: () => { current.splice(i, 1); renderList(); } }, '✕');
-        row.append(num, editor, up, down, del);
-        list.appendChild(row);
-      });
-    }
-    renderList();
-    m.appendChild(list);
-
-    // Add / Clear / Paste-many controls
-    const ctrls = el('div', { class: 'row', style: 'margin-top: 8px; flex-direction: row; gap: 6px; align-items: center;' });
-    const addBtn = el('button', { class: 'btn-mini', onclick: () => { if (current.length >= 100) { toast('Max 100 entries.', 'warn'); return; } current.push({ prompt: '', settings: null, ts: Date.now(), label: '', upscale: null }); renderList(); setTimeout(() => { const tas = list.querySelectorAll('textarea'); tas[tas.length-1]?.focus(); }, 0); } }, '+ Add prompt');
-    const clearBtn = el('button', { class: 'btn-mini', onclick: () => { if (current.length && !confirm('Clear all ' + current.length + ' entries?')) return; current.length = 0; renderList(); } }, 'Clear all');
-    const pasteBtn = el('button', { class: 'btn-mini', onclick: () => {
-      const ta = el('textarea', { placeholder: 'Paste one prompt per line, then click Import.' });
-      const dialog = showModal((dm, dclose) => {
-        dm.appendChild(el('h2', {}, 'Bulk import'));
-        dm.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px;' }, 'One prompt per line. Empty lines are ignored.'));
-        dm.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Prompts'), ta]));
-        const ok = el('button', { class: 'primary' }, 'Import');
-        const cancel = el('button', { onclick: dclose }, 'Cancel');
-        dm.appendChild(el('div', { class: 'footer' }, [cancel, ok]));
-        ok.addEventListener('click', async () => {
-          const lines = ta.value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-          const room = 100 - current.length;
-          const toAdd = lines.slice(0, room);
-          for (const l of toAdd) current.push({ prompt: l, settings: null, ts: Date.now(), label: '', upscale: null });
-          dclose();
-          renderList();
-          if (lines.length > room) toast(`Imported ${room} (skipped ${lines.length - room} to stay under 100).`, 'warn');
-          else toast(`Imported ${toAdd.length} prompts.`, 'ok');
-        });
-      });
-    } }, 'Bulk paste…');
-    ctrls.append(addBtn, pasteBtn, clearBtn);
-    m.appendChild(ctrls);
-
-    // Save / Close
-    const save = el('button', { class: 'primary' }, `Save (${current.length})`);
-    const closeBtn = el('button', { onclick: close }, 'Close');
-    save.addEventListener('click', async () => {
-      // Normalize + drop empties + cap at 100. Preserves the
-      // object shape so the per-entry settings survive the round-trip.
-      const cleaned = current
-        .map((e) => ({
-          prompt: String(e.prompt || '').trim(),
-          settings: (e.settings && typeof e.settings === 'object') ? e.settings : null,
-          ts: typeof e.ts === 'number' ? e.ts : 0,
-          label: typeof e.label === 'string' ? e.label : '',
-          upscale: (e.upscale && typeof e.upscale === 'object') ? e.upscale : null,
-        }))
-        .filter((e) => e.prompt.length > 0)
-        .slice(0, 100);
-      if (cleaned.length === 0) {
-        if (!confirm('Save an EMPTY batch (this removes the Start Batch button)?')) return;
-      }
-      const next = { ...state.batches, [tabKey]: cleaned };
-      const r = await window.api.batchesSet(next);
-      if (!r.ok) { toast('Save failed: ' + r.error, 'err'); return; }
-      state.batches = { ...state.batches, [tabKey]: cleaned };
-      toast(`Saved ${cleaned.length} prompt${cleaned.length === 1 ? '' : 's'} for ${tabName}.`, 'ok');
-      _refreshBatchButtons();
-      close();
-    });
-    m.appendChild(el('div', { class: 'footer' }, [closeBtn, save]));
-  });
-}
-
-function _refreshBatchButtons() {
-  // For each tab, render the batch controls based on the current queue.
-  // Empty queue  → single "Setup Batch Mode" button.
-  // Has entries  → "Start BatchGen (N)" + a small "✎" edit button.
-  for (const tabKey of ['image', 'speech', 'music', 'video']) {
-    const root = $(`#tab-${tabKey}`);
-    if (!root) continue;
-    const wrap = root.querySelector('[data-batch-controls]');
-    if (!wrap) continue;
-    const n = (state.batches[tabKey] || []).length;
-    wrap.innerHTML = '';
-    if (n === 0) {
-      // Setup / edit-empty mode: single button
-      const setup = el('button', {
-        class: 'btn-mini batch-setup',
-        onclick: () => openBatchManager(tabKey),
-      }, 'Setup Batch Mode');
-      wrap.appendChild(setup);
-    } else {
-      // Populated mode: "Start BatchGen (N)" + small ✎ edit button
-      const start = el('button', {
-        class: 'batch-start',
-        onclick: () => startBatchGen(tabKey),
-      }, `▶ Start BatchGen (${n})`);
-      const edit = el('button', {
-        class: 'btn-mini batch-edit',
-        title: 'Edit batch entries',
-        onclick: () => openBatchManager(tabKey),
-      }, '✎');
-      wrap.append(start, edit);
-    }
-  }
-}
-
-// ----------------- BatchGen Runner -----------------
-// Per-batch abort object. Previously a single module-level boolean
-// was shared across all batches, so a second batch on a different
-// tab would silently un-abort the first one. Each invocation of
-// startBatchGen now creates its own `abort` object; the Stop
-// button closes over `abort` and the per-item polling loop reads
-// `abort.cancel`. Two concurrent batches don't fight each other.
-async function startBatchGen(tabKey) {
-  // Normalize every entry to the canonical { prompt, settings, ts,
-  // label } shape — legacy plain-text entries become { prompt: text,
-  // settings: null, ... } so the rest of the runner doesn't have
-  // to special-case the two shapes.
-  const items = (state.batches[tabKey] || []).map(normalizeBatchEntry).filter(Boolean);
-  if (!items.length) { toast('Batch is empty.', 'warn'); return; }
-  if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
-  if (tabKey === 'video' && items.length > 3) {
-    if (!confirm(`This batch has ${items.length} videos. Your Token Plan includes only 3 free video generations per week — the rest will fail with a quota error. Continue?`)) return;
-  }
-
-  const abort = { cancel: false };
-  const tabName = tabKey.charAt(0).toUpperCase() + tabKey.slice(1);
-  const tabRoot = $(`#tab-${tabKey}`);
-  const promptTa = tabRoot.querySelector('textarea');        // first textarea = main prompt
-  const styleSel = tabRoot.querySelector('.row select');      // first select = style preset
-  const genBtn = tabRoot.querySelector('button.primary');
-  const preview = tabRoot.querySelector('.preview');
-  const lastCmd = tabRoot.querySelector('.lastcmd');
-  if (!promptTa || !genBtn) { toast('Could not locate tab controls.', 'err'); return; }
-
-  // Save current state for restoration after the batch is done.
-  // We don't include the prompt here because the per-entry
-  // snapshot's prompt overrides it below.
-  const savedSnapshot = captureTabState(tabKey);
-  // Also save the user's actual upscale + auto-crop state so we
-  // can restore it after the batch (the per-entry upscale is
-  // applied on top of this for each entry).
-  const savedUpscaleEnabled = state.upscaleEnabled;
-  const savedUpscaleSettings = state.upscaleSettings ? JSON.parse(JSON.stringify(state.upscaleSettings)) : null;
-
-  // Show progress overlay
-  const overlay = el('div', { class: 'batch-overlay' });
-  overlay.appendChild(el('div', { class: 'batch-overlay-title' }, `BatchGen — ${tabName}`));
-  const counter = el('div', { class: 'batch-overlay-counter' }, `0 / ${items.length}`);
-  const currentPrompt = el('div', { class: 'batch-overlay-prompt' }, '');
-  const elapsed = el('div', { class: 'batch-overlay-elapsed' }, '');
-  const log = el('div', { class: 'batch-overlay-log' });
-  const stopBtn = el('button', { class: 'danger' }, '■ Stop batch');
-  stopBtn.addEventListener('click', () => { abort.cancel = true; stopBtn.disabled = true; stopBtn.textContent = 'Stopping…'; });
-  overlay.append(counter, currentPrompt, elapsed, log, stopBtn);
-  preview.appendChild(overlay);
-  const t0 = Date.now();
-  const updateElapsed = () => { const s = Math.round((Date.now() - t0) / 1000); elapsed.textContent = `Elapsed: ${Math.floor(s / 60)}m ${s % 60}s`; };
-  const elapsedTimer = setInterval(updateElapsed, 1000);
-  updateElapsed();
-
-  function logLine(s, kind) {
-    const e = el('div', { class: 'batch-log-line ' + (kind || '') }, s);
-    log.appendChild(e);
-    log.scrollTop = log.scrollHeight;
-  }
-
-  let ok = 0, fail = 0;
-  let batchError = null;
-  let stoppedAt = 0; // 1-based index of the item we stopped on (0 = didn't stop)
-  let totalVariants = 0;
-  try {
-    for (let i = 0; i < items.length && !abort.cancel; i++) {
-      const entry = items[i];
-      counter.textContent = `${i + 1} / ${items.length}`;
-      currentPrompt.textContent = (entry.prompt || '').slice(0, 200) + ((entry.prompt || '').length > 200 ? '…' : '');
-
-      // Per-entry snapshot: if the entry has a settings snapshot,
-      // re-apply it BEFORE we set the prompt so the prompt value
-      // in the snapshot (which we deleted in captureBatchEntry)
-      // doesn't fight us. suppressStateSave wraps the whole thing
-      // so a batch run doesn't blow away the user's saved state.
-      suppressStateSave(() => {
-        if (entry.settings && typeof entry.settings === 'object') {
-          // applyTabState fires input/change on every input it
-          // touches, which is exactly what we want — the style
-          // preview, has-custom class, etc. all need the event
-          // to update.
-          applyTabState(tabKey, entry.settings);
-        } else {
-          // Legacy entry (no snapshot): just set the prompt.
-          promptTa.value = entry.prompt;
-          promptTa.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        // Always set the prompt last so an in-popup edit of the
-        // prompt text wins over the snapshot's stored prompt.
-        promptTa.value = entry.prompt;
-        promptTa.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      // Read the variants count from the (now-restored) variants
-      // dropdown. Legacy entries fall back to 1.
-      const variantsSel2 = tabRoot.querySelector('.variants-select');
-      const variantsCount = Math.max(1, Math.min(5, parseInt(variantsSel2 ? variantsSel2.value : '1', 10) || 1));
-      totalVariants += variantsCount;
-
-      // Apply the per-entry upscale snapshot (if any). The image
-      // tab's generate handler reads state.upscaleSettings /
-      // state.upscaleEnabled to decide whether to upscale + crop
-      // after the mmx call, so flipping these flags here is all
-      // we need to do.
-      if (entry.upscale && typeof entry.upscale === 'object') {
-        state.upscaleSettings = JSON.parse(JSON.stringify(entry.upscale));
-        state.upscaleEnabled = true;
-      } else {
-        // No upscale snapshot in this entry: temporarily disable
-        // upscale so the user's saved upscale state doesn't leak
-        // into a batch entry that was queued without it.
-        state.upscaleEnabled = false;
-      }
-
-      // Run N variants for this batch item
-      for (let vi = 0; vi < variantsCount; vi++) {
-        if (abort.cancel) break;
-        // Wait until no other generation is in progress (state.generating is
-        // null). armGenBtnWithCancel sets it to the tab key on entry and clears
-        // it on cleanup, so this is a reliable signal.
-        while (state.generating) {
-          if (abort.cancel) break;
-          await new Promise((r) => setTimeout(r, 50));
-        }
-        if (abort.cancel) break;
-        // Trigger generation. The click handler is async — we poll state.generating
-        // to detect when it has set the busy flag (i.e. the handler started).
-        genBtn.click();
-        const startDeadline = Date.now() + 8000;
-        while (state.generating !== tabKey) {
-          if (abort.cancel) break;
-          if (Date.now() > startDeadline) { logLine(`✗ Gen did not start for item ${i + 1}.`, 'err'); fail++; break; }
-          await new Promise((r) => setTimeout(r, 20));
-        }
-        if (abort.cancel || state.generating !== tabKey) break;
-        // Wait for the generation to finish (armGenBtnWithCancel's cleanup
-        // resets state.generating to null when the gen handler returns).
-        while (state.generating === tabKey) {
-          if (abort.cancel) break;
-          await new Promise((r) => setTimeout(r, 100));
-        }
-        // Inspect the preview for success/failure (best-effort: check if it has an image/video)
-        const looksOk = preview.querySelector('img, video, audio');
-        const variantTag = variantsCount > 1 ? ` v${vi + 1}/${variantsCount}` : '';
-        if (looksOk) { ok++; logLine(`✓ ${i + 1}/${items.length}${variantTag} OK`, 'ok'); }
-        else { fail++; logLine(`✗ ${i + 1}/${items.length}${variantTag} FAILED`, 'err'); }
-      }
-      if (abort.cancel) { stoppedAt = i + 1; logLine(`Aborted at item ${i + 1}.`, 'warn'); break; }
-    }
-  } catch (e) {
-    batchError = e;
-    console.error('BatchGen threw:', e);
-    logLine(`⚠ Batch error: ${e && e.message || String(e)}`, 'err');
-  } finally {
-    // Always clear the timer and reset the stop button — even on an
-    // uncaught exception in the loop.
-    clearInterval(elapsedTimer);
-    stopBtn.textContent = 'Close';
-    stopBtn.disabled = false;
-    stopBtn.onclick = () => overlay.remove();
-  }
-
-  // Restore original state. The user's last view of the tab
-  // (the settings they had before clicking Start Batch) is
-  // reapplied via captureTabState → applyTabState round-trip.
-  // suppressStateSave ensures the per-item transient form
-  // changes don't leak into the persisted state.json.
-  suppressStateSave(() => {
-    applyTabState(tabKey, savedSnapshot);
-  });
-  // Restore the user's actual upscale + auto-crop state too (the
-  // per-entry snapshots may have overwritten state.upscaleSettings
-  // for individual entries). Outside suppressStateSave so a
-  // scheduleStateSave() from the input events doesn't get
-  // re-suppressed at the wrong time — we want the user's
-  // settings to land in state.json.
-  state.upscaleEnabled = !!savedUpscaleEnabled;
-  if (savedUpscaleSettings) state.upscaleSettings = savedUpscaleSettings;
-  // Distinguish a user-stopped batch from a completed one — previously
-  // both said "done", which was confusing.
-  const summary = stoppedAt
-    ? `BatchGen stopped at item ${stoppedAt}: ${ok} ok, ${fail} failed.`
-    : `BatchGen finished: ${ok} ok, ${fail} failed. (${totalVariants} variants total)`;
-  if (lastCmd) lastCmd.textContent = summary;
-  toast(stoppedAt
-    ? `BatchGen stopped. ${ok} ok, ${fail} failed.`
-    : `BatchGen done: ${ok} ok, ${fail} failed.`, batchError ? 'err' : (fail === 0 ? 'ok' : 'warn'), 6000);
-  await refreshBrowser();
-  await refreshQuota();
-}
-
-// ----------------- VIDEO TAB -----------------
-TABS.video = {
-  prefilled: 'A serene mountain landscape at golden hour, drone shot slowly panning over the valley',
-  build() {
-    const root = $('#tab-video');
-    root.innerHTML = '';
-
-    // Prompt
-    const prompt = buildParamRow('Video prompt (prefilled, editable)',
-      { kind: 'textarea', value: this.prefilled, help: 'Describe the scene + motion. Up to 2000 chars. Use [Push in], [Pan left], [Static shot] etc. to control camera (15 commands supported).' });
-    const styleRow = buildStyleRow('video', 'Select a style preset. Its value is prepended (with a comma) to your video prompt before being sent to mmx.');
-    const stylePreview = buildStylePreviewBlock();
-    const tabState = { previewEl: stylePreview._previewEl, selEl: styleRow.sel, manualEl: prompt.input };
-    const updatePreview = () => updateStylePreview(tabState);
-    styleRow.sel.addEventListener('change', updatePreview);
-    prompt.input.addEventListener('input', updatePreview);
-    updatePreview();
-    const counter = buildPromptCounter({ selEl: styleRow.sel, manualEl: prompt.input, id: 'video' });
-    root.appendChild(el('div', { class: 'section' }, [
-      el('h3', {}, 'Prompt'),
-      styleRow.row,
-      prompt.row,
-      stylePreview,
-      counter.wrap,
-    ]));
-
-    // Parameters
-    const model = buildParamRow('--model', {
-      kind: 'enum', default: 'MiniMax-Hailuo-2.3',
-      options: [
-        { value: 'MiniMax-Hailuo-2.3', label: 'MiniMax-Hailuo-2.3 (T2V + I2V, default, best quality)' },
-        { value: 'MiniMax-Hailuo-2.3-Fast', label: 'MiniMax-Hailuo-2.3-Fast (faster, I2V only — needs --first-frame)' },
-        { value: 'MiniMax-Hailuo-02', label: 'MiniMax-Hailuo-02 (SEF: needs --first-frame + --last-frame)' },
-        { value: 'S2V-01', label: 'S2V-01 (subject reference — needs --subject-image)' },
-      ],
-      help: 'Video generation model.\n\nMiniMax-Hailuo-2.3 (default): Newest + best quality.\n  • T2V (text-to-video) and I2V (image-to-video)\n  • Resolutions: 768P (default), 1080P (6s only)\n  • Durations: 6s, 10s\n  • Supports --prompt-optimizer, --fast-pretreatment, 15 camera commands\n\nMiniMax-Hailuo-2.3-Fast: Faster variant, I2V only.\n  REQUIRES --first-frame. Use for quick iterations.\n\nMiniMax-Hailuo-02: Used for first+last frame interpolation (SEF).\n  REQUIRES both --first-frame and --last-frame.\n  Resolutions: 512P, 768P, 1080P.\n\nS2V-01: Subject reference (face consistency across video).\n  REQUIRES --subject-image.',
-    });
-    const firstFrame = buildParamRow('--first-frame (I2V/SEF)', {
-      kind: 'text', default: '',
-      placeholder: 'Path or URL to first-frame image',
-      fileFilters: [
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] },
-        { name: 'All files', extensions: ['*'] },
-      ],
-      browseTitle: 'Select first-frame image',
-      help: 'Path or URL to a starting image. Triggers I2V (image-to-video).\nFor MiniMax-Hailuo-2.3-Fast this is required.\nSupported formats: JPG, JPEG, PNG, WebP.\nMax 20MB. Aspect 2:5 to 5:2. Short edge > 300px.\nYou can also paste a public URL (https://...).',
-    });
-    const lastFrame = buildParamRow('--last-frame (SEF only)', {
-      kind: 'text', default: '',
-      placeholder: 'Path or URL to last-frame image',
-      fileFilters: [
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] },
-        { name: 'All files', extensions: ['*'] },
-      ],
-      browseTitle: 'Select last-frame image',
-      help: 'Path or URL to an ending image. Combined with --first-frame,\nswitches to Hailuo-02 in start-end-frame (SEF) interpolation mode.\nSupported formats: JPG, JPEG, PNG, WebP. Max 20MB.',
-    });
-    const subjectImage = buildParamRow('--subject-image (S2V-01)', {
-      kind: 'text', default: '',
-      placeholder: 'Path or URL to subject reference photo',
-      fileFilters: [
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] },
-        { name: 'All files', extensions: ['*'] },
-      ],
-      browseTitle: 'Select subject reference photo',
-      help: 'Path or URL to a character reference photo. Switches to S2V-01 model\nfor face consistency across the video.\nSupported formats: JPG, JPEG, PNG, WebP.',
-    });
-    const duration = buildParamRow('--duration (seconds)', {
-      kind: 'number', default: 6, min: 6, max: 10, step: 1,
-      options: [{ value: 6, label: '6s' }, { value: 10, label: '10s' }],
-      help: 'Video length in seconds. 6s is default; 10s only on certain models/resolutions.',
-    });
-    const resolution = buildParamRow('--resolution', {
-      kind: 'enum', default: '768P',
-      options: [
-        { value: '512P', label: '512P (Hailuo-02 only)' },
-        { value: '720P', label: '720P (legacy default)' },
-        { value: '768P', label: '768P (recommended, default)' },
-        { value: '1080P', label: '1080P (6s only on 2.3 / 2.3-Fast)' },
-      ],
-      help: 'Output resolution. 1080P only works for 6s videos on Hailuo-2.3 / 2.3-Fast.',
-    });
-    const promptOpt = buildParamRow('--prompt-optimizer', {
-      kind: 'boolean', default: true, help: 'Auto-rewrite your prompt for better results (default true). Set off for precise control.',
-    });
-    const fastPretreat = buildParamRow('--fast-pretreatment', {
-      kind: 'boolean', default: false, help: 'Speeds up the optimizer step. Only for Hailuo-2.3, 2.3-Fast, 02. Default off.',
-    });
-    const pollInterval = buildParamRow('--poll-interval (seconds)', {
-      kind: 'number', default: 5, min: 2, max: 60, step: 1,
-      options: [3, 5, 10, 15, 30, 60].map((v) => ({ value: v, label: String(v) })),
-      help: 'How often to poll the API while waiting for the video. Default 5s. Lower = faster status updates but more API calls.',
-    });
-
-    root.appendChild(el('div', { class: 'section' }, [
-      el('h3', {}, 'Parameters'),
-      buildFilePrefixRow(),
-      el('div', { class: 'grid' }, [
-        model.row, firstFrame.row,
-        lastFrame.row, subjectImage.row,
-        duration.row, resolution.row,
-        promptOpt.row, fastPretreat.row,
-        pollInterval.row,
-      ]),
-    ]));
-
-    // Actions
-    const actions = el('div', { class: 'actions' });
-    const genBtn = el('button', { class: 'primary' }, 'Generate');
-    const lastCmd = el('span', { class: 'lastcmd' }, '');
-    const batchControls = el('span', { 'data-batch-controls': 'video', class: 'batch-controls' });
-    // Variants dropdown (video tab has no seed, so always enabled)
-    const variants = buildVariantsRow({ id: 'variants-video' });
-    actions.append(buildAddToBatchBtn('video'), genBtn, variants.row, batchControls, lastCmd);
-    const preview = el('div', { class: 'preview' }, el('div', { class: 'empty' }, 'No video generated yet. Note: video generation is async and may take 1-3 minutes.'));
-    const tabFooter = el('div', { class: 'tab-footer' }, [actions, preview]);
-    root.appendChild(tabFooter);
-
-    genBtn.addEventListener('click', async () => {
-      // Re-entrancy guard: another generation is in progress.
-      if (state.generating) return;
-      if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
-      const promptText = buildFinalPrompt(styleRow.sel, prompt.input);
-      if (!promptText) { toast('Prompt is required (style or manual input).', 'warn'); return; }
-      const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
-      let outDir;
-      try { outDir = await ensureSubDir('video'); }
-      catch (e) { toast('No output directory set. Open Settings.', 'err'); return; }
-      const slug = slugify(promptText).slice(0, 60) || 'video';
-      // Total assets this run will produce. The per-tab ETA timer reads
-      // this from state.genQueueSize[tabKey] to compute a "remaining
-      // time for the whole batch" estimate that ticks down as each
-      // variant completes.
-      if (!state.genQueueSize) state.genQueueSize = { image: 0, speech: 0, music: 0, video: 0 };
-      if (!state.genQueueDone) state.genQueueDone = { image: 0, speech: 0, music: 0, video: 0 };
-      state.genQueueSize.video = variantsCount;
-      state.genQueueDone.video = 0;
-      const cancel = armGenBtnWithCancel(genBtn, 'Generate');
-      let allOk = true;
-      let lastPreview = null;
-      let lastOutFile = null;
-      let threw = null;
-      try {
-        for (let v = 1; v <= variantsCount; v++) {
-          if (cancel.wasCancelled()) break;
-          const itemStart = Date.now();
-          const args = ['video', 'generate'];
-          args.push('--prompt', promptText);
-          appendFlag(args, model.input);
-          if (firstFrame.input.value && firstFrame.input.value.trim()) args.push('--first-frame', firstFrame.input.value.trim());
-          if (lastFrame.input.value && lastFrame.input.value.trim()) args.push('--last-frame', lastFrame.input.value.trim());
-          if (subjectImage.input.value && subjectImage.input.value.trim()) args.push('--subject-image', subjectImage.input.value.trim());
-          appendFlag(args, duration.input);
-          appendFlag(args, resolution.input);
-          appendBoolFlag(args, promptOpt.input, '--prompt-optimizer');
-          appendBoolFlag(args, fastPretreat.input, '--fast-pretreatment');
-          appendFlag(args, pollInterval.input);
-          const ts = timestamp();
-          const variantTag = variantsCount > 1 ? `_v${v}` : '';
-          const prefix = (state.filePrefix || '').trim();
-          const outFile = uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.mp4`);
-          args.push('--download', outFile);
-          lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
-          const statusMsg = variantsCount > 1
-            ? `Submitting video job… variant ${v}/${variantsCount} (each takes 1-3 min)`
-            : 'Submitting video job…';
-          setStatus(statusMsg, true);
-          let elapsedTimer = null;
-          const updateStatus = (msg) => { preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(msg)}</div>`; };
-          updateStatus(variantsCount > 1
-            ? `Submitting video job ${v}/${variantsCount}…`
-            : 'Submitting video job (may take a few seconds)…');
-          const start = Date.now();
-          elapsedTimer = setInterval(() => { const s = Math.round((Date.now() - start) / 1000); updateStatus(`Generating video ${v}/${variantsCount}… elapsed ${s}s (typical: 60-180s)`); }, 1000);
-          const r = await window.api.mmxRun(args);
-          clearInterval(elapsedTimer);
-          if (cancel.wasCancelled()) { allOk = false; break; }
-          if (!r.ok) {
-            const msg = formatMmxError(r);
-            preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}).</div><div class="meta">${escapeHtml(msg)}</div>`;
-            toast('Video generation failed: ' + msg, 'err', 6000);
-            allOk = false;
-            break;
-          }
-          // Update the per-item average + advance the queue counter so
-          // the ETA ticks down per item. See the image-tab comment
-          // for the full rationale.
-          const itemDur = (Date.now() - itemStart) / 1000;
-          if (!state.genAvgSec) state.genAvgSec = {};
-          const prevAvg = state.genAvgSec.video || 0;
-          state.genAvgSec.video = prevAvg === 0 ? itemDur : (prevAvg * 0.6 + itemDur * 0.4);
-          state.genQueueDone.video = (state.genQueueDone.video || 0) + 1;
-          refreshTabEtas();
-          lastPreview = r.parsed;
-          lastOutFile = outFile;
-        }
-      } catch (e) {
-        threw = e;
-        allOk = false;
-        console.error('Video generation threw:', e);
-        toast('Generation error: ' + (e && e.message || String(e)), 'err', 6000);
-      } finally {
-        cancel.cleanup();
-        setStatus('Ready', false);
-        try { await refreshBrowser(); } catch {}
-        try { await refreshQuota(); } catch {}
-      }
-      if (threw) return;
-      if (cancel.wasCancelled()) {
-        preview.innerHTML = '<div class="empty">Generation cancelled.</div>';
-        toast('Cancelled.', 'warn');
-        return;
-      }
-      if (allOk && lastOutFile) {
-        showVideoPreview(preview, lastOutFile, lastPreview);
-        bumpGenerationCounter('video', variantsCount);
-      }
-      if (allOk) {
-        toast(variantsCount > 1
-          ? `Video generated. ${variantsCount} variants saved.`
-          : 'Video generated.', 'ok');
-      }
-    });
-  },
-};
-
-function showVideoPreview(rootEl, file, parsed) {
-  const url = fileUrl(file) + '?t=' + Date.now();
-  rootEl.innerHTML = '';
-  const vid = el('video', { controls: '', src: url, style: 'max-width: 100%; max-height: 60vh; display: block; margin: 0 auto;' });
-  vid.preload = 'metadata';
-  rootEl.appendChild(vid);
-  const meta = el('div', { class: 'meta' });
-  meta.appendChild(document.createTextNode(file));
-  if (parsed) meta.appendChild(el('div', {}, '[mmx] ' + safeStringify(parsed)));
-  rootEl.appendChild(meta);
-}
-
-// ----------------- Helpers -----------------
-function timestamp() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-}
-function slugify(s) {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-}
-function uniquePath(dir, name) {
-  // We can't easily ask the FS from the renderer, so we append a short random
-  // suffix to virtually eliminate in-session collisions. The previous version
-  // returned the raw joined path, which let two clicks in the same second
-  // (or any duplicate-prompt collision) silently overwrite the previous file.
-  const dot = name.lastIndexOf('.');
-  const stem = dot > 0 ? name.slice(0, dot) : name;
-  const ext = dot > 0 ? name.slice(dot) : '';
-  // 4-char base36 suffix, e.g. "_a3f9"
-  const suffix = Math.random().toString(36).slice(2, 6) || 'rndm';
-  return dir.replace(/[\\/]+$/, '') + (dir.includes('\\') ? '\\' : '/') + stem + '_' + suffix + ext;
-}
-async function ensureSubDir(name) {
-  const base = state.config.output_dir || '';
-  if (!base) throw new Error('No output directory set. Open Settings.');
-  // Prefer the file-browser's current folder if it's a real subdir of
-  // `output_dir`; otherwise fall back to the per-tab default subdir. Both
-  // paths are normalized to forward slashes before the startsWith check
-  // so mixed separators (e.g. `base` uses `\`, `fb` uses `/`) don't
-  // silently drop the user's navigated folder.
-  const normForCompare = (p) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  const baseNorm = normForCompare(base);
-  const fbNorm = normForCompare(state.fbDir || '');
-  // Use the separator that `base` uses for the on-disk path.
-  const baseSep = base.includes('\\') ? '\\' : '/';
-  const fbSep = (state.fbDir || '').includes('\\') ? '\\' : '/';
-  const join = (a, b, sep) => (a.replace(/[\\/]+$/, '')) + sep + b;
-  let targetDir = null;
-  if (fbNorm && (fbNorm === baseNorm || fbNorm.startsWith(baseNorm + '/'))) {
-    // The file browser's current folder is the output_dir or a subdir of it.
-    // Use it as the generation target.
-    targetDir = (state.fbDir || '').replace(/[\\/]+$/, '');
-  } else {
-    // Not under output_dir (or empty) — fall back to the per-tab default.
-    targetDir = join(base, name, baseSep);
-  }
-  // Ensure the dir exists. If we picked the per-tab default, we can use
-  // fbMkdir's idempotent behaviour directly. If we picked a deeper folder
-  // (e.g. _assets/images/spellquake), create the chain segment by segment.
-  if (targetDir === join(base, name, baseSep)) {
-    await window.api.fbMkdir(base, name).catch(() => null);
-  } else {
-    // Strip the base prefix and walk the remaining path segments.
-    const stripped = targetDir.replace(/[\\/]+$/, '');
-    const relParts = [];
-    // Walk both with the user's original separator.
-    const baseN = base.replace(/[\\/]+$/, '');
-    if (stripped.length > baseN.length) {
-      const rel = stripped.slice(baseN.length).replace(/^[\\/]+/, '');
-      for (const p of rel.split(/[\\/]/).filter(Boolean)) relParts.push(p);
-    }
-    let cur = base;
-    for (const p of relParts) {
-      await window.api.fbMkdir(cur, p).catch(() => null);
-      cur = join(cur, p, baseSep);
-    }
-  }
-  return targetDir;
-}
-
-// ----------------- Bootstrap -----------------
-async function init() {
-  // Wire tabs
-  for (const t of $$('.tab')) t.addEventListener('click', () => showTab(t.dataset.tab));
-  $('#fb-up').addEventListener('click', () => {
-    // Go up one level. Stop at the output root.
-    const outRoot = state.config.output_dir || '';
-    if (!state.fbDir) return;
-    if (outRoot && state.fbDir.toLowerCase() === outRoot.toLowerCase()) return;
-    state.fbDir = parentDir(state.fbDir) || outRoot;
-    refreshBrowser({ keepCurrent: true });
-  });
-  // Navigate to a folder chosen via the standard Windows folder-selection
-  // dialog. The picked path is stored as the current browser location
-  // for the active tab and persisted across restarts (via fbDirs in
-  // state.json), and is also added to the trusted-pick set in the
-  // main process so any subsequent fb:* operation in this folder is
-  // authorised.
-  $('#fb-pick').addEventListener('click', async () => {
-    const picked = await window.api.pickFolder();
-    if (!picked) return; // user cancelled the dialog
-    state.fbDir = picked;
-    if (state.currentTab) state.fbDirs[state.currentTab] = picked;
-    scheduleStateSave();
-    await refreshBrowser({ keepCurrent: true });
-  });
-  // File browser live filter
-  const fbSearch = $('#fb-search');
-  if (fbSearch) fbSearch.addEventListener('input', applyFileSearch);
-  $('#fb-refresh').addEventListener('click', () => refreshBrowser());
-  $('#fb-new').addEventListener('click', () => promptNewFolder());
-  $('#fb-open').addEventListener('click', () => window.api.fbReveal(state.fbDir || state.config.output_dir || ''));
-  $('#quota-refresh').addEventListener('click', () => refreshQuota());
-  $('#btn-styles').addEventListener('click', () => openStyleSettings());
-  $('#btn-theme').addEventListener('click', () => toggleTheme());
-  $('#btn-settings').addEventListener('click', () => openSettings());
-
-  // Log bar: wire up the Copy / Clear / Collapse buttons. The collapse button
-  // also keeps its label in sync with the <details> open state.
-  const logDetails = $('#logbar details');
-  const logCopyBtn = $('#log-copy');
-  const logClearBtn = $('#log-clear');
-  const logToggleBtn = $('#log-toggle');
-  function _syncLogToggleLabel() {
-    if (!logToggleBtn || !logDetails) return;
-    logToggleBtn.textContent = logDetails.open ? '▼ Collapse' : '▲ Expand';
-  }
-  if (logDetails) logDetails.addEventListener('toggle', _syncLogToggleLabel);
-  if (logToggleBtn) {
-    logToggleBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (!logDetails) return;
-      logDetails.open = !logDetails.open;
-      _syncLogToggleLabel();
-    });
-  }
-  if (logClearBtn) {
-    logClearBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const logEl = $('#log');
-      if (logEl) logEl.textContent = '';
-      toast('Log cleared.', 'ok', 1500);
-    });
-  }
-  if (logCopyBtn) {
-    logCopyBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const txt = $('#log')?.textContent || '';
-      if (!txt) { toast('Log is empty.', 'warn'); return; }
-      try {
-        await navigator.clipboard.writeText(txt);
-        toast('Log copied to clipboard.', 'ok', 1500);
-      } catch (err) {
-        // Fallback: select the text so the user can Ctrl+C manually
-        const range = document.createRange();
-        range.selectNodeContents($('#log'));
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-        toast('Copy failed — log text selected, press Ctrl+C to copy.', 'warn', 4000);
-      }
-    });
-  }
-  _syncLogToggleLabel();
-
-  // Picture preview pane — clear button
-  const previewClearBtn = $('#preview-clear');
-  if (previewClearBtn) {
-    previewClearBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      // Use the same path as previewImageFromFile(null) so the
-      // _lastPreviewPath cache is reset and the next click on the
-      // same file re-renders the preview (otherwise the dedup in
-      // previewImageFromFile would skip the re-render and the pane
-      // would stay empty after the user toggled clear → click).
-      previewImageFromFile(null);
-    });
-  }
-
-  // Config
-  state.config = await window.api.getConfig();
-  // Ensure new fields exist
-  if (!Array.isArray(state.config.styles)) state.config.styles = [];
-  if (!state.config.theme) state.config.theme = 'dark';
-  // Apply theme as early as possible
-  applyTheme(state.config.theme);
-  if (!state.config.api_key) {
-    toast('No API key. Click ⚙ to add one.', 'warn', 6000);
-  }
-
-  // Build tabs (assign ids + load saved state + start autosave)
-  const savedState = await window.api.stateGet() || {};
-  state.tabSettings = savedState.tabs || {};
-  // Restore per-tab folder map (per-tab folder persistence)
-  if (savedState.fbDirs && typeof savedState.fbDirs === 'object') {
-    for (const k of ['image', 'speech', 'music', 'video']) {
-      if (typeof savedState.fbDirs[k] === 'string') state.fbDirs[k] = savedState.fbDirs[k];
-    }
-  }
-  // Restore the upscale-on-Generate state. We must round-trip the
-  // FULL set of fields (multiplier, autoCrop, cropW, cropH, cropX,
-  // cropY) — src/state.js sanitises all six on write, and the
-  // batch / image-tab generate handlers read all of them. Dropping
-  // any field on restore meant the user's auto-crop configuration
-  // silently reset to defaults on every app restart.
-  if (typeof savedState.upscaleEnabled === 'boolean') state.upscaleEnabled = savedState.upscaleEnabled;
-  if (savedState.upscaleSettings && typeof savedState.upscaleSettings === 'object') {
-    const u = savedState.upscaleSettings;
-    state.upscaleSettings = {
-      multiplier: parseInt(u.multiplier, 10) || 2,
-      autoCrop: !!u.autoCrop,
-      cropWidth: Math.max(0, parseInt(u.cropWidth, 10) || 0),
-      cropHeight: Math.max(0, parseInt(u.cropHeight, 10) || 0),
-      cropAnchorX: ['left', 'center', 'right'].includes(u.cropAnchorX) ? u.cropAnchorX : 'center',
-      cropAnchorY: ['top', 'center', 'bottom'].includes(u.cropAnchorY) ? u.cropAnchorY : 'center',
-    };
-  }
-  // Restore the global file-name prefix (mirrored on every tab).
-  if (typeof savedState.filePrefix === 'string') state.filePrefix = savedState.filePrefix;
-  // Restore the Real-ESRGAN model choice. Same sanitisation as
-  // state.js: capped length, falls back to the default on any
-  // garbage value. App-level whitelisting happens in the call site.
-  if (typeof savedState.realesrganModel === 'string' && savedState.realesrganModel.trim()) {
-    state.realesrganModel = savedState.realesrganModel.trim().slice(0, 64);
-  }
-  // Restore the "don't ask about Real-ESRGAN again" flag. Without
-  // this restore, a user who clicked "Don't ask again" yesterday
-  // would be re-prompted on every launch.
-  if (savedState.realesrganFirstRunDismissed === true) {
-    state.realesrganFirstRunDismissed = true;
-  }
-  // Restore the "remove background on generate" toggle + GPU
-  // preference. Both are booleans; src/state.js sanitises them on
-  // write so a corrupted state.json cannot turn them into strings
-  // that would later get concatenated into the binary's argv.
-  if (typeof savedState.removeBackgroundEnabled === 'boolean') {
-    state.removeBackgroundEnabled = savedState.removeBackgroundEnabled;
-  }
-  if (typeof savedState.removeBackgroundUseGpu === 'boolean') {
-    state.removeBackgroundUseGpu = savedState.removeBackgroundUseGpu;
-  }
-  const startTab = (savedState.currentTab && ['image','speech','music','video'].includes(savedState.currentTab))
-    ? savedState.currentTab : 'image';
-  for (const tabKey of ['image', 'speech', 'music', 'video']) {
-    TABS[tabKey].build();
-    assignTabFormIds(tabKey);
-    applyTabState(tabKey, state.tabSettings[tabKey] || {});
-    setupTabAutosave(tabKey);
-  }
-  // Sync every per-tab "Target file prefix" input to the global
-  // state.filePrefix. The per-tab saved value (in state.tabSettings)
-  // can be stale if the user changed the prefix on one tab without
-  // re-saving all four, or if a previous app version didn't persist
-  // the global filePrefix at all. The global is the source of truth,
-  // so we always re-apply it after every tab has been built. We do
-  // this OUTSIDE the per-tab applyTabState so the per-tab value can't
-  // race-override the global on the next input event.
-  suppressStateSave(() => {
-    for (const inp of document.querySelectorAll('input.file-prefix-input')) {
-      inp.value = state.filePrefix || '';
-    }
-  });
-
-  // Load batches
-  state.batches = await window.api.batchesGet();
-  _refreshBatchButtons();
-
-  // Install global keyboard shortcuts
-  installKeyboardShortcuts();
-  // Long-hover tooltip for the truncated .lastcmd span
-  setupLastCmdTooltips();
-  setStatus('Ready');
-
-  // Initial values
-  if (!state.config.output_dir) {
-    // Set a sensible default in state for path display
-    state.config.output_dir = await window.api.configPath().then((p) => p.replace(/config\.txt$/i, 'generated'));
-  }
-
-  showTab(startTab);
-
-  // Startup popup — show after the first tab is rendered so the user
-  // immediately sees the rest of the UI behind the modal.
-  showStartupPopup();
-
-  // Logs from main
-  window.api.onLog((line) => log(line));
-
-  // First quota fetch
-  refreshQuota().catch(() => {});
-}
-
-// ----------------- App status + keyboard shortcuts + cancel -----------------
-function setStatus(text, busy = false) {
-  const s = $('#status');
-  if (!s) return;
-  s.textContent = text;
-  s.classList.toggle('busy', !!busy);
-}
-let _generationCounter = 0;
-function bumpGenerationCounter(kind, n = 1) {
-  _generationCounter += Math.max(1, n | 0);
-  setStatus(`${_generationCounter} generations this session`, false);
-}
-
-// Wrap a generation call with a cancel button. While the call is in flight:
-//   - the button text becomes "Cancel" (clicking it triggers the cancel path)
-//   - state.generating is set to the tab key so other code (the batch runner,
-//     re-entrant click guards) can detect that a generation is in progress.
-//   - state.genStatus[tabKey] is set to "running" (drives the red tab dot).
-// On cleanup:
-//   - the original button label is restored
-//   - state.generating is cleared
-//   - state.genStatus[tabKey] is bumped to "done" so the green dot appears
-//     (unless the user is currently on this tab — that case is handled in
-//     refreshTabStatusDots).
-function armGenBtnWithCancel(genBtn, label) {
-  let cancelled = false;
-  const origLabel = label || genBtn.textContent;
-  const tabKey = (genBtn.closest('.tabpanel')?.id || '').replace('tab-', '') || null;
-  genBtn.textContent = 'Cancel';
-  genBtn.classList.add('danger');
-  state.generating = tabKey;
-  if (tabKey) {
-    state.genStatus[tabKey] = 'running';
-    // Record the wall-clock start time for the ETA timer.
-    if (!state.genStartMs) state.genStartMs = {};
-    state.genStartMs[tabKey] = Date.now();
-  }
-  refreshTabStatusDots();
-  ensureEtaTimer();
-  const onCancelClick = async (ev) => {
-    ev.preventDefault(); ev.stopPropagation();
-    if (!confirm('Cancel the current generation?')) return;
-    cancelled = true;
-    toast('Cancelling…', 'warn', 1500);
-    await window.api.mmxCancel();
-  };
-  genBtn.addEventListener('click', onCancelClick);
-  return {
-    cancel: () => { cancelled = true; },
-    wasCancelled: () => cancelled,
-    cleanup: () => {
-      genBtn.removeEventListener('click', onCancelClick);
-      genBtn.classList.remove('danger');
-      genBtn.textContent = origLabel;
-      genBtn.disabled = false;
-      // Clear the start time so a later ETA tick doesn't read a stale
-      // value. The per-tab average is now updated PER ITEM inside the
-      // gen handler's variants loop (so the ETA ticks down more
-      // accurately as the run progresses). The previous behaviour of
-      // writing the total run duration into the EMA here was wrong
-      // for batch runs: a 5-variant run with 30s items would compute
-      // dur=150 and then merge it as if it were a single item's time,
-      // so the EMA would spike to 78s (0.6*30 + 0.4*150) at the end
-      // of every batch and only slowly recover over the next few runs.
-      if (tabKey && state.genStartMs) {
-        state.genStartMs[tabKey] = null;
-      }
-      // Clear the queue progress so a later ETA tick (or the next
-      // generation's first tick) doesn't read a stale "0/5 done" from
-      // a previous batch. _formatTabEta treats missing values as 0
-      // and falls back to the old single-item math — safe.
-      if (tabKey) {
-        if (state.genQueueSize) state.genQueueSize[tabKey] = 0;
-        if (state.genQueueDone) state.genQueueDone[tabKey] = 0;
-      }
-      // Only clear the busy flag if it still points to this tab.
-      if (state.generating === tabKey) state.generating = null;
-      if (tabKey) state.genStatus[tabKey] = cancelled ? 'idle' : 'done';
-      refreshTabStatusDots();
-    },
-  };
-}
-// Format mmx error: strip "node.exe :" prefix, then surface the most
-// informative bit. mmx returns errors in a few different shapes depending
-// on which command failed:
-//   - { "error": { "code": 1, "message": "API error: ..." } }   ← the
-//     "API error: system error (HTTP 200)" pattern we see on transient
-//     mmx backend hiccups.
-//   - { "base_resp": { "status_code": N, "status_msg": "..." } }  ←
-//     the legacy structured error from older mmx versions.
-//   - plain stderr text (caught all of the above if our parser misses).
-function formatMmxError(r) {
-  let msg = (r.stderr || r.stdout || '').toString();
-  msg = msg.replace(/^node\.exe\s*:\s*/gm, '').trim();
-  if (r.parsed && typeof r.parsed === 'object') {
-    // Shape 1: { "error": { "code": N, "message": "..." } }
-    if (r.parsed.error && typeof r.parsed.error === 'object' && r.parsed.error.message) {
-      const m = String(r.parsed.error.message);
-      if (m) return msg ? `${m} (${msg})` : m;
-    }
-    // Shape 2: { "base_resp": { "status_code": N, "status_msg": "..." } }
-    if (r.parsed.base_resp && r.parsed.base_resp.status_msg) {
-      const sm = r.parsed.base_resp.status_msg;
-      const sc = r.parsed.base_resp.status_code;
-      if (sm && sc !== 0) {
-        return msg ? `${sm} (${msg})` : sm;
-      }
-    }
-    // Shape 3: { "message": "..." } (catch-all)
-    if (typeof r.parsed.message === 'string' && r.parsed.message) {
-      return r.parsed.message;
-    }
-  }
-  return msg || `mmx exited with code ${r.code}`;
-}
-
-// Classify an mmx error so the UI can show targeted troubleshooting tips.
-// Returns one of: 'auth' (401/403/invalid key), 'rate' (429/rate limit),
-// 'quota' (out of plan / quota exhausted), 'network' (DNS/socket),
-// 'server' (5xx or generic system error), 'unknown'.
-function classifyMmxError(r, msg) {
-  const combined = ((msg || '') + ' ' + (r.stderr || '') + ' ' + (r.stdout || '')).toLowerCase();
-  if (/401|403|unauthor|forbidden|invalid.api.key|api.key.*invalid|auth.*fail/.test(combined)) return 'auth';
-  if (/429|rate|limit|throttl|too many/.test(combined)) return 'rate';
-  // "insufficient" alone is too generic — "Insufficient permissions"
-  // is auth, "Insufficient data" is network. Require a quota
-  // context for the word to count.
-  if (/quota|not in plan|exhausted|out of quota|insufficient.*quota|quota.*insufficient/.test(combined)) return 'quota';
-  if (/enotfound|econnrefused|econnreset|etimedout|network|dns/.test(combined)) return 'network';
-  if (/500|502|503|504|server.error|system.error|internal/.test(combined)) return 'server';
-  return 'unknown';
-}
-function installKeyboardShortcuts() {
-  // The keydown handler is async because the Ctrl+R branch awaits
-  // refreshQuota() so the toast reflects success / failure. Keeping
-  // the rest of the handler non-async would silently swallow the
-  // await (a SyntaxError at parse time), so we mark the whole
-  // listener async.
-  document.addEventListener('keydown', async (e) => {
-    // Skip when typing in a non-textarea field (so Ctrl+A etc. works in inputs)
-    const inField = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT');
-    const cmd = e.ctrlKey || e.metaKey;
-    // `e.key` is undefined when only a modifier is held. Bail out so we don't
-    // mis-fire handlers on modifier-only events (e.g. releasing Shift).
-    if (!e.key) return;
-    if (cmd && e.key === 'Enter') {
-      // Generate on the active tab
-      const tab = state.currentTab;
-      const genBtn = $(`#tab-${tab} button.primary`);
-      if (genBtn && !state.generating && genBtn.textContent !== 'Cancel') { genBtn.click(); e.preventDefault(); }
-      return;
-    }
-    if (cmd && ['1','2','3','4'].includes(e.key)) {
-      const tabs = ['image','speech','music','video'];
-      const idx = parseInt(e.key, 10) - 1;
-      if (tabs[idx]) { showTab(tabs[idx]); e.preventDefault(); }
-      return;
-    }
-    if (cmd && (e.key === 'b' || e.key === 'B')) {
-      openBatchManager(state.currentTab); e.preventDefault(); return;
-    }
-    if (cmd && (e.key === 's' || e.key === 'S')) {
-      openSettings(); e.preventDefault(); return;
-    }
-    if (cmd && (e.key === 't' || e.key === 'T')) {
-      openStyleSettings(); e.preventDefault(); return;
-    }
-    if (cmd && (e.key === 'l' || e.key === 'L')) {
-      toggleTheme(); e.preventDefault(); return;
-    }
-    if (cmd && (e.key === 'f' || e.key === 'F') && !inField) {
-      // Focus the file browser filter
-      const s = $('#fb-search');
-      if (s) { s.focus(); s.select(); e.preventDefault(); }
-      return;
-    }
-    if (cmd && (e.key === 'r' || e.key === 'R') && !inField) {
-      // Refresh quota. Don't fire from inside an input (the user is
-      // probably editing a prompt, not asking for a quota refresh).
-      // Await the result so the toast reflects success / failure —
-      // the previous code always toasted "Quota refreshed." which
-      // lied when the API was down.
-      e.preventDefault();
-      const quotaValue = $('#quota-value');
-      if (quotaValue) quotaValue.innerHTML = '<span class="spinner"></span>';
-      try {
-        await refreshQuota();
-        toast('Quota refreshed.', 'ok', 1500);
-      } catch (e) {
-        toast('Quota refresh failed: ' + (e && e.message || e), 'err', 4000);
-      }
-      return;
-    }
-  });
-}
-
-// ----------------- State autosave (per-tab form values) -----------------
-// After every tab builds, assign id="<tabKey>.<slug>" to each form control,
-// then on every input/change event, capture+save the active tab state.
-function slugifyLabel(s) {
-  return String(s || '').toLowerCase().replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'field';
-}
-function assignTabFormIds(tabKey) {
-  const root = $(`#tab-${tabKey}`);
-  if (!root) return;
-  const seen = new Set();
-  let n = 0;
-  for (const row of root.querySelectorAll('.row')) {
-    const labelText = row.querySelector('label')?.textContent?.trim()?.split('\n')[0]?.trim() || `field_${n}`;
-    let slug = slugifyLabel(labelText);
-    let baseId = `${tabKey}.${slug}`;
-    let suffix = 0;
-    while (seen.has(baseId)) { suffix++; baseId = `${tabKey}.${slug}_${suffix}`; }
-    seen.add(baseId);
-    const all = row.querySelectorAll('input, select, textarea');
-    if (all.length > 1) {
-      all.forEach((el, i) => { if (!el.id) el.id = `${baseId}.${i}`; });
-    } else if (all.length === 1) {
-      if (!all[0].id) all[0].id = baseId;
-    }
-    n++;
-  }
-}
-function captureTabState(tabKey) {
-  const root = $(`#tab-${tabKey}`);
-  if (!root) return {};
-  const data = {};
-  for (const inp of root.querySelectorAll('input[id], select[id], textarea[id]')) {
-    if (inp.type === 'checkbox') data[inp.id] = inp.checked ? 'on' : 'off';
-    else data[inp.id] = inp.value;
-  }
-  return data;
-}
-function applyTabState(tabKey, data) {
-  if (!data) return;
-  const root = $(`#tab-${tabKey}`);
-  if (!root) return;
-  for (const inp of root.querySelectorAll('input[id], select[id], textarea[id]')) {
-    if (!(inp.id in data)) continue;
-    if (inp.type === 'checkbox') inp.checked = data[inp.id] === 'on' || data[inp.id] === true;
-    else inp.value = data[inp.id];
-    // Re-fire input/change so the UI reacts (e.g. has-custom class for combos)
-    inp.dispatchEvent(new Event('input', { bubbles: true }));
-    inp.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-}
-let _stateSaveTimer = null;
-// While a batch is running, the prompt textarea is repeatedly overwritten with
-// the batch items. Each overwrite fires an `input` event that would otherwise
-// schedule a state-save and persist the *batch item* text as the user's
-// permanent prompt. Suppress those saves during a batch run.
-let _suppressStateSave = 0;
-function suppressStateSave(fn) {
-  _suppressStateSave++;
-  try { return fn(); } finally { _suppressStateSave--; }
-}
-function scheduleStateSave() {
-  if (_suppressStateSave > 0) return;
-  clearTimeout(_stateSaveTimer);
-  _stateSaveTimer = setTimeout(saveAllStates, 500);
-}
-async function saveAllStates() {
-  const tabs = {};
-  for (const tabKey of ['image', 'speech', 'music', 'video']) {
-    tabs[tabKey] = captureTabState(tabKey);
-  }
-  state.tabSettings = tabs;
-  await window.api.stateSet({
-    tabs,
-    currentTab: state.currentTab,
-    fbDirs: state.fbDirs,
-    // Persist the upscale-on-Generate state alongside the tabs.
-    upscaleEnabled: !!state.upscaleEnabled,
-    upscaleSettings: state.upscaleSettings || { multiplier: 2 },
-    // Global file-name prefix (mirrored on every tab; prepended to
-    // every generated file).
-    filePrefix: state.filePrefix || '',
-    // Real-ESRGAN model name (defaults to the general-purpose 4×
-    // BSD-3 model).
-    realesrganModel: state.realesrganModel || 'realesrgan-x4plus',
-    // "Don't ask about Real-ESRGAN again" — set by the first-run
-    // popup so the dismissal survives a restart.
-    realesrganFirstRunDismissed: !!state.realesrganFirstRunDismissed,
-    // "Remove background on generate" toggle + GPU preference. Both
-    // are plain booleans; the actual binary spawn happens in
-    // upscaleImageFile (when enabled) or via the explicit
-    // right-click "Remove background" action.
-    removeBackgroundEnabled: !!state.removeBackgroundEnabled,
-    removeBackgroundUseGpu: state.removeBackgroundUseGpu !== false,
-  }).catch(() => {});
-}
-function setupTabAutosave(tabKey) {
-  const root = $(`#tab-${tabKey}`);
-  if (!root) return;
-  // Save on any change (input for text, change for select/checkbox)
-  root.addEventListener('input', scheduleStateSave, true);
-  root.addEventListener('change', scheduleStateSave, true);
-}
-
-// ----------------- Theme -----------------
-function applyTheme(theme) {
-  state.theme = (theme === 'light' ? 'light' : 'dark');
-  document.documentElement.setAttribute('data-theme', state.theme);
-}
-function toggleTheme() {
-  const next = state.theme === 'light' ? 'dark' : 'light';
-  applyTheme(next);
-  // Persist immediately
-  state.config.theme = next;
-  window.api.setConfig(state.config).catch(() => {});
-  toast(`Theme: ${next}`, 'ok', 1500);
-}
-
-// ----------------- Styles -----------------
-function getStyleById(id) {
-  if (!id) return null;
-  return (state.config.styles || []).find((s) => String(s.name) === id) || null;
-}
-function getStyleText(id) {
-  const s = getStyleById(id);
-  return s && s.value ? s.value.trim() : '';
-}
-function buildStyleRow(tabKey, helpText) {
-  // Dropdown listing all style presets. Empty value = no style.
-  // The `style-select` class is queried by _refreshAllStyleDropdowns so
-  // style add/edit/delete reflects in every open tab without a refresh.
-  const sel = el('select', { class: 'style-select' });
-  sel.appendChild(el('option', { value: '' }, '(no style)'));
-  for (const s of (state.config.styles || [])) {
-    const opt = el('option', { value: s.name }, s.name);
-    if (s.value && s.value.length > 60) opt.title = s.value;
-    sel.appendChild(opt);
-  }
-  const manage = el('button', { class: 'btn-mini', onclick: () => openStyleSettings(tabKey) }, '⚙');
-  const combo = el('div', { class: 'combo' }, [sel, manage]);
-  const lbl = el('label', {}, [
-    'Style preset (prepended to your prompt)',
-    el('span', { class: 'help', 'data-help': helpText, title: helpText }, '?'),
-  ]);
-  const row = el('div', { class: 'row' }, [lbl, combo]);
-  return { row, sel };
-}
-function buildStylePreviewBlock() {
-  // Returns the outer <details> wrapper. The inner div is what
-  // updateStylePreview() writes into — callers must use the inner
-  // div as `previewEl` so the summary label doesn't get clobbered
-  // when the prompt changes.
-  const inner = el('div', { class: 'style-preview' });
-  const wrap = el('details', { class: 'style-preview-details' }, [
-    el('summary', {}, 'Full prompt preview'),
-    inner,
-  ]);
-  wrap._previewEl = inner;
-  return wrap;
-}
-function updateStylePreview(tab, extraPrefix = '') {
-  // tab = { previewEl, selEl, manualEl }
-  if (!tab || !tab.previewEl) return;
-  const selVal = tab.selEl ? tab.selEl.value : '';
-  const manual = tab.manualEl ? tab.manualEl.value.trim() : '';
-  const styleText = getStyleText(selVal);
-  const preview = tab.previewEl;
-  preview.innerHTML = '';
-  if (!extraPrefix && !styleText && !manual) {
-    preview.appendChild(el('span', { class: 'empty' }, 'Will send: (empty prompt)'));
-    return;
-  }
-  if (extraPrefix) {
-    preview.appendChild(el('div', {}, [el('span', { class: 'prefix' }, extraPrefix), el('span', {}, ', ')]));
-  }
-  if (styleText) {
-    preview.appendChild(el('div', {}, [el('span', { class: 'prefix' }, styleText), el('span', {}, ', ')]));
-  }
-  if (manual) {
-    preview.appendChild(el('div', {}, [el('span', {}, manual)]));
-  }
-}
-function buildFinalPrompt(selEl, manualEl, extraPrefix = '') {
-  const selVal = selEl ? selEl.value : '';
-  const manual = manualEl ? manualEl.value.trim() : '';
-  const styleText = getStyleText(selVal);
-  // Strip trailing whitespace + commas from each part before joining.
-  // The instrumental-mode prefix and some style presets already end with
-  // a trailing comma — joining with ", " would otherwise produce
-  // "no vocals, , manual" (double comma). The trim keeps the join clean.
-  const clean = (s) => String(s || '').replace(/[\s,]+$/, '');
-  const parts = [extraPrefix, styleText, manual].map(clean).filter(Boolean);
-  return parts.join(', ');
-}
-
-// ----------------- Bootstrap on DOM ready -----------------
-document.addEventListener('DOMContentLoaded', () => {
-  init().catch((e) => { console.error(e); toast(String(e), 'err', 8000); });
-});

@@ -54,6 +54,13 @@ async function list(dir) {
       isDir: e.isDirectory(),
       size: st.size,
       mtimeMs: st.mtimeMs,
+      // Creation time. On some filesystems (notably FAT32 and
+      // some non-NTFS volumes) the value is 0 / not available;
+      // the renderer-side sort falls back to mtimeMs in that case
+      // so the user still gets a sensible "newest first" order
+      // instead of all-zero ties.
+      birthtimeMs: st.birthtimeMs || 0,
+      ctimeMs: st.ctimeMs || 0,
       ext: path.extname(e.name).toLowerCase(),
     });
   }

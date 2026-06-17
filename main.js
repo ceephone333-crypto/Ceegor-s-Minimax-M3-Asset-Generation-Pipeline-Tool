@@ -13,6 +13,8 @@ const fb = require('./src/fileBrowser');
 const pathUtils = require('./src/pathUtils');
 const reEsrgan = require('./src/realesrgan');
 const isNetBg = require('./src/isnetbg');
+const imageOptimizer = require('./src/imageOptimizer');
+const audioCutter = require('./src/audioCutter');
 
 // Disable native window occlusion (which can cause blurry text on Windows
 // when the window is partially obscured or the OS compositor applies
@@ -57,7 +59,7 @@ function createWindow() {
     height: 900,
     minWidth: 1100,
     minHeight: 700,
-    title: 'MiniMax Assets Tool',
+    title: 'MiniMax Assets Tool — Token Plan & PAYG',
     backgroundColor: '#1f1f23',
     autoHideMenuBar: true,
     show: false,
@@ -119,6 +121,22 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+// ---------------- IPC: app metadata ----------------
+// Resolved at startup from package.json. The renderer calls
+// this once during init() to stamp the build version on the
+// greetings popup. Returns the version string (from
+// package.json) so a future change to package.json
+// automatically shows up in the popup without anyone having
+// to remember to bump a separate "display version" constant.
+ipcMain.handle('app:version', () => {
+  try {
+    const pkg = require('./package.json');
+    return { version: pkg.version || 'unknown', name: pkg.name || '', productName: (pkg.build && pkg.build.productName) || '' };
+  } catch (e) {
+    return { version: 'unknown', name: '', productName: '', error: String((e && e.message) || e) };
+  }
 });
 
 // ---------------- IPC: config ----------------
@@ -345,6 +363,38 @@ ipcMain.handle('isnetbg:run', async (_e, srcPath, dstPath, opts) => {
     return { ok: false, code: -1, stderr: 'Destination path is outside the allowed directories.', outputPath: null };
   }
   return isNetBg.run(srcPath, dstPath, opts || {});
+});
+
+// ---------------- IPC: image optimization / file-size reduction ----------------
+// Wrapper around src/imageOptimizer.js (Sharp + libvips). The renderer
+// supplies the source path + the desired options (quality, format,
+// metadata strip). We validate the source lives under the allowed
+// roots, then forward to the optimizer. Output paths are picked by
+// the renderer (the context-menu overlay / the post-generation
+// pipeline use derivedOutputPath + uniqueOutputPath to avoid
+// clobbering an existing file). When the renderer explicitly wants
+// to overwrite the source (the post-generation flow), it supplies
+// outputPath === srcPath and the optimizer writes to a temp file
+// first then renames — atomic on Windows, no half-written file ever
+// visible in the file browser.
+ipcMain.handle('image:optimize', async (_e, srcPath, opts) => {
+  if (!srcPath || typeof srcPath !== 'string') {
+    return { ok: false, error: 'Source path is required.', outputPath: null,
+             inputSize: 0, outputSize: 0, savedBytes: 0, savedPercent: 0,
+             format: '', width: 0, height: 0 };
+  }
+  if (!pathUtils.isPathUnderAny(srcPath, allowedRoots())) {
+    return { ok: false, error: 'Source path is outside the allowed directories.', outputPath: null,
+             inputSize: 0, outputSize: 0, savedBytes: 0, savedPercent: 0,
+             format: '', width: 0, height: 0 };
+  }
+  if (opts && opts.outputPath && typeof opts.outputPath === 'string'
+      && !pathUtils.isPathUnderAny(opts.outputPath, allowedRoots())) {
+    return { ok: false, error: 'Destination path is outside the allowed directories.', outputPath: null,
+             inputSize: 0, outputSize: 0, savedBytes: 0, savedPercent: 0,
+             format: '', width: 0, height: 0 };
+  }
+  return imageOptimizer.optimize(srcPath, opts || {});
 });
 
 // ----------------- IPC: Real-ESRGAN download (one-click installer) -----------------
@@ -589,6 +639,119 @@ ipcMain.handle('install:pickAndCopy', async (event, kind) => {
     try { reEsrgan.resetCache && reEsrgan.resetCache(); } catch (_) {}
     try { isNetBg.resetCache && isNetBg.resetCache(); } catch (_) {}
     return { ok: true, destPath, kind };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// ---------------- IPC: audio cut / probe ----------------
+// Drives the right-click "✂ Audio cut…" action in the folder browser.
+// All paths are validated against the same allowedRoots() allowlist
+// the other fb:* handlers use — a compromised renderer can't trick
+// the main process into running ffmpeg on arbitrary files (or writing
+// the trimmed result anywhere the user hasn't authorised).
+ipcMain.handle('audio:available', () => {
+  // Cheap "is the binary there?" probe. The renderer calls this once
+  // when the audio-cut dialog opens and greys out the Export button
+  // with a precise install hint when it returns false.
+  return { available: audioCutter.isAvailable(), path: audioCutter.findBinary() };
+});
+
+ipcMain.handle('audio:probe', async (_e, srcPath) => {
+  if (!srcPath || typeof srcPath !== 'string') {
+    return { ok: false, error: 'Source path is required.' };
+  }
+  if (!pathUtils.isPathUnderAny(srcPath, allowedRoots())) {
+    return { ok: false, error: 'Source path is outside the allowed directories.' };
+  }
+  try {
+    const r = await audioCutter.probe(srcPath);
+    return r;
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('audio:decodePeaks', async (_e, srcPath, opts) => {
+  if (!srcPath || typeof srcPath !== 'string') {
+    return { ok: false, error: 'Source path is required.' };
+  }
+  if (!pathUtils.isPathUnderAny(srcPath, allowedRoots())) {
+    return { ok: false, error: 'Source path is outside the allowed directories.' };
+  }
+  try {
+    const r = await audioCutter.decodePeaks(srcPath, opts || {});
+    // Float32Array / buffers don't survive IPC structured-clone as
+    // typed arrays — we serialise them to a plain array + an extra
+    // peakAbsMax field the renderer can pre-normalise with.
+    if (r && r.ok && r.peaks && typeof r.peaks === 'object' && 'length' in r.peaks) {
+      r.peaks = Array.from(r.peaks);
+    }
+    if (r && r.ok && r.pcm && typeof r.pcm === 'object' && 'length' in r.pcm) {
+      r.pcm = Array.from(r.pcm);
+    }
+    return r;
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('audio:findZeroCrossing', async (_e, pcm, targetSample, window) => {
+  // The PCM comes back from the renderer as a plain array (the IPC
+  // marshal round-trip strips typed-array-ness). We restore it here.
+  let arr = pcm;
+  if (arr && !Array.isArray(arr) && typeof arr.length === 'number') {
+    arr = Array.from(arr);
+  }
+  if (!Array.isArray(arr)) return { ok: false, error: 'PCM data required.' };
+  try {
+    const f32 = new Float32Array(arr);
+    const idx = audioCutter.findZeroCrossing(f32, targetSample | 0, window | 0);
+    return { ok: true, index: idx };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('audio:trimSilence', async (_e, srcPath, opts) => {
+  if (!srcPath || typeof srcPath !== 'string') {
+    return { ok: false, error: 'Source path is required.' };
+  }
+  if (!pathUtils.isPathUnderAny(srcPath, allowedRoots())) {
+    return { ok: false, error: 'Source path is outside the allowed directories.' };
+  }
+  try { return await audioCutter.trimSilence(srcPath, opts || {}); }
+  catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+
+ipcMain.handle('audio:cut', async (_e, srcPath, dstPath, opts) => {
+  if (!srcPath || typeof srcPath !== 'string') {
+    return { ok: false, error: 'Source path is required.' };
+  }
+  if (!dstPath || typeof dstPath !== 'string') {
+    return { ok: false, error: 'Destination path is required.' };
+  }
+  if (!pathUtils.isPathUnderAny(srcPath, allowedRoots())) {
+    return { ok: false, error: 'Source path is outside the allowed directories.' };
+  }
+  // The destination goes through the same parent-directory allowlist
+  // fb:write uses: a path right next to the source (which lives under
+  // an allowed root) is always fine, so the renderer can save the
+  // trimmed result next to the original without any extra UI.
+  if (!pathUtils.isParentUnderAny(dstPath, allowedRoots())) {
+    return { ok: false, error: 'Destination path is outside the allowed directories.' };
+  }
+  // Refuse to overwrite the source file. The renderer always picks a
+  // distinct name (`<orig>_cut.ext`), but a corrupted renderer that
+  // happens to be pointing at the source is stopped here.
+  const srcAbs = pathUtils.normalize(srcPath);
+  const dstAbs = pathUtils.normalize(dstPath);
+  if (srcAbs && dstAbs && srcAbs.toLowerCase() === dstAbs.toLowerCase()) {
+    return { ok: false, error: 'Destination must differ from the source.' };
+  }
+  try {
+    const r = await audioCutter.cut(srcPath, dstPath, opts || {});
+    return r;
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
