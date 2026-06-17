@@ -574,131 +574,17 @@ function setupHoverHelpTooltips() {
 }
 
 // ----------------- Utilities -----------------
-function el(tag, attrs = {}, children = []) {
-  const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === 'class') e.className = v;
-    else if (k === 'dataset') Object.assign(e.dataset, v);
-    else if (k.startsWith('on') && typeof v === 'function') e.addEventListener(k.slice(2), v);
-    else if (v === true) e.setAttribute(k, '');
-    else if (v === false || v == null) { /* skip */ }
-    else e.setAttribute(k, v);
-  }
-  for (const c of [].concat(children)) {
-    if (c == null) continue;
-    e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
-  }
-  return e;
-}
+// Phase 3: lokale el()-Definition entfernt. Verwendet jetzt
+// window.createElement aus core/DomHelpers.js (semantisch
+// identisch, inkl. Array-Children-Flatten via [].concat()).
+const el = window.createElement;
 
 // ----------------- API key masking -----------------
-// The API key is the single most sensitive piece of config we
-// touch. Once it lands in the log pane, the user can copy it
-// with one click â€” the same one-click they use to share logs
-// with support â€” and accidentally leak the full key. We mask
-// everywhere except the actual mmx call:
-//   - maskApiKey(key)               -> first 5 chars + "***", or
-//                                     "***" for short / empty keys
-//   - maskLine(line, key)           -> replaces every occurrence
-//                                     of the key in `line` with
-//                                     the masked version
-//   - showRevealableKey(...)        -> builds a settings-row
-//                                     input that shows the masked
-//                                     value by default and
-//                                     reveals the real key on
-//                                     click of a "Show" toggle
-function maskApiKey(key) {
-  if (!key || typeof key !== 'string') return '';
-  if (key.length <= 5) return '***';
-  return key.slice(0, 5) + '***';
-}
-function maskLine(line, apiKey) {
-  if (!apiKey || typeof line !== 'string') return line;
-  return line.split(apiKey).join(maskApiKey(apiKey));
-}
-
-// Build a "revealable key" input row for the settings dialog. The
-// real key is shown only when the user clicks "Show"; by default
-// the field displays maskApiKey(key) (first 5 chars + ***) so a
-// shoulder-surfer or screen-capture sees the masked version.
-// The input is what the caller reads at save time (always the
-// current real value, not the masked one), so a Save with no
-// user interaction still works correctly. When the user types
-// over the field, the new value is the "real" value from then
-// on â€” the toggle then toggles between masked(new) and new.
-//
-// SECURITY: when the field has a real value AND is hidden, the
-// input is `readonly` so the user can't type over the masked
-// display (which would otherwise look like a normal field and
-// could trick them into "saving" the masked version). When the
-// field is empty there is nothing to mask, so we leave it
-// editable â€” the user can paste / type a key on first run
-// without first having to click "Show". The `getValue()`
-// returned from this helper always returns the *real* value,
-// regardless of the input's current display â€” so the caller's
-// Save handler is safe to read from it without re-implementing
-// the mask logic.
-function showRevealableKey(realKey, opts) {
-  opts = opts || {};
-  const placeholder = opts.placeholder || '';
-  const label = opts.label || 'API key';
-  let curValue = realKey || '';
-  const inp = el('input', { type: 'text', placeholder, autocomplete: 'off' });
-  let revealed = false;
-  const toggle = el('button', { class: 'btn-mini', type: 'button' }, 'Show');
-  function refresh() {
-    // Three states:
-    //   - empty AND not revealed: editable, empty value (nothing
-    //     to mask, so we don't show "***" â€” pasting must work).
-    //   - empty AND revealed: editable, empty value (still
-    //     nothing to mask; the user is in the middle of editing).
-    //   - non-empty AND revealed: editable, real value visible.
-    //   - non-empty AND not revealed: READ-ONLY, masked display
-    //     so a casual shoulder-surfer sees "abcde***" only.
-    const hasValue = !!curValue;
-    if (hasValue) {
-      inp.value = revealed ? curValue : maskApiKey(curValue);
-      inp.readOnly = !revealed;
-    } else {
-      // Empty: never readonly, never display the mask. The
-      // placeholder is shown instead.
-      inp.value = '';
-      inp.readOnly = false;
-    }
-    toggle.textContent = revealed ? 'Hide' : 'Show';
-  }
-  refresh();
-  inp.addEventListener('input', () => {
-    // The user is typing into an editable field (either revealed
-    // or empty). Track every edit so getValue() returns the
-    // latest typed value, and re-evaluate readOnly so we lock
-    // the field down the moment there's a real value to protect.
-    curValue = inp.value;
-    refresh();
-  });
-  inp.addEventListener('focus', () => {
-    // Empty + not revealed + user clicks the field: a click on
-    // a "Show" button is no longer required to paste. The
-    // security model still holds because there's nothing to mask
-    // (curValue is still ''), and the moment the user types /
-    // pastes a single character, refresh() above locks the field
-    // back to readonly until they click "Show" again.
-    if (!curValue && !revealed) {
-      // No-op visually; we just make sure the field is
-      // focusable + editable (already true in the empty case).
-      inp.readOnly = false;
-    }
-  });
-  toggle.addEventListener('click', () => {
-    revealed = !revealed;
-    refresh();
-  });
-  const row = el('div', { class: 'row' }, [
-    el('label', {}, label),
-    el('div', { class: 'combo' }, [inp, toggle]),
-  ]);
-  return { row, input: inp, getValue: () => curValue, isRevealed: () => revealed };
-}
+// Phase 3: extrahiert nach renderer/utils/securityUtils.js.
+// Hier nur Shim-Aliase, damit der 800+-Aufruf-Code in app.js
+// unverändert bleibt. Funktionen liegen auf window.SecurityUtils
+// und werden über index.html VOR app.js geladen.
+const { maskApiKey, maskLine, showRevealableKey } = window.SecurityUtils;
 
 // ----------------- Structured event log -----------------
 // The new log pane is a list of structured events (one per row)

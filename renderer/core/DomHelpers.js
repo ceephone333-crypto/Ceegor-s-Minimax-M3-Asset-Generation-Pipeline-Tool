@@ -25,7 +25,7 @@ function createElement(tag, attrs, children) {
       else if (v != null && v !== false) el.setAttribute(k, v);
     }
   }
-  if (children) for (const c of children) {
+  if (children) for (const c of [].concat(children)) {
     if (c == null || c === false) continue;
     el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
   }
