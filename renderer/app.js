@@ -597,26 +597,8 @@ const { maskApiKey, maskLine, showRevealableKey } = window.SecurityUtils;
 // in a plain-text format that includes both the headline and the
 // expanded details â€” so pasting into a support ticket gives the
 // helper every piece of information the renderer has.
-
-// Maximum number of events kept in memory. Newer events push older
-// ones out (FIFO). Caps memory growth over a long session; the
-// user almost never scrolls back more than a few hundred lines.
-const LOG_MAX_EVENTS = 500;
-
-// Map of category id â†’ (icon glyph, label). The icon is the
-// leading character in each row; the label is shown on hover
-// (and used by the keyboard-shortcut help modal). Kept short
-// so a single row stays one line in the collapsed state.
-const LOG_CATEGORIES = {
-  info:     { icon: 'Â·', label: 'Info' },
-  gen:      { icon: 'âœŽ', label: 'Generate' },
-  upscale:  { icon: 'â¤´', label: 'Upscale' },
-  bg:       { icon: 'â—', label: 'Background' },
-  optimize: { icon: 'âˆ‡', label: 'Optimize' },
-  batch:    { icon: 'â–¤', label: 'Batch' },
-  error:    { icon: '!', label: 'Error' },
-  cancel:   { icon: 'Ã—', label: 'Cancel' },
-};
+// Phase 3 Block 3: extrahiert nach renderer/services/LogCategories.js
+const { LOG_MAX_EVENTS, LOG_CATEGORIES } = window.LogCategories;
 
 // Add a new event to the log. Returns the new event id so the
 // caller can reference it later (e.g. for a "background
