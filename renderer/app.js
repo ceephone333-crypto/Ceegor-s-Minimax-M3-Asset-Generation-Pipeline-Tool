@@ -6276,46 +6276,9 @@ function pathJoin(a, b) {
   if (!a) return b;
   const sep = a.includes('\\') ? '\\' : '/';
   return a.replace(/[\\/]+$/, '') + sep + b;
-}
-
-// Mark an element as a drag-and-drop target. When a file from this list (or
-// the ".." entry) is dropped on it, the file is moved to `destDir`. Highlights
-// the element while a drag is hovering over it.
-function _attachDropTarget(elNode, destDir) {
-  if (!elNode || !destDir) return;
-  elNode.addEventListener('dragover', (e) => {
-    // Only accept our internal MIME type; ignore OS file drops.
-    if (Array.from(e.dataTransfer.types || []).includes('application/x-minimax-fb')) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      elNode.classList.add('fb-drop-target');
-    }
-  });
-  elNode.addEventListener('dragleave', () => {
-    elNode.classList.remove('fb-drop-target');
-  });
-  elNode.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    elNode.classList.remove('fb-drop-target');
-    const path = e.dataTransfer.getData('application/x-minimax-fb');
-    if (!path) return;
-    if (path.toLowerCase() === destDir.toLowerCase()) return;
-    // Refuse to move a folder into itself or any descendant.
-    const pLow = path.replace(/[\\/]+$/, '').toLowerCase();
-    const dLow = destDir.replace(/[\\/]+$/, '').toLowerCase();
-    if (dLow.startsWith(pLow + (destDir.includes('\\') ? '\\' : '/'))) {
-      toast('Cannot move a folder into itself.', 'warn');
-      return;
-    }
-    const r = await window.api.fbMove(path, destDir);
-    if (r.ok) {
-      toast('Moved.', 'ok');
-      await refreshBrowser();
-    } else {
-      toast('Move failed: ' + (r.error || 'unknown error'), 'err');
-    }
-  });
-}
+// Phase 3 Block 13: _attachDropTarget() extrahiert nach
+// renderer/utils/dropTarget.js. Shim-Alias unten.
+const { attachDropTarget: _attachDropTarget } = window.DropTarget;
 
 function renderFbList(items) {
   const ul = $('#fb-list');
