@@ -3,8 +3,19 @@
 // Extracted from app.js: helpButton, buildParamRow, attachImageDimGuards.
 //
 // All functions are pure (or DOM-only) — no state coupling.
+//
+// `el` (create-element helper) is exposed on window so the other
+// renderer files (imageTabA, speechTab, musicTab, etc.) can call
+// it without having to re-import. The old monolithic app.js had it
+// at top-level, so it was already a global. The refactor that moved
+// it here into a `const` accidentally scoped it to this script tag
+// only — the other tab files (which are separate <script> tags in
+// index.html) couldn't see it, so TABS.image.build() threw on the
+// first `el('div', ...)` call and the image-tab content was empty.
 
-const el = window.createElement || (window.DomHelpers && window.DomHelpers.createElement) || (() => document.createElement('div'));
+// Expose the helper on window so it survives across <script> tags.
+window.el = window.createElement || (window.DomHelpers && window.DomHelpers.createElement) || (() => document.createElement('div'));
+const el = window.el;
 
 // Render a small "?" button next to a label. Click opens a
 // modal with the help text for the given topic. The topic can
