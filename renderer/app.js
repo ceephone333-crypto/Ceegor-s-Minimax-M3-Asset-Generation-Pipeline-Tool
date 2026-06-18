@@ -5722,6 +5722,7 @@ function showCropOverlay(srcPath) {
       }
     });
   });
+}
 // Phase 3 Block 9: setupCropFrameDrag() extrahiert nach
 // renderer/components/CropFrameDrag.js. Pure Funktion, keine App-State-Coupling.
 const { setupCropFrameDrag } = window.CropFrameDrag;
@@ -5963,6 +5964,7 @@ function showOptimizeOverlay(srcPath) {
     });
     m.appendChild(el('div', { class: 'footer' }, [cancelBtn, runBtn]));
   });
+}
 // Phase 3 Block 7: setupLastCmdTooltips() extrahiert nach
 // renderer/components/LastCmdTooltip.js. Drop-in-Alias unten.
 const { setupLastCmdTooltips } = window.LastCmdTooltip;
@@ -6256,6 +6258,7 @@ function applyFileSearch() {
     const name = (item.dataset.name || item.querySelector('.name')?.textContent || '').toLowerCase();
     item.style.display = name.includes(q) ? '' : 'none';
   }
+}
 }
 
 // Phase 3 Block 13: _attachDropTarget() extrahiert nach
@@ -7221,6 +7224,7 @@ async function runRemoveBackgroundOnItem(it) {
     setStatus('Background removal failed.', false);
     toast('Background removal failed: ' + (e && e.message || e), 'err', 6000);
   }
+}
 // Phase 3 Block 5: formatDate() extrahiert nach FormatUtils.js
 // als formatLocalShort(). Drop-in-Alias unten.
 const { formatLocalShort: formatDate } = window.FormatUtils;
@@ -7304,6 +7308,7 @@ async function promptNewFolder() {
       } }, 'Create'),
     ]));
   });
+}
 // Phase 3 Block 12: _quotaSeg() + _formatQuotaModel() extrahiert
 // nach renderer/utils/quotaFormatter.js. Pure Format-Logik,
 // 0 App-Coupling (nur escapeHtml über window).
