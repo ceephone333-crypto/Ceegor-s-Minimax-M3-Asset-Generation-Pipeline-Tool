@@ -448,6 +448,11 @@ const { setupHoverHelpTooltips } = window.HelpTooltip;
 // identisch, inkl. Array-Children-Flatten via [].concat()).
 const el = window.createElement;
 
+// Phase 3 Block 20: loadImageFromFile + derivedOutputPath extrahiert
+// nach renderer/utils/pureFuncs.js.
+const { loadImageFromFile, derivedOutputPath } = window.PureFuncs;
+
+
 // Phase 3 Block 19: FB_COLUMNS + normalizeFbColumns extrahiert
 // nach renderer/utils/fbColumns.js. Drop-in-Aliase unten.
 const { FB_COLUMNS, normalizeFbColumns } = window.FbColumns;
@@ -4017,14 +4022,6 @@ const { escapeHtml } = window;
 
 // Load a local file:// image as a usable Image object (resolves once
 // it's fully decoded). Used by upscale / crop / convert.
-function loadImageFromFile(filePath) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Failed to load image: ' + filePath));
-    img.src = fileUrl(filePath);
-  });
-}
 
 // Pick a non-clashing output path for the upscale / crop pipeline.
 // Tries `basePath`, `basePath (2)`, `basePath (3)`, ... via
@@ -4070,23 +4067,6 @@ function refreshUpscaleLabel() {
 // `_2x`, `_cropped_WxH`, or `_converted` infix between the stem and
 // the extension. If the result already exists, a numeric suffix is
 // appended to keep the original safe.
-function derivedOutputPath(srcPath, infix) {
-  const sep = srcPath.includes('\\') ? '\\' : '/';
-  const lastSep = srcPath.lastIndexOf(sep);
-  const dir = lastSep >= 0 ? srcPath.slice(0, lastSep) : '';
-  const lastDot = srcPath.lastIndexOf('.');
-  const stem = lastDot > lastSep ? srcPath.slice(0, lastDot) : srcPath;
-  const ext = lastDot > lastSep ? srcPath.slice(lastDot) : '';
-  let candidate = `${dir}${sep}${stem.split(sep).pop()}${infix}${ext}`;
-  // Append numeric suffix on collision
-  let i = 1;
-  // We don't have a direct "exists" IPC here in the renderer; the
-  // fbWrite will succeed (overwrite) if the file doesn't exist or
-  // will fail with EEXIST. To avoid clobbering, we just keep the
-  // name as-is and trust the user (or rely on fbWrite rejecting
-  // existing files in the future). For now: no auto-suffix.
-  return candidate;
-}
 
 // One resize step. Prefers createImageBitmap with resizeQuality: 'high'
 // â€” Chromium uses a Lanczos-style resampler for that, which is

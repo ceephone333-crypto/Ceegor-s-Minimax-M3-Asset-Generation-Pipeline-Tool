@@ -37,3 +37,30 @@ function iconForFile(ext) {
 }
 
 window.PureFuncs = { parseAspect, humanSize, parentDir, iconForFile };
+
+// Load a local file:// image as a usable Image object (resolves once
+// it is fully decoded). Used by upscale / crop / convert.
+function loadImageFromFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Failed to load image: " + filePath));
+    img.src = fileUrl(filePath);
+  });
+}
+
+// Pick a non-clobbering output path next to the source. Inserts a
+// `_2x`, `_cropped_WxH`, or `_converted` infix between the stem and
+// the extension. If the result already exists, a numeric suffix is
+// appended to keep the original safe.
+function derivedOutputPath(srcPath, infix) {
+  const sep = srcPath.includes("\\") ? "\\" : "/";
+  const lastSep = srcPath.lastIndexOf(sep);
+  const dir = lastSep >= 0 ? srcPath.slice(0, lastSep) : "";
+  const lastDot = srcPath.lastIndexOf(".");
+  const stem = lastDot > lastSep ? srcPath.slice(0, lastDot) : srcPath;
+  const ext = lastDot > lastSep ? srcPath.slice(lastDot) : "";
+  return dir + sep + stem.split(sep).pop() + infix + ext;
+}
+
+window.PureFuncs = Object.assign(window.PureFuncs || {}, { loadImageFromFile, derivedOutputPath });
