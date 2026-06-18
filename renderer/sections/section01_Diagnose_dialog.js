@@ -56,8 +56,11 @@ function showDiagnose() {
   });
 }
 
-// Phase 3: exportiere showHelp auf window, damit
-// components/HelpButton.js (und zukünftige Help-Module) es aufrufen
-// können, ohne den Function-Scope zu verlassen.
-window.showHelp = showHelp;
+// Phase 3: showHelp is defined in renderer/sections/section23_Centralized_help_system.js
+// (where the centralized help modal lives). That file also handles
+// the `window.showHelp = showHelp` export. We used to do it here
+// (because the original monolithic app.js had everything in one
+// file) but after the refactor that put help-modal in section23,
+// the bare `showHelp` reference here throws a ReferenceError at
+// load time. So we just skip the export — section23 handles it.
 

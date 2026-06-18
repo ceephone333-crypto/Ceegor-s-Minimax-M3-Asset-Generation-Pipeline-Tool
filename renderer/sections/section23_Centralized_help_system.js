@@ -223,3 +223,11 @@ const { setupHelpDelegation } = window.HelpDelegation;
 // renderer/components/HelpTooltip.js. Shim-Alias unten.
 const { setupHoverHelpTooltips } = window.HelpTooltip;
 
+// Phase 4 Fix 6: export showHelp on window for HelpButton.js
+// (and any other component that needs to invoke the help modal).
+// section01 used to do this export but it lives before section23
+// in index.html, so the bare `showHelp` reference would throw a
+// ReferenceError at load time. Doing the export here where the
+// function is actually defined is the correct fix.
+window.showHelp = showHelp;
+

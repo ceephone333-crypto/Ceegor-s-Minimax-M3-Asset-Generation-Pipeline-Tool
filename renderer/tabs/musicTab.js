@@ -1,7 +1,7 @@
 // renderer/tabs/musicTab.js (Phase 3 Block 28)
+// ----------------- MUSIC TAB -----------------
 window.TABS = window.TABS || {};
-window.TABS.music = // ----------------- MUSIC TAB -----------------
-TABS.music = {
+window.TABS.music = {
   prefilled: 'calm piano melody, 15 seconds',
   build() {
     const root = $('#tab-music');

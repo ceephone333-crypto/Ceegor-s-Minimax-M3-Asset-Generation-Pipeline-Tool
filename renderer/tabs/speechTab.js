@@ -1,7 +1,7 @@
 // renderer/tabs/speechTab.js (Phase 3 Block 28)
+// ----------------- SPEECH TAB -----------------
 window.TABS = window.TABS || {};
-window.TABS.speech = // ----------------- SPEECH TAB -----------------
-TABS.speech = {
+window.TABS.speech = {
   prefilled: 'Welcome to MiniMax â€” Token Plan or PAYG, both work here.',
   build() {
     const root = $('#tab-speech');
