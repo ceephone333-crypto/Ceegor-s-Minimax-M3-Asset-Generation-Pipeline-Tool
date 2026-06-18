@@ -6,6 +6,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "status": "node scripts/status.js",
     "setup": "node scripts/setup.js",
     "check": "node scripts/check.js",
     "lint": "node scripts/lint.js",
@@ -13,6 +14,7 @@
     "prebuild": "node scripts/check.js",
     "build": "node scripts/zip-portable.js",
     "build:asar": "node scripts/update-zip.js",
+    "build:dev": "node scripts/build-dev-zip.js",
     "build:full": "electron-builder --win dir --x64",
     "enable-devmode": "node scripts/enable-devmode.js"
   },
@@ -43,7 +45,7 @@
     "appId": "com.ceegor.minimax-asset-tool",
     "productName": "MiniMaxAssetTool",
     "directories": {
-      "output": "dist"
+      "output": "dist-build"
     },
     "files": [
       "main.js",
