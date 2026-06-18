@@ -27,7 +27,15 @@ var $ = (sel, root = document) => root.querySelector(sel);
 var $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 // ----------------- Tabs -----------------
-var TABS = {};
+// Phase 4 Fix 16: 'var TABS = window.TABS' statt 'var TABS = {}'.
+// imageTab/musicTab/speechTab/videoTab (geladen VOR app.js) machen
+// 'window.TABS = window.TABS || {}; window.TABS.X = {...};'.
+// Wuerde app.js jetzt 'var TABS = {}' machen, wuerde 'var' am
+// Top-Level window.TABS = {} setzen und ALLE Tab-Definitionen
+// loeschen. Mit 'var TABS = window.TABS' wird stattdessen die
+// Referenz auf den bereits befuellten window.TABS kopiert -
+// aenderungen an TABS in app.js propagieren zu window.TABS.
+var TABS = window.TABS;
 
 // ----------------- Bootstrap on DOM ready -----------------
 // This is the renderer-side init() that wires up tabs, file browser,

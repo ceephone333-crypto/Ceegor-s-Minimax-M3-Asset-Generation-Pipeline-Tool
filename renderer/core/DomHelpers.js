@@ -3,8 +3,11 @@
 // escapeHtml, um XSS durch ungefilterte innerHTML-Zuweisungen zu verhindern
 // (siehe Phase 5 — aktuell nur die Wrapper).
 
-const $ = (sel, root = document) => root.querySelector(sel);
-const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+// Phase 4 Fix 16: 'var' statt 'const'. 'const' am Top-Level eines
+// <script>-Tags ist NICHT global. Sections (geladen NACH DomHelpers.js,
+// aber VOR app.js) rufen bare '$'/'$$' auf. 'var' macht sie global.
+var $ = (sel, root = document) => root.querySelector(sel);
+var $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 /**
  * Erzeugt ein DOM-Element mit Attributen + Kindern.
