@@ -15,7 +15,12 @@
 
 // Expose the helper on window so it survives across <script> tags.
 window.el = window.createElement || (window.DomHelpers && window.DomHelpers.createElement) || (() => document.createElement('div'));
-const el = window.el;
+// Phase 4 Fix 15: 'var' statt 'const'. 'const' am Top-Level eines
+// <script>-Tags ist NICHT global. Aeltere Dateien (imageTab,
+// musicTab, ...) referenzieren 'el' direkt. 'var el' am Top-Level
+// eines <script>-Tags WIRD global und macht den helper ueberall
+// sichtbar — gleicher Trick wie bei 'state' in section24_State.js.
+var el = window.el;
 
 // Render a small "?" button next to a label. Click opens a
 // modal with the help text for the given topic. The topic can

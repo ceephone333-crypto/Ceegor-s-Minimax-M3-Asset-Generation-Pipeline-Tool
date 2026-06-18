@@ -3,7 +3,14 @@
 // Source: app.js L25..223
 
 // ----------------- State -----------------
-const state = {
+// Phase 4 Fix 15: 'window.state' statt 'const state'.
+// Vor dem Phase-3-Refactor war alles in app.js — 'const state' lebte
+// in EINEM Script-Tag und war ueberall sichtbar. Nach dem Refactor
+// sind die Files in SEPARATE <script>-Tags aufgeteilt, und 'const'
+// am Top-Level ist NICHT global. Wenn imageTab/musicTab/section05
+// usw. auf 'state.config' zugreifen, kriegen sie ReferenceError.
+// Fix: state auf window exposen.
+window.state = {
   config: { api_key: '', output_dir: '', region: 'global', theme: 'dark', styles: [] },
   voices: [],
   voicesLoaded: false,
@@ -194,6 +201,13 @@ const state = {
   // the same launch. see _popupSeenThisSession below.
   seenPopups: {},
 };
+// Phase 4 Fix 15: backward-compat alias. 'const state' am Top-Level
+// eines <script>-Tags ist NICHT global. Aeltere Dateien (imageTab,
+// musicTab, sections/section05, ...) referenzieren 'state' direkt.
+// 'var' am Top-Level eines <script>-Tags WIRD global, also machen
+// wir hier 'var state = window.state'. Damit brauchen wir NICHT
+// alle 30 Stellen auf 'window.state' umzuschreiben.
+var state = window.state;
 // Per-session set of popup ids that have already been shown during
 // this app launch. Used by the 'per-session' popup policy so a
 // popup that was dismissed earlier in this session doesn't re-fire.

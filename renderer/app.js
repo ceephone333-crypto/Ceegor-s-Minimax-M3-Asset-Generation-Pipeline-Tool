@@ -19,11 +19,15 @@ const TOOL_INFO =
   'batch generation (run a whole list of prompts in one click), ' +
   'and built-in tools to upscale, crop, remove backgrounds, and shrink the file size of every result.';
 
-const $ = (sel, root = document) => root.querySelector(sel);
-const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+// Phase 4 Fix 15: 'var' statt 'const'. 'const' am Top-Level eines
+// <script>-Tags ist NICHT global. Section-Files (geladen VOR app.js)
+// rufen '$'/'$$'/'TABS' auf. Mit 'var' werden sie global und sind
+// in allen <script>-Tags sichtbar.
+var $ = (sel, root = document) => root.querySelector(sel);
+var $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 // ----------------- Tabs -----------------
-const TABS = {};
+var TABS = {};
 
 // ----------------- Bootstrap on DOM ready -----------------
 // This is the renderer-side init() that wires up tabs, file browser,
