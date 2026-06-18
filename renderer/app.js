@@ -448,6 +448,11 @@ const { setupHoverHelpTooltips } = window.HelpTooltip;
 // identisch, inkl. Array-Children-Flatten via [].concat()).
 const el = window.createElement;
 
+// Phase 3 Block 15: 4 pure helpers (parseAspect, humanSize,
+// parentDir, iconForFile) extrahiert nach renderer/utils/pureFuncs.js.
+const { parseAspect, humanSize, parentDir, iconForFile } = window.PureFuncs;
+
+
 // Phase 3 Block 14: 5 tiny pure helpers extrahiert nach
 // renderer/utils/tinyUtils.js. Drop-in-Aliase unten.
 const { pathJoin, safeStringify, extFromMime, _isImageExt, appendBoolFlag } = window.TinyUtils;
@@ -1710,12 +1715,6 @@ function attachImageDimGuards(aspect, width, height) {
   function hide() {
     warning.style.display = 'none';
     warning.innerHTML = '';
-  }
-  function parseAspect(v) {
-    if (!v) return null;
-    const m = String(v).match(/^(\d+):(\d+)$/);
-    if (!m) return null;
-    return { w: parseInt(m[1], 10), h: parseInt(m[2], 10) };
   }
   function recheck() {
     const aspectVal = aspect.getValue();
@@ -6243,13 +6242,6 @@ function openFolderOptions() {
   });
 }
 
-function parentDir(p) {
-  if (!p) return '';
-  const sep = p.includes('\\') ? '\\' : '/';
-  const parts = p.split(/[\\/]/).filter(Boolean);
-  parts.pop();
-  return parts.length ? parts.join(sep) : '';
-}
 
 function applyFileSearch() {
   const q = ($('#fb-search')?.value || '').toLowerCase();
@@ -6406,20 +6398,7 @@ function renderFbList(items) {
   }
 }
 
-function iconForFile(ext) {
-  if (['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(ext)) return 'ðŸ–¼';
-  if (['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.opus', '.pcm'].includes(ext)) return 'ðŸŽµ';
-  if (['.mp4', '.mov', '.webm', '.mkv'].includes(ext)) return 'ðŸŽ¬';
-  if (['.srt', '.txt', '.json', '.md'].includes(ext)) return 'ðŸ“„';
-  return 'ðŸ“„';
-}
 
-function humanSize(n) {
-  if (n < 1024) return n + ' B';
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
-  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
-}
 
 async function openItem(it) {
   // Defensive: items from the FS list always have {path, ext, isDir}, but
