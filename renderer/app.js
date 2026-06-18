@@ -448,6 +448,11 @@ const { setupHoverHelpTooltips } = window.HelpTooltip;
 // identisch, inkl. Array-Children-Flatten via [].concat()).
 const el = window.createElement;
 
+// Phase 3 Block 19: FB_COLUMNS + normalizeFbColumns extrahiert
+// nach renderer/utils/fbColumns.js. Drop-in-Aliase unten.
+const { FB_COLUMNS, normalizeFbColumns } = window.FbColumns;
+
+
 // Phase 3 Block 18: MODEL_SPECS + getRowSpec + validateTabAgainstSpec
 // extrahiert nach renderer/specs/modelSpecs.js. Drop-in-Aliase unten.
 const { MODEL_SPECS, getRowSpec, validateTabAgainstSpec } = window.ModelSpecs;
@@ -5759,88 +5764,6 @@ async function refreshBrowser(opts = {}) {
 // 0 App-Coupling.
 const { FB_SORT_MODES, normalizeFbSort, naturalCompare, sortFbItems } = window.FbSort;
 
-// ----------------- File-browser columns -----------------
-// Each column is a self-describing object that tells the renderer
-//   1. its stable id (key into state.fbColumns),
-//   2. its user-visible label (header + overlay checkbox),
-//   3. the CSS grid template it occupies in the row,
-//   4. a render(item) function that produces the cell's DOM
-//      children (text + optional title for the full value).
-// The "name" column is mandatory and is NOT in this list â€” the
-// row always renders it. Adding it here would let the user turn
-// it off, which would make the row unscannable.
-const FB_COLUMNS = [
-  {
-    id: 'size',
-    label: 'Size',
-    // "auto" so the column shrinks to the longest byte-string
-    // we have. The row uses min-width to keep the column from
-    // collapsing to 0.
-    gridTemplate: 'minmax(70px, auto)',
-    render: (it) => {
-      if (it.isDir) return ['', ''];
-      const text = humanSize(it.size);
-      return [text, String(it.size || 0)];
-    },
-  },
-  {
-    id: 'type',
-    label: 'Type',
-    gridTemplate: 'minmax(60px, auto)',
-    render: (it) => {
-      if (it.isDir) return ['â€”', 'folder'];
-      const ext = (it.ext || '').replace(/^\./, '').toUpperCase();
-      return [ext || 'â€”', ext];
-    },
-  },
-  {
-    id: 'mtime',
-    label: 'Modified',
-    gridTemplate: 'minmax(130px, auto)',
-    render: (it) => {
-      const ms = Number(it.mtimeMs) || 0;
-      if (!ms) return ['â€”', ''];
-      // Locale date + short time, e.g. "2024-03-15 14:30".
-      // The full ISO is on the title so the user can inspect.
-      const d = new Date(ms);
-      const text = d.toLocaleString();
-      return [text, d.toISOString()];
-    },
-  },
-  {
-    id: 'created',
-    label: 'Created',
-    gridTemplate: 'minmax(130px, auto)',
-    render: (it) => {
-      const ms = Number(it.birthtimeMs) || 0;
-      if (!ms) return ['â€”', ''];
-      const d = new Date(ms);
-      const text = d.toLocaleString();
-      return [text, d.toISOString()];
-    },
-  },
-  {
-    id: 'path',
-    label: 'Path',
-    // The path column is wide; allow it to grow to fit long
-    // folder names but cap at a reasonable max so the row
-    // doesn't always horizontally scroll.
-    gridTemplate: 'minmax(220px, 1fr)',
-    render: (it) => {
-      return [it.path || '', it.path || ''];
-    },
-  },
-];
-// Sanitise state.fbColumns: coerce every known id to a boolean,
-// and ignore any unknown id (corrupted state.json / future
-// version). The "name" column is always implicitly on.
-function normalizeFbColumns(cols) {
-  const out = {};
-  for (const c of FB_COLUMNS) {
-    out[c.id] = !!(cols && cols[c.id]);
-  }
-  return out;
-}
 // Build the CSS grid-template-columns string for the file
 // browser rows. Order: icon + name (mandatory), then the
 // user-enabled columns in declaration order.
