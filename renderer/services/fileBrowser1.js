@@ -59,6 +59,7 @@ async function refreshBrowser(opts = {}) {
   renderFbList(sorted);
   // Apply current search filter if any
   applyFileSearch();
+}
 // Phase 3 Block 11: FB_SORT_MODES + normalizeFbSort + naturalCompare +
 // sortFbItems extrahiert nach renderer/utils/fbSort.js. Pure Modul,
 // 0 App-Coupling.
@@ -201,7 +202,6 @@ function applyFileSearch() {
     const name = (item.dataset.name || item.querySelector('.name')?.textContent || '').toLowerCase();
     item.style.display = name.includes(q) ? '' : 'none';
   }
-}
 }
 
 // Phase 3 Block 13: _attachDropTarget() extrahiert nach
