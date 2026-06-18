@@ -448,6 +448,11 @@ const { setupHoverHelpTooltips } = window.HelpTooltip;
 // identisch, inkl. Array-Children-Flatten via [].concat()).
 const el = window.createElement;
 
+// Phase 3 Block 16: mimeFromPath + isFlagVisibleForCurrentModel
+// extrahiert nach renderer/utils/imageUtils.js.
+const { mimeFromPath, isFlagVisibleForCurrentModel } = window.ImageUtils;
+
+
 // Phase 3 Block 15: 4 pure helpers (parseAspect, humanSize,
 // parentDir, iconForFile) extrahiert nach renderer/utils/pureFuncs.js.
 const { parseAspect, humanSize, parentDir, iconForFile } = window.PureFuncs;
@@ -2038,14 +2043,6 @@ function getRowSpec(tabKey, flag, currentModel, currentResolution) {
 //     = always visible).
 //
 // This is the implementation of "show only supported parameters".
-function isFlagVisibleForCurrentModel(tabKey, flag, currentModel, currentResolution) {
-  const ov = getRowSpec(tabKey, flag, currentModel, currentResolution);
-  if (!ov) return true;
-  if (ov.supportedForModels && currentModel) {
-    return ov.supportedForModels.has(currentModel);
-  }
-  return true;
-}
 
 // Validate every value in the per-tab state against the spec.
 // Returns an array of error strings (empty = OK). Called by the
@@ -2061,7 +2058,7 @@ function validateTabAgainstSpec(tabKey, params, currentModel, currentResolution)
     const v = param.getValue ? param.getValue() : (param.value ?? param.el?.value);
     if (v == null || v === '' || v === 'off') continue;
     // Skip flags that aren't visible for the current model.
-    if (!isFlagVisibleForCurrentModel(tabKey, flag, currentModel, currentResolution)) {
+    if (!isFlagVisibleForCurrentModel(tabKey, flag, currentModel, currentResolution, getRowSpec)) {
       errs.push(`${flag} is not supported on ${currentModel}. Switch models or hide this row.`);
       continue;
     }
@@ -4324,14 +4321,6 @@ function refreshUpscaleLabel() {
 // Derive the output MIME from a file extension. Used to export the
 // canvas in the same format as the input. WebP is detected too (since
 // the Canvas API supports exporting to image/webp in modern Chromium).
-function mimeFromPath(p) {
-  const ext = (p.split('.').pop() || '').toLowerCase();
-  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
-  if (ext === 'webp') return 'image/webp';
-  if (ext === 'gif') return 'image/png'; // GIF can't be exported from canvas;
-                                        // we fall back to PNG (first frame)
-  return 'image/png';
-}
 
 // Pick a non-clobbering output path next to the source. Inserts a
 // `_2x`, `_cropped_WxH`, or `_converted` infix between the stem and
