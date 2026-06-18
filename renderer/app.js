@@ -448,6 +448,12 @@ const { setupHoverHelpTooltips } = window.HelpTooltip;
 // identisch, inkl. Array-Children-Flatten via [].concat()).
 const el = window.createElement;
 
+// Phase 3 Block 22: buildParamRow + attachImageDimGuards extrahiert
+// nach renderer/components/ParamRow.js. (helpButton bleibt in app.js
+// weil es historisch eng mit helpTopics verkoppelt ist.)
+const { buildParamRow, attachImageDimGuards } = window.ParamRow;
+
+
 // Phase 3 Block 21: LOG-Section (addLogEvent, renderLogEvent,
 // _logSelected, toggleLogSelection, clearLogSelection, selectLogRange,
 // formatLogEventForCopy, collectLogCopyText, setupLogClicks, log) extrahiert
@@ -1291,119 +1297,6 @@ function buildFilePrefixRow() {
 //   options: [{ value, label }]   value==='' means "off / default"
 //   fileFilters (for kind:'text'): adds a Browse button with these filters
 //   id: explicit DOM id (used for state save/load + cross-tab unique key)
-function buildParamRow(label, def, id) {
-  // Help icon: if def.help is a string, we use it as both the
-  // 1-line hover summary (the original behaviour) and the
-  // inline text in the help modal. If it's a key into the
-  // central helpTopics map, we use the richer text from there.
-  // Either way, the helpButton factory renders the same
-  // clickable `?` icon so the user can read the full
-  // explanation in a modal â€” the old `<span class="help">`
-  // only had a tiny native title tooltip which most users
-  // never read.
-  const helpEl = def.help ? helpButton(def.help) : null;
-  const lbl = el('label', {}, [label, helpEl].filter(Boolean));
-
-  let input;
-  const value = def.value ?? def.default ?? '';
-
-  if (def.kind === 'boolean') {
-    const sel = el('select', {});
-    sel.appendChild(el('option', { value: 'off' }, 'Off'));
-    sel.appendChild(el('option', { value: 'on' }, 'On'));
-    sel.value = value ? 'on' : 'off';
-    if (id) sel.id = id;
-    input = sel;
-  } else if (def.kind === 'number' || def.kind === 'enum-number') {
-    const sel = el('select', {});
-    for (const o of def.options) {
-      sel.appendChild(el('option', { value: String(o.value) }, o.label ?? String(o.value)));
-    }
-    if (def.allowCustom !== false) {
-      sel.appendChild(el('option', { value: '__custom__' }, 'Customâ€¦'));
-    }
-    const num = el('input', { type: 'number', value: def.customDefault ?? '', placeholder: 'value', min: def.min, max: def.max, step: def.step ?? 1 });
-    num.style.display = 'none';
-    const current = (def.options || []).find((o) => String(o.value) === String(value));
-    if (current) sel.value = String(current.value);
-    else if (value !== '' && value != null) { sel.value = '__custom__'; num.value = value; num.style.display = ''; }
-    const combo = el('div', { class: 'combo' });
-    if (sel.value === '__custom__') combo.classList.add('has-custom');
-    sel.addEventListener('change', () => {
-      num.style.display = sel.value === '__custom__' ? '' : 'none';
-      combo.classList.toggle('has-custom', sel.value === '__custom__');
-      if (sel.value !== '__custom__') num.value = '';
-    });
-    combo.append(sel, num);
-    if (id) { sel.id = id + '.sel'; num.id = id + '.num'; }
-    input = { el: combo, getValue: () => sel.value === '__custom__' ? num.value : sel.value, type: 'number' };
-  } else if (def.kind === 'enum-text') {
-    const sel = el('select', {});
-    for (const o of def.options) {
-      sel.appendChild(el('option', { value: String(o.value) }, o.label ?? String(o.value)));
-    }
-    if (def.allowCustom !== false) sel.appendChild(el('option', { value: '__custom__' }, 'Customâ€¦'));
-    const txt = el('input', { type: 'text', value: def.customDefault ?? '', placeholder: 'custom value' });
-    txt.style.display = 'none';
-    const current = (def.options || []).find((o) => String(o.value) === String(value));
-    if (current) sel.value = String(current.value);
-    else if (value) { sel.value = '__custom__'; txt.value = value; txt.style.display = ''; }
-    const combo = el('div', { class: 'combo' });
-    if (sel.value === '__custom__') combo.classList.add('has-custom');
-    sel.addEventListener('change', () => {
-      txt.style.display = sel.value === '__custom__' ? '' : 'none';
-      combo.classList.toggle('has-custom', sel.value === '__custom__');
-    });
-    combo.append(sel, txt);
-    if (id) { sel.id = id + '.sel'; txt.id = id + '.txt'; }
-    input = { el: combo, getValue: () => sel.value === '__custom__' ? txt.value : sel.value, type: 'text' };
-  } else if (def.kind === 'text') {
-    const inp = el('input', { type: 'text', value, placeholder: def.placeholder || '' });
-    if (id) inp.id = id;
-    if (def.fileFilters && def.fileFilters.length) {
-      // File-picker text input with Browse button
-      const browse = el('button', { class: 'btn-mini', type: 'button' }, 'Browseâ€¦');
-      browse.addEventListener('click', async () => {
-        const r = await window.api.pickFile({ title: def.browseTitle || 'Select file', filters: def.fileFilters });
-        if (r.ok) { inp.value = r.path; inp.dispatchEvent(new Event('input', { bubbles: true })); }
-      });
-      const combo = el('div', { class: 'combo' }, [inp, browse]);
-      input = inp;  // raw element; arg builder uses inp.value
-      const row = el('div', { class: 'row' }, [lbl, combo]);
-      // Same top-level `.el` / `.getValue` aliases as the main
-      // return below â€” see comment there for the rationale.
-      return { row, input, el: inp, getValue: () => inp.value };
-    }
-    input = inp;
-  } else if (def.kind === 'textarea') {
-    input = el('textarea', {}, value);
-    if (id) input.id = id;
-  } else {
-    // enum
-    const sel = el('select', {});
-    for (const o of def.options) {
-      sel.appendChild(el('option', { value: String(o.value) }, o.label ?? String(o.value)));
-    }
-    sel.value = value ?? def.options?.[0]?.value ?? '';
-    if (id) sel.id = id;
-    input = sel;
-  }
-
-  const row = el('div', { class: 'row' }, [lbl, input.el || input]);
-  // Expose `el` and `getValue` at the top level too. The legacy
-  // return shape was `{ row, input }` only, but two call sites â€”
-  // attachImageDimGuards() and attachSubjectRefGuard() in the
-  // image tab's build() â€” read `width.el.addEventListener(...)`
-  // and `subjRef.el` directly on the returned param. Without the
-  // top-level aliases those read `undefined.el` and crashed
-  // "Cannot read properties of undefined (reading
-  // 'addEventListener')" on every startup. The `.input` property
-  // is kept for backwards-compat with the existing call sites
-  // that read `width.input.getValue()` and `subjRef.input.value`.
-  const elAlias = input.el || input;
-  const getValueAlias = input.getValue || (() => input.value);
-  return { row, input, el: elAlias, getValue: getValueAlias };
-}
 
 // Extract the --flag from a param's enclosing .row label (e.g. "--model (hd)"
 // â†’ "--model"). The flag is the first "--xxx" token in the label. Returns
@@ -1428,124 +1321,6 @@ function buildParamRow(label, def, id) {
 // buildParamRow() so they read the current value via getValue()
 // and write back via the underlying input/select (which also
 // fires 'input' / 'change' for the per-tab state autosave).
-function attachImageDimGuards(aspect, width, height) {
-  const warning = el('div', { class: 'image-dim-warning', style: 'display: none;' });
-  // We insert the warning into the .section that owns the W Ã— H
-  // row, right after the .grid. The caller is responsible for
-  // appending the warning element to the right parent.
-  // (We return the element so the caller can do that.)
-  function setValue(param, v) {
-    // Write a numeric value into a buildParamRow number param.
-    // The combo (sel + num input) has a "Customâ€¦" option that
-    // reveals the num input; we select it, set the value, and
-    // dispatch the input event so has-custom class flips.
-    const combo = param.el;
-    const sel = combo.querySelector('select');
-    const num = combo.querySelector('input[type="number"]');
-    const options = Array.from(sel.options).map((o) => o.value);
-    if (options.includes(String(v))) {
-      sel.value = String(v);
-      num.style.display = 'none';
-      num.value = '';
-    } else {
-      sel.value = '__custom__';
-      num.style.display = '';
-      num.value = String(v);
-    }
-    combo.classList.toggle('has-custom', sel.value === '__custom__');
-    num.dispatchEvent(new Event('input', { bubbles: true }));
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-  function show(text, onCorrect) {
-    warning.innerHTML = '';
-    const span = el('span', { style: 'flex: 1;' }, text);
-    warning.appendChild(span);
-    if (onCorrect) {
-      const btn = el('button', { class: 'correct-btn', type: 'button' }, 'Correct');
-      btn.addEventListener('click', onCorrect);
-      warning.appendChild(btn);
-    }
-    warning.style.display = '';
-  }
-  function hide() {
-    warning.style.display = 'none';
-    warning.innerHTML = '';
-  }
-  function recheck() {
-    const aspectVal = aspect.getValue();
-    const w = parseInt(width.getValue(), 10);
-    const h = parseInt(height.getValue(), 10);
-    const ap = parseAspect(aspectVal);
-    // 1. Aspect ratio mismatch.
-    if (ap && Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
-      const actual = w / h;
-      const expected = ap.w / ap.h;
-      // Allow 1% slop for float rounding.
-      if (Math.abs(actual - expected) / expected > 0.01) {
-        show(
-          `W Ã— H (${w}Ã—${h}) doesn't match the selected aspect ratio ${aspectVal}. The API will likely reject this or auto-override one of the values.`,
-          () => {
-            // Prioritise W as the source of truth: H = W * ratio.
-            const newH = Math.max(8, Math.round((w * ap.h) / ap.w / 8) * 8);
-            setValue(height, newH);
-            recheck();
-          },
-        );
-        return;
-      }
-    }
-    // 2. Divisible-by-8 checks.
-    if (Number.isFinite(w) && w > 0 && w % 8 !== 0) {
-      show(
-        `W (${w}) must be a multiple of 8 (the API rejects other values with a 400).`,
-        () => {
-          setValue(width, Math.max(8, Math.round(w / 8) * 8));
-          recheck();
-        },
-      );
-      return;
-    }
-    if (Number.isFinite(h) && h > 0 && h % 8 !== 0) {
-      show(
-        `H (${h}) must be a multiple of 8 (the API rejects other values with a 400).`,
-        () => {
-          setValue(height, Math.max(8, Math.round(h / 8) * 8));
-          recheck();
-        },
-      );
-      return;
-    }
-    hide();
-  }
-  // Wire the listeners. buildParamRow number params are combos;
-  // the 'input' event bubbles from the inner num input.
-  width.el.addEventListener('input', recheck);
-  width.el.addEventListener('change', recheck);
-  height.el.addEventListener('input', recheck);
-  height.el.addEventListener('change', recheck);
-  // The aspect select lives in aspect.el directly.
-  aspect.el.addEventListener('change', () => {
-    // If the user picks a new aspect ratio, auto-fill whichever
-    // of W or H is already set (or both, if both are empty, to
-    // the first preset value that matches the aspect).
-    const aspectVal = aspect.getValue();
-    const ap = parseAspect(aspectVal);
-    if (!ap) { recheck(); return; }
-    const w = parseInt(width.getValue(), 10);
-    const h = parseInt(height.getValue(), 10);
-    if (Number.isFinite(w) && w > 0) {
-      const newH = Math.max(8, Math.round((w * ap.h) / ap.w / 8) * 8);
-      setValue(height, newH);
-    } else if (Number.isFinite(h) && h > 0) {
-      const newW = Math.max(8, Math.round((h * ap.w) / ap.h / 8) * 8);
-      setValue(width, newW);
-    }
-    recheck();
-  });
-  // Initial pass â€” picks up restored state on first paint.
-  recheck();
-  return warning;
-}
 
 // Validate the --subject-ref value. mmx accepts:
 //   - a local filesystem path that exists (PNG / JPG / JPEG / WebP)
