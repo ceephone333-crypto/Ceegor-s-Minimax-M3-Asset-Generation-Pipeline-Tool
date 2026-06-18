@@ -448,6 +448,11 @@ const { setupHoverHelpTooltips } = window.HelpTooltip;
 // identisch, inkl. Array-Children-Flatten via [].concat()).
 const el = window.createElement;
 
+// Phase 3 Block 14: 5 tiny pure helpers extrahiert nach
+// renderer/utils/tinyUtils.js. Drop-in-Aliase unten.
+const { pathJoin, safeStringify, extFromMime, _isImageExt, appendBoolFlag } = window.TinyUtils;
+
+
 // ----------------- API key masking -----------------
 // Phase 3: extrahiert nach renderer/utils/securityUtils.js.
 // Hier nur Shim-Aliase, damit der 800+-Aufruf-Code in app.js
@@ -1643,10 +1648,6 @@ function appendFlag(args, param) {
     return;
   }
   args.push(flag, String(v));
-}
-function appendBoolFlag(args, param, flag) {
-  const v = param.getValue ? param.getValue() : param.value;
-  if (v === 'on' || v === true) args.push(flag);
 }
 
 // ----------------- Image-dim guards -----------------
@@ -4263,9 +4264,6 @@ function navigateToOverlayImage(path, opts) {
   probe.src = url;
 }
 
-function safeStringify(o) {
-  try { return JSON.stringify(o, null, 2).slice(0, 4000); } catch { return String(o); }
-}
 // Phase 3 Block 6: escapeHtml() ist schon in DomHelpers.js
 // verfügbar. Drop-in-Alias unten.
 const { escapeHtml } = window;
@@ -4334,14 +4332,6 @@ function mimeFromPath(p) {
   if (ext === 'gif') return 'image/png'; // GIF can't be exported from canvas;
                                         // we fall back to PNG (first frame)
   return 'image/png';
-}
-
-// Derive the output file extension from a MIME type. Used by the
-// format-converter.
-function extFromMime(mime) {
-  if (mime === 'image/jpeg') return 'jpg';
-  if (mime === 'image/webp') return 'webp';
-  return 'png';
 }
 
 // Pick a non-clobbering output path next to the source. Inserts a
@@ -6139,14 +6129,6 @@ function buildFbGridTemplate() {
     if (fbCols[c.id]) cols.push(c.gridTemplate);
   }
   return cols.join(' ');
-}
-// Helper: true if `ext` is one of the image formats the
-// thumbnail renderer can preview. Duplicated from iconForFile
-// so the two lists stay in sync at the call site; we do not
-// import from iconForFile because that returns the unicode
-// emoji and we need the extension list directly.
-function _isImageExt(ext) {
-  return ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes((ext || '').toLowerCase());
 }
 // Build the icon cell (the first column) for a file-browser row.
 // Renders either a centered thumbnail of the actual image file or
