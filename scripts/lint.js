@@ -31,6 +31,7 @@ const LEGACY_OVERSIZE = new Set([
   'app.js',              // 8 546 Z. — wird in Phase 3 zerlegt
   'imageTab.js',         // 736 Z. — Phase 3 Block 23
   'musicTab.js',         // 855 Z. — Phase 3 Block 25
+  'fileBrowser2.js',     // 682 Z. — Phase 3 Block 27 (gesplittet)
 ]);
 
 // "God Words" — Dateien mit diesen Suffixen werden abgelehnt.

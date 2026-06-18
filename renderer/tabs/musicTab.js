@@ -1,4 +1,4 @@
-// renderer/tabs/musicTab.js (Phase 3 Block 25)
+// renderer/tabs/musicTab.js (Phase 3 Block 28)
 window.TABS = window.TABS || {};
 window.TABS.music = // ----------------- MUSIC TAB -----------------
 TABS.music = {
