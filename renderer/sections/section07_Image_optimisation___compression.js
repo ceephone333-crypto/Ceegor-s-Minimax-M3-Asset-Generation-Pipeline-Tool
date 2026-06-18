@@ -1,0 +1,951 @@
+// renderer/sections/section07_Image_optimisation_part1a.js (Phase 3 Block 31)
+// Part 1a.
+
+// renderer/sections/section07_Image_optimisation_part1.js (Phase 3 Block 30)
+// First half of Image optimisation section.
+
+// renderer/sections/section07_Image_optimisation___compression.js (Phase 3 Block 29)
+// Extracted: Image optimisation / compression
+// Source: app.js L2015..2945
+
+// ----------------- Image optimisation / compression -----------------
+// Thin wrapper around the main-process `image:optimize` IPC. The
+// actual Sharp / libvips work happens in src/imageOptimizer.js; the
+// renderer just translates UI choices into the IPC envelope and
+// returns a structured result.
+//
+// `opts`:
+//   {
+//     quality:       1..100,                  // default 82
+//     format:        'keep'|'jpeg'|'png'|'webp'|'avif',
+//                                            // default 'keep'
+//     stripMetadata: boolean,                 // default true
+//     // `overwriteSource: true` writes the optimised bytes
+//     // back to `srcPath` (atomic temp-file + rename on the
+//     // main side). The post-generation pipeline uses this so
+//     // the file the user just paid API credits to generate
+//     // ends up as the smaller, optimised file â€” no
+//     // intermediate "_optimized" sibling cluttering the
+//     // output folder. The folder-browser right-click overlay
+//     // leaves this off and uses a sibling file instead so
+//     // the user can A/B the original against the optimised
+//     // version.
+//     overwriteSource: boolean,               // default false
+//   }
+//
+// Returns the IPC envelope (see src/imageOptimizer.js header for
+// the full shape). Throws an Error on the rare `!ok` path so the
+// caller's catch block can show a single toast; the envelope
+// itself also carries the message in `.error` for callers that
+// want to render it inline (e.g. a results block in the dialog).
+async function optimizeImageFile(srcPath, opts) {
+  opts = opts || {};
+  // Defensive: derive the actual `format` to pass to the IPC
+  // from the UI's `format: 'keep' | 'jpeg' | ...` value. The
+  // 'keep' alias is renderer-side only â€” the IPC expects
+  // either a real format string or null/undefined for
+  // "preserve source format".
+  const fmt = (opts.format === 'keep' || !opts.format) ? null : opts.format;
+  const overwrite = !!opts.overwriteSource;
+  const out = overwrite
+    ? srcPath
+    : await uniqueOutputPath(derivedOutputPath(srcPath, '_optimized' + (fmt ? ('.' + fmt) : '')));
+  const r = await window.api.optimizeImage(srcPath, {
+    quality: opts.quality,
+    format: fmt,
+    stripMetadata: opts.stripMetadata !== false,
+    outputPath: out,
+  });
+  if (!r || !r.ok) {
+    const msg = (r && r.error) || 'Image optimisation failed.';
+    const err = new Error(msg);
+    err.result = r;
+    throw err;
+  }
+  return r;
+}
+
+// Apply the full post-processing chain (upscale â†’ auto-crop â†’ remove
+// background â†’ optimize) to a single generated image. The previous
+// implementation of this chain in the image-tab gen handler only
+// applied the steps to the LAST variant, which silently dropped the
+// upscale / crop / no-bg / optimise work for variants 1..N-1. This
+// helper is the per-file version of the same chain, called once per
+// generated file by the gen handler.
+//
+// Each step is wrapped in its own try/catch and falls back to the
+// best-available path on failure. The chain returns the final path
+// (which may equal `srcPath` if every step was a no-op or failed).
+//
+// Args:
+//   srcPath: the generated file to process
+//   opts:
+//     label:    optional suffix to add to status messages (e.g. " (2/3)")
+//     onStatus: optional callback (msg) => void for the
+//               "Upscaling 2Ã—â€¦" / "Croppingâ€¦" / "Removing backgroundâ€¦"
+//               / "Optimizingâ€¦" status lines. If absent, the helper
+//               just calls setStatus() + updates the image-tab preview
+//               pane (legacy single-file behaviour).
+//     onRefresh: optional callback to call after a step that writes
+//               a new file (so the folder explorer can update right
+//               away). The legacy code called refreshBrowser() after
+//               each successful step; this helper calls onRefresh()
+//               instead so callers (the image-tab gen handler, the
+//               right-click "Optimize" overlay, etc.) can decide when
+//               to refresh.
+async function runPostProcessChain(srcPath, opts) {
+  opts = opts || {};
+  const label = opts.label || '';
+  const onStatus = opts.onStatus || ((msg) => {
+    setStatus(msg, true);
+    const preview = $(`#tab-${state.currentTab} .preview`);
+    if (preview) preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(msg)}</div>`;
+  });
+  const onRefresh = opts.onRefresh || (() => { try { refreshBrowser(); } catch (_) {} });
+  let displayFile = srcPath;
+  // If the Upscale checkbox is on, run the generated image through
+  // the local upscaler after the mmx call returns. The preview then
+  // shows the upscaled version, and the file browser gets the
+  // new "<name>_Nx.png" file next to the original.
+  if (state.upscaleEnabled && state.upscaleSettings) {
+    try {
+      onStatus(`Upscaling ${state.upscaleSettings.multiplier}Ã—${label}â€¦`);
+      displayFile = await upscaleImageFile(displayFile, state.upscaleSettings.multiplier);
+      addLogEvent({
+        category: 'upscale',
+        result: 'ok',
+        headline: `Upscaled ${state.upscaleSettings.multiplier}Ã—${label ? ' ' + label.trim() : ''} â†’ ${displayFile.split(/[\\/]/).pop()}`,
+        details: [
+          `Source: ${srcPath}`,
+          `Output: ${displayFile}`,
+          `Multiplier: ${state.upscaleSettings.multiplier}Ã—`,
+        ],
+      });
+      toast(`Upscaled to ${state.upscaleSettings.multiplier}Ã— â†’ ${displayFile}`, 'ok', 3000);
+      // If auto-crop is also on, apply it now. The flow mirrors
+      // showUpscaleDirect: load the upscaled file, compute the
+      // crop frame at the chosen anchor, write the cropped file
+      // and delete the intermediate.
+      if (state.upscaleSettings.autoCrop) {
+        const a = state.upscaleSettings;
+        const upImg = await loadImageFromFile(displayFile);
+        const uW = upImg.naturalWidth;
+        const uH = upImg.naturalHeight;
+        const wantW = a.cropWidth || uW;
+        const wantH = a.cropHeight || uH;
+        const w = Math.min(wantW, uW);
+        const h = Math.min(wantH, uH);
+        const maxX = uW - w;
+        const maxY = uH - h;
+        let x, y;
+        if (a.cropAnchorX === 'left')        x = 0;
+        else if (a.cropAnchorX === 'right') x = maxX;
+        else                                x = Math.floor(maxX / 2);
+        if (a.cropAnchorY === 'top')         y = 0;
+        else if (a.cropAnchorY === 'bottom') y = maxY;
+        else                                y = Math.floor(maxY / 2);
+        onStatus(`Cropping to ${w} Ã— ${h}${label}â€¦`);
+        const cropped = await cropImageFile(displayFile, x, y, w, h);
+        // Drop the intermediate (full-upscaled) file.
+        window.api.fbDelete(displayFile).catch(() => {});
+        displayFile = cropped;
+        toast(`Upscaled ${state.upscaleSettings.multiplier}Ã— and cropped to ${w} Ã— ${h} â†’ ${cropped}`, 'ok', 4000);
+      }
+      onRefresh();
+    } catch (e) {
+      console.error('Upscale failed:', e);
+      toast('Upscale failed (kept original): ' + (e && e.message || e), 'warn', 4000);
+      displayFile = srcPath;
+    }
+  }
+  // "Remove background" stage â€” runs after upscale (if any) so
+  // the user gets the transparent version of their final
+  // image, not the raw generated file. Runs even when Upscale
+  // is off (in that case the input is the raw generated file).
+  // A failure here is non-fatal â€” we keep the (possibly
+  // upscaled) displayFile and surface a warning, so the user
+  // never loses the image they just paid API credits to
+  // generate.
+  if (state.removeBackgroundEnabled && displayFile) {
+    try {
+      onStatus(`Removing background${label}â€¦`);
+      const noBg = await removeBackgroundFile(displayFile);
+      // The intermediate (upscaled / cropped / raw) is now
+      // redundant â€” the transparent version is the user's
+      // actual deliverable. Delete the intermediate to keep
+      // the output folder tidy; the user can still find it
+      // in the file browser's lastN listing if they need it
+      // back, and the original API-generated file is
+      // untouched.
+      if (noBg !== displayFile) {
+        window.api.fbDelete(displayFile).catch(() => {});
+        displayFile = noBg;
+      }
+      addLogEvent({
+        category: 'bg',
+        result: 'ok',
+        headline: `Background removed${label ? ' ' + label.trim() : ''} â†’ ${displayFile.split(/[\\/]/).pop()}`,
+        details: [
+          `Source: ${srcPath}`,
+          `Output: ${displayFile}`,
+        ],
+      });
+      toast(`Background removed â†’ ${displayFile}`, 'ok', 4000);
+      onRefresh();
+    } catch (e) {
+      console.error('Remove background failed:', e);
+      toast('Background removal failed (kept image): ' + (e && e.message || e), 'warn', 5000);
+    }
+  }
+  // "Optimize / Compress" stage â€” runs as the LAST step of the
+  // post-processing chain (generate â†’ upscale â†’ crop â†’ remove
+  // background â†’ optimize) so the user's final deliverable
+  // ends up in the smallest possible file. Uses the Sharp +
+  // libvips pipeline in src/imageOptimizer.js, with
+  // overwriteSource: true so the optimised bytes replace
+  // the post-background-removal file in place (atomic
+  // temp-file + rename on the main side). A failure here is
+  // non-fatal â€” we keep the (possibly upscaled / no-bg)
+  // displayFile and surface a warning, so the user never
+  // loses the image they just paid API credits to generate.
+  if (state.optimizeSettings && state.optimizeSettings.enabled && displayFile) {
+    try {
+      const oSet = state.optimizeSettings;
+      const inFmt = (displayFile.split('.').pop() || '').toLowerCase();
+      const fmtLbl = (oSet.format && oSet.format !== 'keep') ? oSet.format.toUpperCase() : inFmt.toUpperCase();
+      onStatus(`Optimizing${label} (Q${oSet.quality} â†’ ${fmtLbl})â€¦`);
+      const r = await optimizeImageFile(displayFile, {
+        quality: oSet.quality,
+        format: oSet.format,
+        stripMetadata: oSet.stripMetadata !== false,
+        overwriteSource: true,
+      });
+      // The Sharp wrapper always writes to outputPath; with
+      // overwriteSource: true that's the same path as the
+      // input. The renderer doesn't get a new path back, so
+      // displayFile stays the same â€” the bytes behind it
+      // are now the smaller, optimised version.
+      const inSize = humanSize(r.inputSize);
+      const outSize = humanSize(r.outputSize);
+      const saved = r.savedPercent || 0;
+      const tone = saved >= 1 ? 'ok' : 'info';
+      const savedSuffix = saved >= 1 ? ` (âˆ’${saved}%)` : '';
+      addLogEvent({
+        category: 'optimize',
+        result: 'ok',
+        headline: `Optimized${label ? ' ' + label.trim() : ''} ${fmtLbl} ${inSize} â†’ ${outSize}${savedSuffix}`,
+        details: [
+          `File: ${displayFile}`,
+          `Quality: ${oSet.quality}`,
+          `Format: ${fmtLbl}`,
+          `Strip metadata: ${oSet.stripMetadata !== false ? 'yes' : 'no'}`,
+          `Size: ${inSize} â†’ ${outSize} (${saved >= 0 ? 'âˆ’' : '+'}${Math.abs(saved)}%)`,
+        ],
+      });
+      toast(`Optimized ${fmtLbl} ${inSize} â†’ ${outSize}${savedSuffix}`, tone, 4000);
+      onRefresh();
+    } catch (e) {
+      console.error('Optimize failed:', e);
+      toast('Optimize failed (kept image): ' + (e && e.message || e), 'warn', 5000);
+    }
+  }
+  return displayFile;
+}
+
+// =================== Image-pipeline overlays ===================
+// All three (Upscale settings, Crop, Convert) are pure modals built on
+// showModal(). They share the same panel layout: title, description,
+// form fields, action button, cancel.
+
+// Settings overlay used by the "Upscale" checkbox in the image tab.
+// Saves the chosen multiplier to state.upscaleSettings and closes; the
+// checkbox stays checked so the next generation is upscaled.
+function showUpscaleSettings() {
+  if (!state.upscaleSettings) {
+    state.upscaleSettings = { multiplier: 2, autoCrop: false, cropWidth: 0, cropHeight: 0, cropAnchorX: 'center', cropAnchorY: 'center' };
+  }
+  // Defensive: also fill in any missing fields on old state.js that
+  // pre-dated the auto-crop support.
+  const s = state.upscaleSettings;
+  if (typeof s.autoCrop !== 'boolean') s.autoCrop = false;
+  if (typeof s.cropWidth !== 'number') s.cropWidth = 0;
+  if (typeof s.cropHeight !== 'number') s.cropHeight = 0;
+  if (typeof s.cropAnchorX !== 'string') s.cropAnchorX = 'center';
+  if (typeof s.cropAnchorY !== 'string') s.cropAnchorY = 'center';
+
+  showModal((m, close) => {
+    m.appendChild(el('h2', {}, 'ðŸ” Upscale settings'));
+    m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+      'When the Upscale checkbox is on, every generated image is upscaled locally with the settings below before being shown. Pure browser Canvas â€” no API call, no network. The "auto-crop" options here are also picked up by the "Add" button on the image tab and applied to every entry in a batch.'));
+
+    // Multiplier
+    const multSel = el('select', {});
+    for (const m2 of [2, 3, 4]) {
+      const opt = el('option', { value: String(m2) }, `${m2}Ã— (larger)`);
+      if (m2 === s.multiplier) opt.selected = true;
+      multSel.appendChild(opt);
+    }
+    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Multiplier'), multSel]));
+
+    // auto-crop checkbox
+    const autoCropCb = el('input', { type: 'checkbox', class: 'auto-crop-cb' });
+    autoCropCb.checked = !!s.autoCrop;
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', { class: 'auto-crop-label' }, [autoCropCb, ' auto-crop to resolution']),
+    ]));
+
+    // crop W/H inputs (hidden by default)
+    const cropWInput = el('input', { type: 'number', min: '0', value: String(s.cropWidth || 0) });
+    const cropHInput = el('input', { type: 'number', min: '0', value: String(s.cropHeight || 0) });
+    const cropSizeRow = el('div', { class: 'row auto-crop-only' }, [
+      el('label', {}, 'Crop target W Ã— H (0 = use post-upscale target)'),
+      cropWInput, el('span', {}, ' Ã— '), cropHInput,
+    ]);
+    cropSizeRow.style.display = s.autoCrop ? '' : 'none';
+    m.appendChild(cropSizeRow);
+
+    // 3Ã—3 anchor grid (hidden by default)
+    const anchor = { x: s.cropAnchorX, y: s.cropAnchorY };
+    const anchorGrid = el('div', { class: 'anchor-grid' });
+    const cells = [];
+    const GLYPHS = [
+      ['â†–', 'top-left',     'left',    'top'],
+      ['â†‘', 'top-center',   'center',  'top'],
+      ['â†—', 'top-right',    'right',   'top'],
+      ['â†', 'middle-left',  'left',    'center'],
+      ['Â·', 'center',       'center',  'center'],
+      ['â†’', 'middle-right', 'right',   'center'],
+      ['â†™', 'bottom-left',  'left',    'bottom'],
+      ['â†“', 'bottom-center','center',  'bottom'],
+      ['â†˜', 'bottom-right', 'right',   'bottom'],
+    ];
+    for (let i = 0; i < GLYPHS.length; i++) {
+      const [glyph, name, x, y] = GLYPHS[i];
+      const cell = el('button', {
+        type: 'button',
+        class: 'anchor-cell' + (x === anchor.x && y === anchor.y ? ' selected' : ''),
+        title: `Anchor: ${name} (crop keeps the ${name} corner)`,
+        'data-x': x, 'data-y': y,
+      }, glyph);
+      cell.addEventListener('click', () => {
+        for (const c of cells) c.classList.remove('selected');
+        cell.classList.add('selected');
+        anchor.x = x;
+        anchor.y = y;
+      });
+      cells.push(cell);
+      anchorGrid.appendChild(cell);
+    }
+    anchorGrid.style.display = s.autoCrop ? '' : 'none';
+    m.appendChild(anchorGrid);
+
+    function setAutoCropVisible(on) {
+      cropSizeRow.style.display = on ? '' : 'none';
+      anchorGrid.style.display = on ? '' : 'none';
+    }
+    autoCropCb.addEventListener('change', () => setAutoCropVisible(autoCropCb.checked));
+
+    // ---- "Remove background" sub-section ----
+    // Sits BELOW the upscale + auto-crop controls because it's the
+    // last step in the pipeline (generate â†’ upscale â†’ crop â†’
+    // background removal). The checkbox only saves the boolean
+    // (and gates the whole section); the right-click "Remove
+    // background" item still works regardless of this toggle.
+    // We probe the isnetbg binary in the background so the UI can
+    // show a precise "not installed" hint when needed (rather than
+    // letting the user enable the toggle and only discover the
+    // missing binary at generation time).
+    const removeBgCb = el('input', { type: 'checkbox' });
+    removeBgCb.checked = !!state.removeBackgroundEnabled;
+    const removeBgStatus = el('span', { class: 'meta', style: 'color: var(--fg-2); font-size: 11px; margin-left: 8px;' }, '');
+    const removeBgRow = el('div', { class: 'row' }, [
+      el('label', { class: 'auto-crop-label' }, [removeBgCb, ' âœ¨ Remove background after upscale']),
+      removeBgStatus,
+    ]);
+    m.appendChild(removeBgRow);
+    m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 11px; margin: 2px 0 0;' },
+      'Runs the optional isnetbg binary on the upscaled (and optionally cropped) image and writes a transparent PNG. The original file is preserved as the input to this step.'));
+    // GPU sub-toggle. Visible only when the main checkbox is on, so
+    // we don't tease a knob the user can't currently act on.
+    const useGpuCb = el('input', { type: 'checkbox' });
+    useGpuCb.checked = state.removeBackgroundUseGpu !== false;
+    const useGpuRow = el('div', { class: 'row auto-crop-only' }, [
+      el('label', { class: 'auto-crop-label' }, [useGpuCb, ' use GPU acceleration (DirectML / CUDA)']),
+    ]);
+    useGpuRow.style.display = removeBgCb.checked ? '' : 'none';
+    m.appendChild(useGpuRow);
+    function setRemoveBgVisible(on) {
+      useGpuRow.style.display = on ? '' : 'none';
+    }
+    removeBgCb.addEventListener('change', () => setRemoveBgVisible(removeBgCb.checked));
+    // Probe the binary in the background and surface a precise
+    // status. We use a small helper so the right-click "Remove
+    // background" action can reuse the same probe + status text.
+    probeIsnetbgStatus().then((st) => {
+      if (!st.checked) return;
+      if (st.available && st.modelPresent) {
+        // Same binary/node disambiguation as the add-ons popup.
+        const isNode = st.version === 'node-onnxruntime';
+        if (isNode) {
+          removeBgStatus.textContent = '(IS-Net Node.js wrapper + model detected)';
+        } else {
+          const v = st.version ? ` v${st.version}` : '';
+          removeBgStatus.textContent = `(isnetbg binary${v} + model detected)`;
+        }
+        removeBgStatus.style.color = 'var(--fg-2)';
+      } else if (st.available && !st.modelPresent) {
+        removeBgStatus.textContent = '(binary installed, model missing â€” see README)';
+        removeBgStatus.style.color = 'var(--warn, #d9a300)';
+      } else {
+        removeBgStatus.textContent = '(not installed â€” see README)';
+        removeBgStatus.style.color = 'var(--warn, #d9a300)';
+      }
+    });
+
+    // "Re-open add-ons" link. The full install UI lives in
+    // openOptionalAddons() and is shown as a first-run popup;
+    // this link gives the user a one-click re-entry from the
+    // settings popup without having to dig through the README.
+    // Cached probe is invalidated inside openOptionalAddons
+    // after every install, so the next time the user opens
+    // THIS popup the new status is reflected.
+    const reopenLink = el('button', {
+      class: 'btn-mini',
+      style: 'margin-top: 6px;',
+      onclick: () => openOptionalAddons({ autoOpened: false }),
+    }, 'ðŸ§© Re-open add-ons managerâ€¦');
+    m.appendChild(reopenLink);
+
+    // ---- Section 3: ðŸ—œ Optimize / Compress (post-generation) ----
+    // Re-encodes every generated image with the Sharp + libvips
+    // pipeline in src/imageOptimizer.js. Sits at the END of the
+    // post-processing chain (generate â†’ upscale â†’ crop â†’ remove
+    // background â†’ optimize) so the user's final deliverable
+    // lands in the smallest possible file. The right-click
+    // "Optimize / Compressâ€¦" entry in the folder browser uses
+    // the same settings as defaults.
+    if (!state.optimizeSettings) {
+      state.optimizeSettings = { enabled: false, quality: 82, format: 'keep', stripMetadata: true };
+    }
+    const oSet = state.optimizeSettings;
+    if (typeof oSet.enabled !== 'boolean') oSet.enabled = false;
+    if (typeof oSet.quality !== 'number') oSet.quality = 82;
+    if (typeof oSet.format !== 'string') oSet.format = 'keep';
+    if (typeof oSet.stripMetadata !== 'boolean') oSet.stripMetadata = true;
+
+    const optimizeCb = el('input', { type: 'checkbox' });
+    optimizeCb.checked = !!oSet.enabled;
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', { class: 'auto-crop-label' }, [optimizeCb, ' ðŸ—œ Optimize / compress the final image']),
+    ]));
+    m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 11px; margin: 2px 0 0;' },
+      'Re-encodes the final image with Sharp + libvips to shrink its file size while preserving best-possible visual quality. Runs as the LAST step of the post-generation pipeline so the output you end up with is the smallest version that still looks the same.'));
+
+    // Quality slider (1..100, default 82 â€” the perceptual sweet
+    // spot for JPEG / WebP). Visible only when the master
+    // checkbox is on, so we don't tease a knob the user can't
+    // currently act on.
+    const qualityInput = el('input', { type: 'range', min: '1', max: '100', step: '1', value: String(oSet.quality) });
+    const qualityLabel = el('span', { class: 'meta', style: 'min-width: 32px; text-align: right;' }, String(qualityInput.value));
+    function syncQuality() { qualityLabel.textContent = String(qualityInput.value); }
+    qualityInput.addEventListener('input', syncQuality);
+    const qualityRow = el('div', { class: 'row auto-crop-only' }, [
+      el('label', {}, 'Quality'),
+
+// renderer/sections/section07_Image_optimisation_part1b.js (Phase 3 Block 31)
+// Part 1b.
+
+      qualityInput,
+      qualityLabel,
+    ]);
+    qualityRow.style.display = optimizeCb.checked ? '' : 'none';
+    m.appendChild(qualityRow);
+
+    // Format dropdown (Keep / JPEG / PNG / WebP / AVIF). Same
+    // shape as the right-click overlay; "Keep" preserves the
+    // source format.
+    const fmtSel = el('select', {});
+    for (const [v, lbl] of [
+      ['keep', 'Keep source format'],
+      ['jpeg', 'JPEG (smallest lossy, no transparency)'],
+      ['png',  'PNG  (lossless, supports transparency)'],
+      ['webp', 'WebP (modern, ~30% smaller than JPEG)'],
+      ['avif', 'AVIF (newest, smallest files, slow encode)'],
+    ]) {
+      const opt = el('option', { value: v }, lbl);
+      if (oSet.format === v) opt.selected = true;
+      fmtSel.appendChild(opt);
+    }
+    const fmtRow = el('div', { class: 'row auto-crop-only' }, [el('label', {}, 'Output format'), fmtSel]);
+    fmtRow.style.display = optimizeCb.checked ? '' : 'none';
+    m.appendChild(fmtRow);
+
+    // Strip-metadata checkbox. On by default â€” drops EXIF
+    // (camera model, GPS, software tag) but keeps the ICC
+    // colour profile.
+    const stripCb = el('input', { type: 'checkbox' });
+    stripCb.checked = oSet.stripMetadata !== false;
+    const stripRow = el('div', { class: 'row auto-crop-only' }, [
+      el('label', { class: 'auto-crop-label' }, [stripCb, ' Strip non-essential EXIF (keeps ICC colour profile)']),
+    ]);
+    stripRow.style.display = optimizeCb.checked ? '' : 'none';
+    m.appendChild(stripRow);
+    function setOptimizeVisible(on) {
+      qualityRow.style.display = on ? '' : 'none';
+      fmtRow.style.display = on ? '' : 'none';
+      stripRow.style.display = on ? '' : 'none';
+    }
+    optimizeCb.addEventListener('change', () => setOptimizeVisible(optimizeCb.checked));
+
+    // Save
+    const saveBtn = el('button', { class: 'primary' }, 'Save');
+    const cancelBtn = el('button', { onclick: close }, 'Cancel');
+    saveBtn.addEventListener('click', async () => {
+      state.upscaleSettings = {
+        multiplier: parseInt(multSel.value, 10) || 2,
+        autoCrop: autoCropCb.checked,
+        cropWidth: Math.max(0, parseInt(cropWInput.value, 10) || 0),
+        cropHeight: Math.max(0, parseInt(cropHInput.value, 10) || 0),
+        cropAnchorX: anchor.x,
+        cropAnchorY: anchor.y,
+      };
+      state.removeBackgroundEnabled = !!removeBgCb.checked;
+      state.removeBackgroundUseGpu = !!useGpuCb.checked;
+      state.optimizeSettings = {
+        enabled: !!optimizeCb.checked,
+        quality: Math.max(1, Math.min(100, parseInt(qualityInput.value, 10) || 82)),
+        format: ['keep', 'jpeg', 'png', 'webp', 'avif'].includes(fmtSel.value) ? fmtSel.value : 'keep',
+        stripMetadata: !!stripCb.checked,
+      };
+      state.upscaleEnabled = true;
+      await scheduleStateSave();
+      if (typeof refreshUpscaleCheckboxUI === 'function') refreshUpscaleCheckboxUI();
+      const extras = [];
+      if (state.upscaleSettings.autoCrop) extras.push('auto-crop');
+      if (state.removeBackgroundEnabled) extras.push('remove-background');
+      if (state.optimizeSettings.enabled) {
+        extras.push('optimize Q' + state.optimizeSettings.quality);
+      }
+      const extra = extras.length ? ' + ' + extras.join(' + ') : '';
+      // The "ðŸ” Upscale 2Ã—" label in the image tab was updated by
+      // a closure inside build(); that closure is long gone by
+      // the time the user opens this modal. refreshUpscaleLabel
+      // is the module-level re-render that picks up the new
+      // multiplier + .active class via DOM query.
+      if (typeof refreshUpscaleLabel === 'function') refreshUpscaleLabel();
+      toast(`Upscale settings saved (${state.upscaleSettings.multiplier}Ã—${extra}).`, 'ok', 2000);
+      close();
+    });
+    m.appendChild(el('div', { class: 'footer' }, [cancelBtn, saveBtn]));
+  });
+}
+
+// Direct upscale overlay used by the right-click menu on an image
+// in the file browser. Shows the source resolution + the target
+// resolution after upscaling, an "auto-crop to resolution" toggle,
+// and (when that toggle is on) a 3Ã—3 anchor grid + W/H inputs so
+// the user can upscale AND crop in one step. The flow:
+//   1. upscaleImageFile() writes `<name>_Nx.png` to output_dir.
+//   2. If auto-crop is on, cropImageFile() reads it back, places
+//      the crop frame at the chosen anchor (top-left, center,
+//      bottom-right, etc.), writes `<name>_Nx_cropped_WxH.png`,
+//      and the intermediate `_Nx` file is deleted.
+//   3. The cropped file is shown in the preview pane.
+
+
+// renderer/sections/section07_Image_optimisation_part2.js (Phase 3 Block 30)
+// Second half of Image optimisation section.
+
+async function showUpscaleDirect(srcPath) {
+  // We need the source's natural resolution to compute the target.
+  // If the image is unreadable, surface the error and bail â€” the
+  // dialog needs a known sourceW Ã— sourceH to do anything useful.
+  let srcW = 0, srcH = 0;
+  try {
+    const img = await loadImageFromFile(srcPath);
+    srcW = img.naturalWidth;
+    srcH = img.naturalHeight;
+    if (!srcW || !srcH) throw new Error('Image has no natural dimensions');
+  } catch (e) {
+    toast('Failed to load image: ' + (e && e.message || e), 'err', 6000);
+    return;
+  }
+  // Pull defaults from the global upscale settings so the
+  // right-click "Upscale" dialog and the tab's "Upscale Settings"
+  // dialog are in sync. The user can still change anything for
+  // this one-off run; the Save below updates state.upscaleSettings
+  // if they do, so the next right-click / next generation sees
+  // the new values.
+  const us = state.upscaleSettings || { multiplier: 2, autoCrop: false, cropWidth: 0, cropHeight: 0, cropAnchorX: 'center', cropAnchorY: 'center' };
+  showModal((m, close) => {
+    m.appendChild(el('h2', {}, 'ðŸ” Upscale image'));
+    m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
+      'Source: ' + srcPath));
+
+    // Resolution row: source (immutable) + target after upscale (live).
+    // The target updates whenever the multiplier or crop W/H changes.
+    const targetText = el('div', { class: 'meta' }, '');
+    function refreshTarget() {
+      const mult = parseInt(multSel.value, 10) || 2;
+      const tW = srcW * mult;
+      const tH = srcH * mult;
+      // 0 = use post-upscale target. Negative is impossible (the
+      // min="0" attribute + Math.max in the save handler guard it).
+      const wantCropW = parseInt(cropWInput.value, 10);
+      const wantCropH = parseInt(cropHInput.value, 10);
+      const cropW = (isNaN(wantCropW) || wantCropW <= 0) ? tW : wantCropW;
+      const cropH = (isNaN(wantCropH) || wantCropH <= 0) ? tH : wantCropH;
+      const w = Math.min(cropW, tW);
+      const h = Math.min(cropH, tH);
+      const cropNote = autoCropCb.checked ? ` Â· after auto-crop: ${w} Ã— ${h} px` : '';
+      targetText.textContent = `Source ${srcW} Ã— ${srcH} px  â†’  after upscale: ${tW} Ã— ${tH} px${cropNote}`;
+    }
+
+    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Resolution'), targetText]));
+
+    // Multiplier selector (2Ã— / 3Ã— / 4Ã— / 8Ã—).
+    const multSel = el('select', {});
+    for (const m2 of [2, 3, 4, 8]) {
+      const opt = el('option', { value: String(m2) }, `${m2}Ã—`);
+      if (m2 === (us.multiplier || 2)) opt.selected = true;
+      multSel.appendChild(opt);
+    }
+    m.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Multiplier'), multSel]));
+
+    // auto-crop checkbox. Pre-checked from state.upscaleSettings.
+    const autoCropCb = el('input', { type: 'checkbox', class: 'auto-crop-cb' });
+    autoCropCb.checked = !!us.autoCrop;
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', { class: 'auto-crop-label' }, [autoCropCb, ' auto-crop to resolution']),
+    ]));
+
+    // Crop W / H inputs. Hidden by default; revealed when auto-crop
+    // is checked. Pre-filled from state.upscaleSettings (or 0 = use
+    // post-upscale target).
+    const cropWInput = el('input', { type: 'number', min: '0', value: String(us.cropWidth || 0) });
+    const cropHInput = el('input', { type: 'number', min: '0', value: String(us.cropHeight || 0) });
+    const cropSizeRow = el('div', { class: 'row auto-crop-only' }, [
+      el('label', {}, 'Crop target W Ã— H (0 = use post-upscale target)'),
+      cropWInput, el('span', {}, ' Ã— '), cropHInput,
+    ]);
+    cropSizeRow.style.display = us.autoCrop ? '' : 'none';
+    m.appendChild(cropSizeRow);
+
+    // 3Ã—3 anchor grid. Each cell = an (x, y) anchor in {left,
+    // center, right} Ã— {top, center, bottom}. The selected cell
+    // comes from state.upscaleSettings.
+    const anchor = { x: us.cropAnchorX || 'center', y: us.cropAnchorY || 'center' };
+    const anchorGrid = el('div', { class: 'anchor-grid' });
+    const cells = [];
+    const GLYPHS = [
+      ['â†–', 'top-left',     'left',    'top'],
+      ['â†‘', 'top-center',   'center',  'top'],
+      ['â†—', 'top-right',    'right',   'top'],
+      ['â†', 'middle-left',  'left',    'center'],
+      ['Â·', 'center',       'center',  'center'],
+      ['â†’', 'middle-right', 'right',   'center'],
+      ['â†™', 'bottom-left',  'left',    'bottom'],
+      ['â†“', 'bottom-center','center',  'bottom'],
+      ['â†˜', 'bottom-right', 'right',   'bottom'],
+    ];
+    for (let i = 0; i < GLYPHS.length; i++) {
+      const [glyph, name, x, y] = GLYPHS[i];
+      const cell = el('button', {
+        type: 'button',
+        class: 'anchor-cell' + (x === anchor.x && y === anchor.y ? ' selected' : ''),
+        title: `Anchor: ${name} (crop keeps the ${name} corner)`,
+        'data-x': x, 'data-y': y,
+      }, glyph);
+      cell.addEventListener('click', () => {
+        for (const c of cells) c.classList.remove('selected');
+        cell.classList.add('selected');
+        anchor.x = x;
+        anchor.y = y;
+      });
+      cells.push(cell);
+      anchorGrid.appendChild(cell);
+    }
+    anchorGrid.style.display = us.autoCrop ? '' : 'none';
+    m.appendChild(anchorGrid);
+
+    // A short explanation of the cropping section, so the user
+    // doesn't have to guess what the 3Ã—3 grid + W Ã— H inputs
+    // actually do. Uses inline <code> tags for the glyphs.
+    const cropExplanation = el('div', { class: 'crop-explanation' }, [
+      'When you click Upscale, the image is first scaled up by ',
+      el('strong', {}, `${us.multiplier || 2}Ã—`),
+      ' (using the Real-ESRGAN binary if installed, otherwise multi-step canvas upscaling), then ',
+      el('strong', {}, 'cropped'),
+      ' to the target W Ã— H at the chosen anchor. The 3Ã—3 grid above picks the anchor: ',
+      el('code', {}, 'â†–'),
+      ' keeps the ',
+      el('strong', {}, 'top-left'),
+      ' corner, ',
+      el('code', {}, 'Â·'),
+      ' keeps equal borders on all four sides, ',
+      el('code', {}, 'â†˜'),
+      ' keeps the ',
+      el('strong', {}, 'bottom-right'),
+      '.',
+    ]);
+    cropExplanation.style.display = us.autoCrop ? '' : 'none';
+    m.appendChild(cropExplanation);
+
+    // Blank-image crop preview: a fixed 200Ã—150 "source" with a
+    // green crop frame overlay that updates whenever the user
+    // picks a different anchor (or changes the W Ã— H inputs).
+    // The frame is sized proportionally to the post-upscale
+    // target W Ã— H so the user can see how much of the image
+    // is actually kept.
+    const cropPreviewBlock = el('div', { class: 'crop-preview' });
+    const stage = el('div', { class: 'crop-preview-stage' });
+    const blank = el('div', { class: 'crop-preview-image' });
+    const frame = el('div', { class: 'crop-preview-frame' });
+    stage.append(blank, frame);
+    cropPreviewBlock.appendChild(stage);
+    const legend = el('div', { class: 'crop-preview-legend' });
+    cropPreviewBlock.appendChild(legend);
+    const ANCHOR_LABELS = {
+      'left-top':       'top-left',
+      'center-top':     'top-center',
+      'right-top':      'top-right',
+      'left-center':    'middle-left',
+      'center-center':  'center',
+      'right-center':   'middle-right',
+      'left-bottom':    'bottom-left',
+      'center-bottom':  'bottom-center',
+      'right-bottom':   'bottom-right',
+    };
+    function refreshCropPreview() {
+      const mult = parseInt(multSel.value, 10) || 2;
+      const stageW = 200, stageH = 150;
+      // The stage represents the post-upscale source. We scale
+      // it to fit the stage keeping its real aspect ratio.
+      const aspect = srcW / srcH;
+      let dispSrcW, dispSrcH;
+      if (aspect >= stageW / stageH) {
+        dispSrcW = stageW;
+        dispSrcH = stageW / aspect;
+      } else {
+        dispSrcH = stageH;
+        dispSrcW = stageH * aspect;
+      }
+      const srcOffsetX = (stageW - dispSrcW) / 2;
+      const srcOffsetY = (stageH - dispSrcH) / 2;
+      // Frame size: use the user's W Ã— H if set, otherwise the
+      // full post-upscale target.
+      const tW = srcW * mult;
+      const tH = srcH * mult;
+      const wantW = parseInt(cropWInput.value, 10);
+      const wantH = parseInt(cropHInput.value, 10);
+      let cropW = (Number.isFinite(wantW) && wantW > 0) ? Math.min(wantW, tW) : tW;
+      let cropH = (Number.isFinite(wantH) && wantH > 0) ? Math.min(wantH, tH) : tH;
+      // Scale the frame to the displayed source size.
+      const scale = dispSrcW / tW;
+      const frameW = cropW * scale;
+      const frameH = cropH * scale;
+      const maxX = dispSrcW - frameW;
+      const maxY = dispSrcH - frameH;
+      let x, y;
+      if (anchor.x === 'left')       x = 0;
+      else if (anchor.x === 'right') x = maxX;
+      else                            x = Math.floor(maxX / 2);
+      if (anchor.y === 'top')         y = 0;
+      else if (anchor.y === 'bottom') y = maxY;
+      else                            y = Math.floor(maxY / 2);
+      frame.style.width = frameW + 'px';
+      frame.style.height = frameH + 'px';
+      frame.style.left = (srcOffsetX + x) + 'px';
+      frame.style.top = (srcOffsetY + y) + 'px';
+      // Position the blank "image" to match the source size.
+      blank.style.left = srcOffsetX + 'px';
+      blank.style.top = srcOffsetY + 'px';
+      blank.style.width = dispSrcW + 'px';
+      blank.style.height = dispSrcH + 'px';
+      // Legend.
+      legend.innerHTML = '';
+      const name = ANCHOR_LABELS[anchor.x + '-' + anchor.y] || 'center';
+      legend.appendChild(document.createTextNode('Anchor: '));
+      legend.appendChild(el('span', { class: 'crop-preview-anchor-name' }, name));
+      legend.appendChild(document.createTextNode(' â€” the green frame shows what will be kept.'));
+    }
+    cropPreviewBlock.style.display = us.autoCrop ? '' : 'none';
+    m.appendChild(cropPreviewBlock);
+
+    // Toggle the auto-crop sub-UI. We do this in a single place so
+    // the show / hide stays in sync and the target text always
+    // reflects the current state.
+    function setAutoCropVisible(on) {
+      cropSizeRow.style.display = on ? '' : 'none';
+      anchorGrid.style.display = on ? '' : 'none';
+      cropExplanation.style.display = on ? '' : 'none';
+      cropPreviewBlock.style.display = on ? '' : 'none';
+      if (on) {
+        // The preview depends on a few derived values; recompute
+        // on show so the user sees the current W Ã— H + anchor.
+        refreshCropPreview();
+      }
+      refreshTarget();
+    }
+    autoCropCb.addEventListener('change', () => setAutoCropVisible(autoCropCb.checked));
+    multSel.addEventListener('change', refreshTarget);
+    cropWInput.addEventListener('input', refreshTarget);
+    cropHInput.addEventListener('input', refreshTarget);
+    // The crop preview also re-renders on any input change.
+    multSel.addEventListener('change', refreshCropPreview);
+    cropWInput.addEventListener('input', refreshCropPreview);
+    cropHInput.addEventListener('input', refreshCropPreview);
+    // Each anchor cell already updates anchor.x/y; we also
+    // re-render the crop preview on click.
+    for (const cell of cells) cell.addEventListener('click', refreshCropPreview);
+    setAutoCropVisible(!!us.autoCrop); // also primes the W/H inputs + target text
+    if (us.autoCrop) refreshCropPreview();
+
+    // ---- "Remove background" sub-section for the right-click dialog ----
+    // Pre-checked from state.removeBackgroundEnabled (same default as
+    // the in-tab flow). Lives BELOW the upscale + crop UI so it reads
+    // as the final pipeline step. A status badge next to the checkbox
+    // tells the user whether the binary + model are installed, so they
+    // don't click "Upscale" expecting a transparent result and only
+    // discover the missing binary halfway through.
+    const noBgCb = el('input', { type: 'checkbox' });
+    noBgCb.checked = !!state.removeBackgroundEnabled;
+    const noBgStatus = el('span', { class: 'meta', style: 'color: var(--fg-2); font-size: 11px; margin-left: 8px;' }, '');
+    m.appendChild(el('div', { class: 'row' }, [
+      el('label', { class: 'auto-crop-label' }, [noBgCb, ' âœ¨ Remove background after upscale']),
+      noBgStatus,
+    ]));
+    probeIsnetbgStatus().then((st) => {
+      if (!st.checked) return;
+      if (st.available && st.modelPresent) {
+        // Same binary/node disambiguation as the add-ons popup.
+        const isNode = st.version === 'node-onnxruntime';
+        if (isNode) {
+          noBgStatus.textContent = '(IS-Net Node.js wrapper + model detected)';
+        } else {
+          const v = st.version ? ` v${st.version}` : '';
+          noBgStatus.textContent = `(isnetbg binary${v} + model detected)`;
+        }
+        noBgStatus.style.color = 'var(--fg-2)';
+      } else if (st.available && !st.modelPresent) {
+        noBgStatus.textContent = '(model missing â€” see README)';
+        noBgStatus.style.color = 'var(--warn, #d9a300)';
+      } else {
+        noBgStatus.textContent = '(not installed)';
+        noBgStatus.style.color = 'var(--warn, #d9a300)';
+      }
+    });
+
+    const upscaleBtn = el('button', { class: 'primary' }, 'Upscale');
+    const cancelBtn = el('button', { onclick: close }, 'Cancel');
+    upscaleBtn.addEventListener('click', async () => {
+      const multiplier = parseInt(multSel.value, 10) || 2;
+      // Persist whatever the user just configured so the next
+      // right-click / next batch / next âš™ Settings visit sees
+      // the same values. We don't scheduleStateSave() here
+      // (the action is fire-and-forget and the user can cancel);
+      // scheduleStateSave() is called below on success.
+      state.upscaleSettings = {
+        multiplier,
+        autoCrop: !!autoCropCb.checked,
+        cropWidth: Math.max(0, parseInt(cropWInput.value, 10) || 0),
+        cropHeight: Math.max(0, parseInt(cropHInput.value, 10) || 0),
+        cropAnchorX: anchor.x,
+        cropAnchorY: anchor.y,
+      };
+      // Persist the background-removal toggle too. The right-click
+      // dialog is the natural place for users to flip this on /
+      // off; making it sticky avoids re-checking the same box on
+      // the next image.
+      state.removeBackgroundEnabled = !!noBgCb.checked;
+      state.upscaleEnabled = true;
+      upscaleBtn.disabled = true; upscaleBtn.textContent = 'Upscalingâ€¦';
+      // `final` is the path to the file we want to preview at the
+      // end of the pipeline. It gets reassigned by the optional
+      // crop + background-removal steps, and is the only file
+      // that should be left on disk for the user to see.
+      let final = null;
+      try {
+        // Step 1: upscale.
+        const upscaled = await upscaleImageFile(srcPath, multiplier);
+        // Step 2: optionally crop.
+        if (autoCropCb.checked) {
+          upscaleBtn.textContent = 'Croppingâ€¦';
+          const cropW = Math.max(1, parseInt(cropWInput.value, 10) || 1);
+          const cropH = Math.max(1, parseInt(cropHInput.value, 10) || 1);
+          // Need the actual upscaled dimensions to anchor correctly.
+          const upImg = await loadImageFromFile(upscaled);
+          const uW = upImg.naturalWidth;
+          const uH = upImg.naturalHeight;
+          // Clamp the crop to the upscaled size; anchor otherwise.
+          const w = Math.min(cropW, uW);
+          const h = Math.min(cropH, uH);
+          const maxX = uW - w;
+          const maxY = uH - h;
+          let x, y;
+          if (anchor.x === 'left')       x = 0;
+          else if (anchor.x === 'right') x = maxX;
+          else                            x = Math.floor(maxX / 2);
+          if (anchor.y === 'top')         y = 0;
+          else if (anchor.y === 'bottom') y = maxY;
+          else                            y = Math.floor(maxY / 2);
+          const cropped = await cropImageFile(upscaled, x, y, w, h);
+          // Drop the intermediate (full-upscaled) file â€” the user
+          // asked for the cropped one, not the raw intermediate.
+          window.api.fbDelete(upscaled).catch(() => {});
+          final = cropped;
+        } else {
+          final = upscaled;
+        }
+        // Step 3: optionally remove the background. Non-fatal: a
+        // missing / failed binary keeps the upscaled (or cropped)
+        // file as the deliverable and surfaces a warning toast,
+        // so the user never loses the image they already paid
+        // API credits to generate.
+        if (noBgCb.checked) {
+          upscaleBtn.textContent = 'Removing backgroundâ€¦';
+          try {
+            const noBg = await removeBackgroundFile(final);
+            if (noBg !== final) {
+              window.api.fbDelete(final).catch(() => {});
+              final = noBg;
+            }
+            toast(`Upscaled ${multiplier}Ã— + background removed â†’ ${final}`, 'ok', 4500);
+          } catch (e) {
+            console.error('Remove background failed:', e);
+            toast('Background removal failed (kept upscaled image): ' + (e && e.message || e), 'warn', 5000);
+          }
+        } else {
+          toast(`Upscaled to ${multiplier}Ã— â†’ ${final}`, 'ok', 4000);
+        }
+        await refreshBrowser();
+        if (typeof updatePreviewPane === 'function' && final) {
+          try { previewImageFromFile(final); } catch (_) {}
+        }
+        // Persist the new upscale settings now that we know the
+        // upscale succeeded. (The setting is also updated in-place
+        // by the input listeners, but a state.json round-trip
+        // through the debounced scheduleStateSave isn't guaranteed
+        // to have fired yet.)
+        try { await scheduleStateSave(); } catch (_) {}
+        close();
+      } catch (e) {
+        toast('Upscale' + (autoCropCb.checked ? '+crop' : '') + ' failed: ' + (e && e.message || e), 'err', 6000);
+        upscaleBtn.disabled = false;
+        upscaleBtn.textContent = 'Upscale';
+      }
+    });
+    m.appendChild(el('div', { class: 'footer' }, [cancelBtn, upscaleBtn]));
+  });
+}
+
+// Phase 3 Block 9: setupCropFrameDrag() extrahiert nach
+// renderer/components/CropFrameDrag.js. Pure Funktion, keine App-State-Coupling.
+const { setupCropFrameDrag } = window.CropFrameDrag;
+
+
+// Phase 3 Block 7: setupLastCmdTooltips() extrahiert nach
+// renderer/components/LastCmdTooltip.js. Drop-in-Alias unten.
+const { setupLastCmdTooltips } = window.LastCmdTooltip;
+
+

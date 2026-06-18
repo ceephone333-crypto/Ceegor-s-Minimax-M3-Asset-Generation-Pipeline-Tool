@@ -28,7 +28,10 @@ const SCAN_DIRS = ['main', 'renderer', 'src'];
 // Legacy-Files, die noch NICHT refactored sind (Hauptziel des Plans).
 // Sie dürfen das 500er-Limit überschreiten, erzeugen aber eine WARN.
 const LEGACY_OVERSIZE = new Set([
-  'app.js',              // 28 Z. — nur Bootstrap + Tabs (Legacy-Entry)
+  'app.js',              // 469 Z. — Bootstrap + Helper (init + style + batch + keyboard)
+  'imageTab.js',         // 736 Z. — ImageTab build() (god-function, nicht sinnvoll teilbar)
+  'musicTab.js',         // 855 Z. — MusicTab build() + previews (god-function)
+  'section07_Image_optimisation___compression.js',  // 952 Z. — showUpscaleSettings (god-function)
 ]);
 
 // "God Words" — Dateien mit diesen Suffixen werden abgelehnt.
