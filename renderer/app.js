@@ -432,6 +432,7 @@ function showHelp(topicKey, fallbackText) {
       el('button', { class: 'primary', onclick: close }, 'Got it'),
     ]));
   }, { id: modalId });
+}
 // Phase 3 Block 8: setupHelpDelegation() extrahiert nach
 // renderer/components/HelpDelegation.js. Nutzt window.showHelp
 // (gesetzt von app.js am File-Ende).
@@ -3938,6 +3939,8 @@ TABS.music = {
       }
     });
   },
+};
+
 // Phase 3 Block 10: fileUrl() extrahiert nach
 // renderer/utils/fileUrl.js. Pure Funktion, 0 App-Coupling.
 const { fileUrl } = window.FileUrl;
@@ -4262,6 +4265,7 @@ function navigateToOverlayImage(path, opts) {
 
 function safeStringify(o) {
   try { return JSON.stringify(o, null, 2).slice(0, 4000); } catch { return String(o); }
+}
 // Phase 3 Block 6: escapeHtml() ist schon in DomHelpers.js
 // verfügbar. Drop-in-Alias unten.
 const { escapeHtml } = window;
