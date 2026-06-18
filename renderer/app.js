@@ -6258,10 +6258,6 @@ function applyFileSearch() {
   }
 }
 
-function pathJoin(a, b) {
-  if (!a) return b;
-  const sep = a.includes('\\') ? '\\' : '/';
-  return a.replace(/[\\/]+$/, '') + sep + b;
 // Phase 3 Block 13: _attachDropTarget() extrahiert nach
 // renderer/utils/dropTarget.js. Shim-Alias unten.
 const { attachDropTarget: _attachDropTarget } = window.DropTarget;
