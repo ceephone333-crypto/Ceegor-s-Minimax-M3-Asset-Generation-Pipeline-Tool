@@ -29,7 +29,8 @@ const SCAN_DIRS = ['main', 'renderer', 'src'];
 // Sie dürfen das 500er-Limit überschreiten, erzeugen aber eine WARN.
 const LEGACY_OVERSIZE = new Set([
   'app.js',              // 8 546 Z. — wird in Phase 3 zerlegt
-  'imageTab.js',         // 736 Z. — Phase 3 Block 23; wird spaeter weiter aufgeteilt
+  'imageTab.js',         // 736 Z. — Phase 3 Block 23
+  'musicTab.js',         // 855 Z. — Phase 3 Block 25
 ]);
 
 // "God Words" — Dateien mit diesen Suffixen werden abgelehnt.
