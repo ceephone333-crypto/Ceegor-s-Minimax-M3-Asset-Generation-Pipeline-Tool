@@ -1,6 +1,7 @@
 // renderer/utils/tinyUtils.js
 // Sammlung von 5 kleinen, reinen Helper-Funktionen aus app.js.
 // Phase 3 Block 14: 15 Z. extrahiert (0 Coupling, 0 State).
+// Phase 3 Block 17: appendFlag + _flagForParam extrahiert (22 Z.).
 
 function pathJoin(a, b) {
   if (!a) return b;
@@ -28,4 +29,38 @@ function appendBoolFlag(args, param, flag) {
   if (v === 'on' || v === true) args.push(flag);
 }
 
-window.TinyUtils = { pathJoin, safeStringify, extFromMime, _isImageExt, appendBoolFlag };
+// Extract the --flag from a param's enclosing .row label (e.g. "--model (hd)"
+// → "--model"). The flag is the first "--xxx" token in the label. Returns
+// null if the row is unlabeled (e.g. prompt, lyrics textarea, variants row).
+function _flagForParam(param) {
+  if (!param) return null;
+  const el = param.el || param;
+  if (!el || !el.closest) return null;
+  const row = el.closest('.row');
+  if (!row) return null;
+  const lbl = row.querySelector('label');
+  if (!lbl) return null;
+  const m = lbl.textContent && lbl.textContent.match(/--[a-zA-Z][a-zA-Z0-9-]*/);
+  return m ? m[0] : null;
+}
+
+// Read a param's value and append "--flag value" to the args list.
+// Auto-skips null/empty/'off' values. The flag is taken from the
+// param's .row label (see _flagForParam) or from param.flag if set.
+function appendFlag(args, param) {
+  if (!param) return;
+  const v = param.getValue ? param.getValue() : (param.value ?? param.el?.value);
+  if (v == null || v === '' || v === 'off') return;
+  const flag = param.flag || _flagForParam(param);
+  if (!flag) {
+    console.warn('[appendFlag] could not determine flag for param, skipping', param);
+    return;
+  }
+  args.push(flag, String(v));
+}
+
+window.TinyUtils = {
+  pathJoin, safeStringify, extFromMime, _isImageExt,
+  appendBoolFlag, appendFlag, _flagForParam,
+};
+

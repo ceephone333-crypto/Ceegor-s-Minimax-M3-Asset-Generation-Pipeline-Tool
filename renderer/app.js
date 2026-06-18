@@ -448,6 +448,11 @@ const { setupHoverHelpTooltips } = window.HelpTooltip;
 // identisch, inkl. Array-Children-Flatten via [].concat()).
 const el = window.createElement;
 
+// Phase 3 Block 17: appendFlag + _flagForParam extrahiert nach
+// renderer/utils/tinyUtils.js. Drop-in-Aliase unten.
+const { appendFlag, _flagForParam } = window.TinyUtils;
+
+
 // Phase 3 Block 16: mimeFromPath + isFlagVisibleForCurrentModel
 // extrahiert nach renderer/utils/imageUtils.js.
 const { mimeFromPath, isFlagVisibleForCurrentModel } = window.ImageUtils;
@@ -1636,29 +1641,7 @@ function buildParamRow(label, def, id) {
 // Extract the --flag from a param's enclosing .row label (e.g. "--model (hd)"
 // â†’ "--model"). The flag is the first "--xxx" token in the label. Returns
 // null if the row is unlabeled (e.g. prompt, lyrics textarea, variants row).
-function _flagForParam(param) {
-  if (!param) return null;
-  const el = param.el || param;
-  if (!el || !el.closest) return null;
-  const row = el.closest('.row');
-  if (!row) return null;
-  const lbl = row.querySelector('label');
-  if (!lbl) return null;
-  const m = lbl.textContent && lbl.textContent.match(/--[a-zA-Z][a-zA-Z0-9-]*/);
-  return m ? m[0] : null;
-}
 
-function appendFlag(args, param) {
-  if (!param) return;
-  const v = param.getValue ? param.getValue() : (param.value ?? param.el?.value);
-  if (v == null || v === '' || v === 'off') return;
-  const flag = param.flag || _flagForParam(param);
-  if (!flag) {
-    console.warn('[appendFlag] could not determine flag for param, skipping', param);
-    return;
-  }
-  args.push(flag, String(v));
-}
 
 // ----------------- Image-dim guards -----------------
 // Three live warnings below the image tab's W Ã— H row:
