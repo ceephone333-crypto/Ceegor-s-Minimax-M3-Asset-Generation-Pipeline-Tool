@@ -11,6 +11,8 @@
     "test": "node --test tests/unit/**/*.test.js",
     "prebuild": "node scripts/check.js",
     "build": "node scripts/zip-portable.js",
+    "build:full": "node scripts/zip-portable.js",
+    "build:asar": "node scripts/update-zip.js",
     "enable-devmode": "node scripts/enable-devmode.js",
     "build:dir": "electron-builder --win --dir"
   },
