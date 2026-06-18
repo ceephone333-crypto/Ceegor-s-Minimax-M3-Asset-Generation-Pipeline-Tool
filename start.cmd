@@ -2,28 +2,27 @@
 REM ============================================================
 REM MiniMax Assets Tool - Launcher
 REM ============================================================
-REM Phase 4 Fix 11: Bitdefender-kompatibler Launcher.
+REM Phase 4 Fix 12: Trailing-backslash-Fix fuer Pfade mit Leerzeichen.
 REM
 REM Startet die App via der offiziell Microsoft-signierten
 REM electron.exe aus node_modules. Diese Binary hat bei
 REM Bitdefender / SmartScreen / Defender Reputation weil sie
-REM Teil jedes Electron-npm-Pakets ist - die wird nicht
-REM als "unbekannter Herausgeber" eingestuft.
+REM Teil jedes Electron-npm-Pakets ist.
 REM
 REM Doppelklick -> App startet. Keine Warnungen, keine
 REM Bestaetigungen, kein Whitelisting.
-REM
-REM Im Gegensatz zum vorherigen "MiniMaxAssetTool.exe" brauchen
-REM wir hier keinen Code-Signing-Cert, weil die Binary
-REM (electron.exe) bereits von Microsoft ueber den npm-
-REM Vertriebsweg signiert wurde.
 REM ============================================================
 
-setlocal
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
-REM Electron-Binary aus node_modules verwenden
-set "ELECTRON_BIN=%~dp0node_modules\electron\dist\electron.exe"
+REM Pfad OHNE trailing backslash (vermeidet Quoting-Bug bei Pfaden
+REM mit Leerzeichen wie "C:\Projects 1\..."):
+REM   %~dp0.  (der Punkt strippt den letzten Backslash)
+set "ROOT_DIR=%~dp0."
+
+REM Electron-Binary aus node_modules
+set "ELECTRON_BIN=%ROOT_DIR%\node_modules\electron\dist\electron.exe"
 
 if not exist "%ELECTRON_BIN%" (
   echo FEHLER: Electron-Binary nicht gefunden:
@@ -34,5 +33,7 @@ if not exist "%ELECTRON_BIN%" (
 )
 
 echo Starte MiniMax Assets Tool...
-"%ELECTRON_BIN%" "%~dp0" %*
+echo   Pfad: %ROOT_DIR%
+echo   Electron: %ELECTRON_BIN%
+"%ELECTRON_BIN%" "%ROOT_DIR%" %*
 endlocal
