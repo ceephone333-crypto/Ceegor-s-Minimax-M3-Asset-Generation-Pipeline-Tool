@@ -1,0 +1,16 @@
+
+[pre-commit] ÔåÆ lint
+Atomic-Architecture-Linter
+===========================
+
+Modul-Metriken:
+  main       26 Dateien,  1439 Zeilen total, +ÿ 55.3 Z., gr+Â+ƒte: main/ipc/registerFileBrowserIpc.js (132)
+  renderer   31 Dateien,  9190 Zeilen total, +ÿ 296.5 Z., gr+Â+ƒte: renderer/app.js (6312)
+  src        19 Dateien,  2584 Zeilen total, +ÿ 136.0 Z., gr+Â+ƒte: src/isnetbg_node.js (287)
+
+WARNINGS (1):
+  ÔÜá  [SIZE] renderer/app.js ÔÇö 6312 Zeilen > 300 (Legacy-God-File, Phase 3).
+
+ERRORS (1):
+  Ô£ù  [SIZE] renderer/tabs/imageTab.js ÔÇö 736 Zeilen > 500 (HART-Limit). Datei zerlegen.
+
