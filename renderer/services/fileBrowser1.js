@@ -1,11 +1,23 @@
 // renderer/services/fileBrowser1.js (Phase 3 Block 27)
 // First half of the File browser section.
 
-// Phase 4 Fix 19: explizites window-Exposing.
-// Vorher waren alle functions top-level und sollten auf window sein.
-// Aber 'var' am Top-Level ist in strict mode anders. Sicherheits-
-// halber exposen wir die wichtigsten functions explizit auf window.
-window.refreshBrowser = async function refreshBrowser(opts = {}) {
+// Phase 4 Fix 20: state-Default. Diese Datei wird VOR section24_State.js
+// geladen. Wenn 'state' undefined ist, wirft jede 'state.X' Zeile
+// eine TypeError und bricht die ganze Datei ab. Mit 'var state =
+// window.state || {}' wird 'state' zu einem leeren Objekt falls
+// es noch nicht definiert ist. Spaeter (nach section24-Load) wird
+// es automatisch das echte state (weil window.state mutiert wird).
+var state = window.state || {};
+var refreshBrowser; // forward-declaration, definition weiter unten
+var applyFileSearch; // forward-declaration
+
+// Phase 4 Fix 19: explizites window-Exposing der wichtigsten
+// Functions damit sie auch dann definiert sind wenn die Datei
+// spaeter abbricht (z.B. weil 'state' nicht verfuegbar).
+// Wir nutzen function declarations (NICHT expressions), weil
+// declarations HOISTED sind - sie existieren auch dann auf dem
+// globalen window wenn die Datei spaeter crasht.
+async function refreshBrowser(opts = {}) {
   // Prefer the per-tab saved folder (set when the user last visited this
   // tab), then the current fbDir, then the output root.
   const saved = (state.currentTab && state.fbDirs[state.currentTab]) || '';
@@ -198,15 +210,22 @@ function openFolderOptions() {
 }
 
 
-window.applyFileSearch = function applyFileSearch() {
+function applyFileSearch() {
   const q = ($('#fb-search')?.value || '').toLowerCase();
   for (const item of $$('.fb-item')) {
     if (!q) { item.style.display = ''; continue; }
     const name = (item.dataset.name || item.querySelector('.name')?.textContent || '').toLowerCase();
     item.style.display = name.includes(q) ? '' : 'none';
   }
-};
-// Backward-compat: bare-Name access from other script tags
+}
+// Phase 4 Fix 19/20: window-Exposing NACH allen declarations.
+// Function declarations sind hoisted, also ist applyFileSearch
+// und refreshBrowser jetzt auf jeden Fall auf window - selbst
+// wenn spaeter eine Zeile in dieser Datei crasht.
+window.applyFileSearch = applyFileSearch;
+window.refreshBrowser = refreshBrowser;
+// Bare-Name-Aliase (zusaetzlich zu window.X) damit jeder
+// Lookup-Pfad funktioniert.
 var applyFileSearch = window.applyFileSearch;
 var refreshBrowser = window.refreshBrowser;
 
