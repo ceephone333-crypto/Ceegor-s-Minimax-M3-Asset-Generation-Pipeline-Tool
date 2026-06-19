@@ -8,10 +8,9 @@
 // Internal state: _logIdCounter, _logSelected. Reachable via
 // the global `state._logEvents` and `state._logLastClickedId`.
 
-const { el, $ } = window.createElement ? { el: window.createElement, $: (s) => document.querySelector(s) } : window.DomHelpers || {};
-const $$ = (sel) => Array.from(document.querySelectorAll(sel));
-const { LOG_MAX_EVENTS, LOG_CATEGORIES } = window.LogCategories;
-const { maskLine } = window.securityUtils || (() => String);  // fallback
+var { el, $ } = window.createElement ? { el: window.createElement, $: (s) => document.querySelector(s) } : window.DomHelpers || {};
+var $$ = (sel) => Array.from(document.querySelectorAll(sel));
+var { maskLine } = window.securityUtils || (() => String);  // fallback
 
 // Add a new event to the log. Returns the new event id so the
 // caller can reference it later (e.g. for a "background
@@ -39,6 +38,7 @@ const { maskLine } = window.securityUtils || (() => String);  // fallback
 // so a full API key never appears in a log event the user
 // might paste into a support ticket.
 function addLogEvent(opts) {
+  var { LOG_MAX_EVENTS, LOG_CATEGORIES } = window.LogCategories;
   opts = opts || {};
   const cfg = window.state && window.state.config || {};
   const mask = (s) => maskLine(String(s == null ? '' : s), cfg.api_key);
@@ -85,6 +85,7 @@ function _logNextId() { return ++_logIdCounter; }
 // data attribute so click handlers can look up the underlying
 // event in window.state._logEvents.
 function renderLogEvent(ev) {
+  var { LOG_CATEGORIES } = window.LogCategories;
   const root = document.querySelector('#log');
   if (!root) return;
   const cat = LOG_CATEGORIES[ev.category] || LOG_CATEGORIES.info;
@@ -193,6 +194,7 @@ function selectLogRange(fromId, toId) {
 // is intentionally simple (no markdown) — a support ticket
 // should display it as-is.
 function formatLogEventForCopy(ev) {
+  var { LOG_CATEGORIES } = window.LogCategories;
   const parts = [];
   const ts = ev.ts.toLocaleString();
   const cat = (LOG_CATEGORIES[ev.category] || LOG_CATEGORIES.info).label;
@@ -289,6 +291,7 @@ function log(line) {
 }
 
 window.LogService = {
+  init: setupLogClicks,
   addLogEvent, renderLogEvent, formatLogEventForCopy, collectLogCopyText,
   setupLogClicks, log, isLogSelected, toggleLogSelection, clearLogSelection, selectLogRange,
 };

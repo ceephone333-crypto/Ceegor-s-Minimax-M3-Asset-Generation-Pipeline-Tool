@@ -1,7 +1,7 @@
 // renderer/utils/fbColumns.js
 // FB_COLUMNS array + normalizeFbColumns helper. Phase 3 Block 19.
 
-const { humanSize } = window.PureFuncs;
+var { humanSize } = window.PureFuncs;
 
 // ----------------- File-browser columns -----------------
 // Each column is a self-describing object that tells the renderer

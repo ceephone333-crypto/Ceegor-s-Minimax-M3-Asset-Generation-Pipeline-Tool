@@ -213,4 +213,40 @@ async function startBatchGen(tabKey) {
   await refreshQuota();
 }
 
-window.BatchManager = { openBatchManager, startBatchGen };
+function buildAddToBatchBtn(tabKey) {
+  const btn = el('button', {
+    class: 'btn-mini batch-add',
+    title: 'Add current prompt/text to BatchGen list',
+    onclick: async (e) => {
+      e.preventDefault();
+      const tabRoot = $(`#tab-${tabKey}`);
+      const promptTa = tabRoot ? tabRoot.querySelector('textarea') : null;
+      const val = promptTa ? promptTa.value.trim() : '';
+      if (!val) {
+        toast('Prompt is empty.', 'warn');
+        return;
+      }
+      const current = state.batches[tabKey] || [];
+      if (current.includes(val)) {
+        toast('Prompt is already in the batch list.', 'warn');
+        return;
+      }
+      if (current.length >= 100) {
+        toast('Batch is full (max 100 entries).', 'warn');
+        return;
+      }
+      const next = { ...state.batches, [tabKey]: [...current, val] };
+      const r = await window.api.batchesSet(next);
+      if (!r.ok) {
+        toast('Failed to add to batch: ' + r.error, 'err');
+        return;
+      }
+      state.batches = { ...state.batches, [tabKey]: [...current, val] };
+      toast('Added to batch list.', 'ok');
+      _refreshBatchButtons();
+    }
+  }, '+ Batch');
+  return btn;
+}
+
+window.BatchManager = { openBatchManager, startBatchGen, buildAddToBatchBtn };

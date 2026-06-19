@@ -11,10 +11,10 @@
 // (click / ctrl-click / shift-click), expand a row to see its
 // details, and copy the selected events (or all) to the clipboard
 // in a plain-text format that includes both the headline and the
-// expanded details â€” so pasting into a support ticket gives the
+// expanded details — so pasting into a support ticket gives the
 // helper every piece of information the renderer has.
 // Phase 3 Block 3: extrahiert nach renderer/services/LogCategories.js
-const { LOG_MAX_EVENTS, LOG_CATEGORIES } = window.LogCategories;
+
 
 // Add a new event to the log. Returns the new event id so the
 // caller can reference it later (e.g. for a "background
@@ -28,7 +28,7 @@ const { LOG_MAX_EVENTS, LOG_CATEGORIES } = window.LogCategories;
 //                    when the row is expanded. Strings are split
 //                    on \n into multiple lines; null is no details.
 //   opts.result    : 'ok' | 'err' | null (default null). Drives the
-//                    trailing âœ… / âŒ icon.
+//                    trailing ✅ / ❌ icon.
 //   opts.ts        : Date | null (default: now). Pass a custom
 
 function toast(msg, kind = 'info', ms = 3000) {
@@ -112,7 +112,7 @@ function showWhatsNewToast(headline, items, onDismiss) {
     setTimeout(() => { t.remove(); if (onDismiss) onDismiss(); }, 220);
   });
   root.appendChild(t);
-  // Don't auto-dismiss â€” the user should explicitly close it
+  // Don't auto-dismiss — the user should explicitly close it
   // (or accept that it stays). Persisting `lastSeenVersion` only
   // happens on X click so an unexpected reload still shows the
   // toast next launch.

@@ -41,7 +41,7 @@ Built on Electron. Ships as a portable Windows .exe or as a runnable source tree
 
 ### Optional: Real-ESRGAN upscaling (BSD-3-Clause)
 
-The built-in Canvas/`createImageBitmap` pipeline does a solid job for 2×–4×, but for noticeably more detail (and better handling of noise / JPEG artifacts) the tool can also shell out to the [Real-ESRGAN ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN) command-line tool. The user provides the binary — the source release stays small and standalone, and the upgrade is opt-in.
+The built-in Canvas/`createImageBitmap` pipeline does a solid job for 2ז4×, but for noticeably more detail (and better handling of noise / JPEG artifacts) the tool can also shell out to the [Real-ESRGAN ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN) command-line tool. The user provides the binary — the source release stays small and standalone, and the upgrade is opt-in.
 
 Detection order (first hit wins, cached after first success):
 1. Cached path from a previous successful detection in this run.

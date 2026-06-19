@@ -31,7 +31,7 @@
     sendToFile(msg);
     buffer.push(msg);
   };
-  log('=== renderer-debug started (pid=' + (process?.pid || 'n/a') + ') ===');
+  log('=== renderer-debug started (pid=' + (typeof process !== 'undefined' && process?.pid || 'n/a') + ') ===');
   log('location=' + location.href);
   log('userAgent=' + navigator.userAgent);
 

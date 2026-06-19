@@ -78,7 +78,7 @@ function getBinaryPath() {
 //
 // The binary's stdout is mostly progress lines; we don't surface
 // them to the renderer (the renderer already has its own "Upscaling
-// 4×…" status line via setStatus). The binary's exit code is the
+// 4ׅ" status line via setStatus). The binary's exit code is the
 // signal of success — we also check the output file actually exists.
 function run(srcPath, dstPath, opts = {}) {
   const binary = findBinary();

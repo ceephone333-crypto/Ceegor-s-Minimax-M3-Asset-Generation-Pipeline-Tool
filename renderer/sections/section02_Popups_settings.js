@@ -3,11 +3,11 @@
 // Source: app.js L4702..4717
 
 // ----------------- Popups settings -----------------
-// Sub-modal inside âš™ Settings that lets the user change the popup
+// Sub-modal inside ⚙ Settings that lets the user change the popup
 // display policy (which controls the startup / first-time-setup /
 // optional-addons / tab-intro popups) and reset the "seen" history
 // so every popup fires again on the next trigger. Persisted to
-// state.json via scheduleStateSave â€” the policy itself is part of
+// state.json via scheduleStateSave — the policy itself is part of
 // state.popupPolicy, and the seen record is state.seenPopups.
 function showPopupSettings() {
   // Removed: the standalone Popups modal was replaced by the

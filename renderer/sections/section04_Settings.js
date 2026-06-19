@@ -35,7 +35,7 @@ function openSettings() {
   // Multi-tab settings dialog. The previous version was a
   // single big modal plus two layered modals on top (Real-ESRGAN
   // + Popups) that the user had to dismiss in order. That got
-  // messy fast â€” closing the inner modal left an inconsistent
+  // messy fast — closing the inner modal left an inconsistent
   // half-saved settings dialog, and the layered stack could
   // trap the focus on the wrong sub-section. The new layout is
   // one modal with a sidebar of tabs (General / Image /
@@ -43,7 +43,7 @@ function openSettings() {
   // pane content without ever stacking a second modal.
   showModal((m, close) => {
     m.classList.add('settings-modal');
-    m.appendChild(el('h2', {}, 'âš™ Settings'));
+    m.appendChild(el('h2', {}, '⚙ Settings'));
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
       'All your settings (API key, output folder, region, theme, styles, image pipeline, popups) are stored in config.txt next to the executable. Your API key is never sent to the cloud by this tool, never embedded in the binary, and is masked in the log pane by default. Click any tab on the left to switch sections.'));
 
@@ -56,11 +56,11 @@ function openSettings() {
     const paneHost = el('div', { class: 'settings-tabs-panehost' });
 
     const tabDefs = [
-      { id: 'general',  label: 'ðŸ”‘ General',     build: () => buildSettingsGeneralPane() },
-      { id: 'image',    label: 'ðŸ–¼ Image',        build: () => buildSettingsImagePane() },
-      { id: 'styles',   label: 'ðŸŽ¨ Style presets', build: () => buildSettingsStylesPane() },
-      { id: 'popups',   label: 'ðŸ’¬ Popups',        build: () => buildSettingsPopupsPane() },
-      { id: 'shortcuts',label: 'âŒ¨ Shortcuts',      build: () => buildSettingsShortcutsPane() },
+      { id: 'general',  label: '🔑 General',     build: () => buildSettingsGeneralPane() },
+      { id: 'image',    label: '🖼 Image',        build: () => buildSettingsImagePane() },
+      { id: 'styles',   label: '🎨 Style presets', build: () => buildSettingsStylesPane() },
+      { id: 'popups',   label: '💬 Popups',        build: () => buildSettingsPopupsPane() },
+      { id: 'shortcuts',label: '⌨ Shortcuts',      build: () => buildSettingsShortcutsPane() },
     ];
     const panes = {};
     const tabButtons = {};
@@ -80,7 +80,7 @@ function openSettings() {
     m.appendChild(layout);
 
     // Save / cancel buttons act on every pane (whichever is
-    // currently visible â€” we collect pending changes into a
+    // currently visible — we collect pending changes into a
     // single setConfig call on save so config.txt is updated
     // atomically, just like the old single-modal save).
     const saveBtn = el('button', { class: 'primary' }, 'Save');
@@ -93,7 +93,7 @@ function openSettings() {
           Object.assign(merged, inst.collect());
         }
       }
-      // CRITICAL: merge with the current config â€” do NOT replace it.
+      // CRITICAL: merge with the current config — do NOT replace it.
       // The previous version of this code built a fresh
       // {api_key,output_dir,region} object which silently dropped
       // `theme` and `styles` on every save. We preserve every

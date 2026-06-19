@@ -5,7 +5,7 @@
 // ----------------- Form helpers -----------------
 
 // Build the "Target file prefix" input row. The same row is mounted on
-// every tab (image/speech/music/video) but the value is global â€” when
+// every tab (image/speech/music/video) but the value is global — when
 // the user types in one tab, the other tabs' inputs are updated in
 // place so they always show the same prefix. The prefix is prepended
 // verbatim to the generated file's name in every gen handler (see
@@ -31,7 +31,7 @@ function buildFilePrefixRow() {
   // and increment it by 1, padding with leading zeros to preserve
   // the original width. The rightmost match (not necessarily at the
   // end of the string) means the user can use prefixes like
-  // "BildserieFÃ¼rSpiel_Reihe1_" and have the trailing series counter
+  // "BildserieFürSpiel_Reihe1_" and have the trailing series counter
   // bump. The regex `(\d+)(?=\D*$)` matches the last digit run that
   // is followed by zero or more non-digits to the end-of-string
   // anchor; e.g. for "Reihe10_v2" it matches "10", for "abc" nothing.
@@ -52,7 +52,7 @@ function buildFilePrefixRow() {
     const numStr = match[1];
     const num = parseInt(numStr, 10);
     const newNum = num + 1;
-    // Keep the leading-zero padding so "001" â†’ "002", not "2".
+    // Keep the leading-zero padding so "001" → "002", not "2".
     const newNumStr = String(newNum).padStart(numStr.length, '0');
     const newVal = val.substring(0, match.index) + newNumStr + val.substring(match.index + numStr.length);
     input.value = newVal;
@@ -83,7 +83,7 @@ function buildFilePrefixRow() {
 //   id: explicit DOM id (used for state save/load + cross-tab unique key)
 
 // Extract the --flag from a param's enclosing .row label (e.g. "--model (hd)"
-// â†’ "--model"). The flag is the first "--xxx" token in the label. Returns
+// → "--model"). The flag is the first "--xxx" token in the label. Returns
 // null if the row is unlabeled (e.g. prompt, lyrics textarea, variants row).
 
 

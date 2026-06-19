@@ -21,26 +21,26 @@ function notifyImageGenerated(p) {
   //    we APPEND a new slot instead of re-creating everything
   //    (preserves the existing thumbnails + their click
   //    handlers). If the grid doesn't exist yet (e.g. the
-  //    user is on a non-image tab), this is a no-op â€” the
+  //    user is on a non-image tab), this is a no-op — the
   //    next refreshBrowser() will pick up the file in the
   //    folder explorer.
   const content = $('#fb-preview-content');
   if (content) {
     let grid = content.querySelector('.preview-pane-grid');
     if (!grid) {
-      // No grid yet â€” build one with just this file.
+      // No grid yet — build one with just this file.
       content.innerHTML = '';
       grid = el('div', { class: 'preview-pane-grid' });
       content.appendChild(grid);
-      const summary = el('div', { class: 'preview-pane-summary' }, '1 image â€” click any thumbnail to open at 1:1.');
+      const summary = el('div', { class: 'preview-pane-summary' }, '1 image — click any thumbnail to open at 1:1.');
       content.appendChild(summary);
     } else {
-      // Grid already there â€” update the "N images" summary line
+      // Grid already there — update the "N images" summary line
       // (if present) so the user can see the count grow.
       const summary = content.querySelector('.preview-pane-summary');
       if (summary) {
         const n = grid.querySelectorAll('.preview-pane-thumb').length + 1;
-        summary.textContent = `${n} image${n === 1 ? '' : 's'} â€” click any thumbnail to open at 1:1.`;
+        summary.textContent = `${n} image${n === 1 ? '' : 's'} — click any thumbnail to open at 1:1.`;
       }
     }
     const slot = _buildPreviewThumb(p, { isActive: true, isNew: true });
@@ -87,7 +87,7 @@ async function startGenPolling() {
   }
   // Reset the dedup set so the polling starts fresh for this
   // run (the gen handler may have already pushed some files
-  // before the poller started, which is fine â€” notifyImageGenerated
+  // before the poller started, which is fine — notifyImageGenerated
   // is idempotent and the polling won't see them as new).
   _resetPreviewedPaths();
   const tick = async () => {
@@ -113,7 +113,7 @@ async function startGenPolling() {
       //    covers the --out-dir case (where the gen handler
       //    doesn't know the per-call output filenames).
       for (const p of fresh) {
-        // Only push as a thumbnail if it's an image file â€”
+        // Only push as a thumbnail if it's an image file —
         // the gen pipeline produces .png / .jpg / .jpeg / .webp.
         const ext = (p.split('.').pop() || '').toLowerCase();
         if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
@@ -127,7 +127,7 @@ async function startGenPolling() {
         if (row) row.classList.add('fb-item-new');
       }
     } catch (_) {
-      // Don't let a transient IPC error kill the poller â€” just
+      // Don't let a transient IPC error kill the poller — just
       // try again on the next tick.
     } finally {
       _genPollBusy = false;
@@ -160,7 +160,7 @@ async function previewTextFromFile(p) {
   const r = await window.api.fbRead(p);
   root.innerHTML = '';
   if (!r.ok) { root.innerHTML = '<div class="empty">Cannot read: ' + escapeHtml(r.error) + '</div>'; return; }
-  // Decode base64 â†’ binary string â†’ UTF-8 text. Plain `atob` only gives a
+  // Decode base64 → binary string → UTF-8 text. Plain `atob` only gives a
   // Latin-1 binary string, which mangles non-ASCII characters. TextDecoder
   // with {fatal: false} replaces invalid sequences with U+FFFD instead of
   // throwing, so partially-decodable files still display.
@@ -237,7 +237,7 @@ function showItemContextMenu(it, x, y) {
 
     // File-info block. Always shown. Lists the type, size, modified
     // time, and (for images) the natural resolution. Resolution
-    // has to be decoded from the file, so we render a "detectingâ€¦"
+    // has to be decoded from the file, so we render a "detecting…"
     // placeholder first and fill it in once loadImageFromFile
     // resolves.
     const isImage = !it.isDir && ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(it.ext);
@@ -269,14 +269,14 @@ function showItemContextMenu(it, x, y) {
       if (isImage) {
         const dimCell = el('div', { class: 'fb-info-row' }, [
           el('span', { class: 'fb-info-key' }, 'Dimensions'),
-          el('span', { class: 'fb-info-dim' }, 'detectingâ€¦'),
+          el('span', { class: 'fb-info-dim' }, 'detecting…'),
         ]);
         info.appendChild(dimCell);
         loadImageFromFile(it.path).then((img) => {
           const dim = dimCell.querySelector('.fb-info-dim');
           if (!dim) return;
           if (img.naturalWidth && img.naturalHeight) {
-            dim.textContent = `${img.naturalWidth} Ã— ${img.naturalHeight} px`;
+            dim.textContent = `${img.naturalWidth} × ${img.naturalHeight} px`;
           } else {
             dim.textContent = 'unknown';
           }
@@ -303,22 +303,22 @@ function showItemContextMenu(it, x, y) {
       // action button so the user can read a longer
       // explanation of what each pipeline step does before
       // they trigger it. This is the same helpButton factory
-      // the form labels use â€” clicking the "?" opens the
+      // the form labels use — clicking the "?" opens the
       // help modal for the topic; the action button itself
       // still runs the action.
       const rU = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
-        el('button', { class: 'btn-mini', onclick: () => { close(); showUpscaleDirect(it.path); } }, 'ðŸ” Upscaleâ€¦'),
+        el('button', { class: 'btn-mini', onclick: () => { close(); showUpscaleDirect(it.path); } }, '🔍 Upscale…'),
         helpButton('ctx.upscale'),
       ])]);
       const rC = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
-        el('button', { class: 'btn-mini', onclick: () => { close(); showCropOverlay(it.path); } }, 'âœ‚ Cropâ€¦'),
+        el('button', { class: 'btn-mini', onclick: () => { close(); showCropOverlay(it.path); } }, '✂ Crop…'),
         helpButton('ctx.crop'),
       ])]);
       const rF = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
-        el('button', { class: 'btn-mini', onclick: () => { close(); showConvertOverlay(it.path); } }, 'â‡„ Convert formatâ€¦'),
+        el('button', { class: 'btn-mini', onclick: () => { close(); showConvertOverlay(it.path); } }, '⇄ Convert format…'),
         helpButton('ctx.convert'),
       ])]);
-      // "Optimize / Compress" â€” re-encodes the image to shrink its
+      // "Optimize / Compress" — re-encodes the image to shrink its
       // file size with Sharp / libvips while preserving the best-
       // possible visual quality. Sits between "Convert format" and
       // "Remove background" in the menu order because it's a
@@ -326,14 +326,14 @@ function showItemContextMenu(it, x, y) {
       // typically runs the size-shrink BEFORE the more expensive
       // background-removal step. The dialog is always available
       // (no binary / model check needed) because Sharp is a hard
-      // dep of the project â€” if it isn't installed the IPC will
+      // dep of the project — if it isn't installed the IPC will
       // return a precise "sharp is not installed" error.
       const rO = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
-        el('button', { class: 'btn-mini', onclick: () => { close(); showOptimizeOverlay(it.path); } }, 'ðŸ—œ Optimize / Compressâ€¦'),
+        el('button', { class: 'btn-mini', onclick: () => { close(); showOptimizeOverlay(it.path); } }, '🗜 Optimize / Compress…'),
         helpButton('ctx.optimize'),
       ])]);
       const rB = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
-        el('button', { class: 'btn-mini', onclick: () => { close(); runRemoveBackgroundOnItem(it); } }, 'âœ¨ Remove background'),
+        el('button', { class: 'btn-mini', onclick: () => { close(); runRemoveBackgroundOnItem(it); } }, '✨ Remove background'),
         helpButton('ctx.removeBackground'),
       ])]);
       rows.push(rU, rC, rF, rO, rB);
@@ -355,15 +355,15 @@ function showItemContextMenu(it, x, y) {
           } catch (e) {
             toast('Audio cutter failed: ' + (e && e.message || e), 'err', 5000);
           }
-        } }, 'âœ‚ Audio cutâ€¦'),
+        } }, '✂ Audio cut…'),
         helpButton('ctx.audioCut'),
       ])]);
       rows.push(rA);
     }
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); fbClipboardCopy([it.path]); } }, 'Copy'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); fbClipboardCut([it.path]); } }, 'Cut'))]));
-    rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); promptRename(it); } }, 'Renameâ€¦'))]));
-    rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); promptMove(it); } }, 'Move toâ€¦'))]));
+    rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); promptRename(it); } }, 'Rename…'))]));
+    rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); promptMove(it); } }, 'Move to…'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => { close(); await fbClipboardPaste(state.fbDir); } }, 'Paste here'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini danger', onclick: () => { close(); confirmDelete(it); } }, 'Delete'))]));
     m.append(...rows);

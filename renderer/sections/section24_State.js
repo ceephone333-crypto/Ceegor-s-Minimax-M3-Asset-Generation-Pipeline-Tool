@@ -20,13 +20,13 @@ window.state = {
   batches: { image: [], speech: [], music: [], video: [] },
   // Per-tab last visited folder (for per-tab folder persistence, see showTab)
   fbDirs: { image: '', speech: '', music: '', video: '' },
-  // Global "Target file prefix" â€” prepended to every generated file's
+  // Global "Target file prefix" — prepended to every generated file's
   // name. Mirrored on all 4 tabs (one input on each) so the user can
   // tweak it without switching tabs. Persisted to state.json.
   filePrefix: '',
   // Real-ESRGAN model name (passed to the ncnn-vulkan binary via
-  // `-n <model>`). The default is the general-purpose 4Ã— BSD-3 model.
-  // Users pick a different one in âš™ Settings â†’ Image upscaling â†’
+  // `-n <model>`). The default is the general-purpose 4× BSD-3 model.
+  // Users pick a different one in ⚙ Settings → Image upscaling →
   // Model. The actual spawn is whitelisted in src/realesrgan.js to a
   // short known set so a corrupted state.json can't inject an
   // arbitrary model name (or argv flag) into the binary.
@@ -43,10 +43,10 @@ window.state = {
   // upscaled locally (Canvas API) after the mmx call returns, using the
   // settings below. Persisted to state.json so it survives restarts.
   upscaleEnabled: false,
-  // The auto-crop options are now part of the upscale settings â€” they
+  // The auto-crop options are now part of the upscale settings — they
   // live here so the Add button in the image tab can capture them as
   // part of the batch entry snapshot, and the image tab's generate
-  // handler can apply them after the upscale. The âš™ Settings â†’
+  // handler can apply them after the upscale. The ⚙ Settings →
   // Upscale Settings popup exposes all five fields (multiplier,
   // autoCrop, cropWidth, cropHeight, cropAnchorX/Y) so the user can
   // configure everything in one place.
@@ -56,7 +56,7 @@ window.state = {
   // binary. Persisted to state.json so the user's "yes, always
   // free up my generated assets" choice survives restarts. The
   // standalone right-click "Remove background" action does NOT
-  // depend on this flag â€” it's an explicit user gesture every
+  // depend on this flag — it's an explicit user gesture every
   // time, so accidental turn-on here is contained to the
   // generation pipeline.
   removeBackgroundEnabled: false,
@@ -98,11 +98,11 @@ window.state = {
   // completion between batch entries.
   generating: null,
   // Per-tab generation queue progress. genQueueSize is the total number
-  // of items the current run will produce (variants Ã— --n). genQueueDone
+  // of items the current run will produce (variants × --n). genQueueDone
   // is how many items have finished. The tab's ETA timer reads both
   // values to compute a "remaining time for the whole queue" estimate.
   // Cleared by armGenBtnWithCancel's cleanup. Without these, the ETA
-  // only ever showed the time for the CURRENT item â€” useless when the
+  // only ever showed the time for the CURRENT item — useless when the
   // user is running a 5-variant batch and wants to know when the whole
   // batch will be done.
   genQueueSize: { image: 0, speech: 0, music: 0, video: 0 },
@@ -112,7 +112,7 @@ window.state = {
   // same file twice" and avoid a re-decode + flicker. Cleared when
   // the preview is reset to the empty state (e.g. after a file is
   // deleted or moved out from under the pane). Initialized here so
-  // the first read doesn't see "undefined" â€” the comparison would
+  // the first read doesn't see "undefined" — the comparison would
   // still work, but writing to it via a property assignment on
   // `state` would silently create the key on first use, which is
   // the kind of implicit shape change that's hard to grep for.
@@ -159,10 +159,10 @@ window.state = {
   },
   // File-browser image thumbnail toggle. When true, image rows
   // in the folder explorer render a small centered thumbnail of
-  // the actual image file (instead of the generic ðŸ–¼ icon). The
+  // the actual image file (instead of the generic 🖼 icon). The
   // row height grows to fit the thumbnail; non-image rows are
   // unaffected. When false, the regular icon is shown and is
-  // left-aligned (was centred before â€” the user explicitly asked
+  // left-aligned (was centred before — the user explicitly asked
   // for left-alignment when thumbnails are off, so plain icons
   // read like a normal Explorer list instead of a centred
   // badge). Persisted to state.json.
@@ -183,18 +183,18 @@ window.state = {
   _logLastClickedId: null,
   // Popup display policy. Controls how the optional "first run"
   // / "tab intro" popups behave. One of:
-  //   'once-fresh'   â€” default. Show each popup until the user
+  //   'once-fresh'   — default. Show each popup until the user
   //                    dismisses it; then never show it again
   //                    (across restarts).
-  //   'per-session'  â€” Show each popup the first time it's
+  //   'per-session'  — Show each popup the first time it's
   //                    triggered after each app start; reset on
   //                    every launch.
-  //   'never'        â€” Never show these popups.
-  //   'always'       â€” Always show these popups (ignoring any
+  //   'never'        — Never show these popups.
+  //   'always'       — Always show these popups (ignoring any
   //                    prior dismissal).
-  // The user can change this in âš™ Settings â†’ Popups.
+  // The user can change this in ⚙ Settings → Popups.
   popupPolicy: 'once-fresh',
-  // Map of popup-id â†’ ISO timestamp of the user's last dismissal.
+  // Map of popup-id → ISO timestamp of the user's last dismissal.
   // Used by the 'once-fresh' policy to decide whether the popup
   // should still fire. We also keep an in-memory per-session set
   // for the 'per-session' policy so popups don't re-show inside

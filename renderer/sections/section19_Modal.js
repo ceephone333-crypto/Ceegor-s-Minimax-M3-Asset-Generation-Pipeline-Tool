@@ -4,7 +4,7 @@
 
 // ----------------- Modal -----------------
 // Stack-based modal manager. The previous version used a single
-// `_modalClose` slot and wiped `modal-root` on every `showModal` call â€”
+// `_modalClose` slot and wiped `modal-root` on every `showModal` call —
 // that destroyed any underlying modal (e.g. opening the bulk-paste
 // dialog from the BatchGen manager wiped the BatchGen modal entirely,
 // and the user lost Esc-to-close on the parent). Stacking keeps each
@@ -16,7 +16,7 @@
 // this, clicking into the folder-browser filter opened the
 // help modal AND stripped focus from the input; after dismissing
 // the modal the user had to click the input again, which would
-// re-trigger the same help modal â€” an infinite loop. Restoring
+// re-trigger the same help modal — an infinite loop. Restoring
 // focus on close breaks the cycle.
 //
 // Stack dedup: every modal can carry an optional `id` string.
@@ -31,7 +31,7 @@ function showModal(build, opts) {
   const id = (opts && opts.id) || null;
   // Stack dedup: refuse to open a second modal with the same id
   // when one is already showing. The user gets the existing one
-  // (and its focus) â€” clicking the same help button twice is a
+  // (and its focus) — clicking the same help button twice is a
   // no-op rather than stacking two copies.
   if (id) {
     for (const entry of _modalStack) {

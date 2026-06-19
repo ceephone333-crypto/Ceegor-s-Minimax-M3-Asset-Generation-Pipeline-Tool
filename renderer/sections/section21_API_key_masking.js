@@ -7,5 +7,5 @@
 // Hier nur Shim-Aliase, damit der 800+-Aufruf-Code in app.js
 // unverändert bleibt. Funktionen liegen auf window.SecurityUtils
 // und werden über index.html VOR app.js geladen.
-const { maskApiKey, maskLine, showRevealableKey } = window.SecurityUtils;
+var { maskApiKey, maskLine, showRevealableKey } = window.SecurityUtils;
 

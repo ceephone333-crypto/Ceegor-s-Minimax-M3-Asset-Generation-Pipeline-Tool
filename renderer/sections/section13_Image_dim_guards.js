@@ -3,16 +3,16 @@
 // Source: app.js L1320..1381
 
 // ----------------- Image-dim guards -----------------
-// Three live warnings below the image tab's W Ã— H row:
-//   1. "W Ã— H doesn't match aspect ratio 1:1" â€” when the user
+// Three live warnings below the image tab's W × H row:
+//   1. "W × H doesn't match aspect ratio 1:1" — when the user
 //      has an aspect ratio selected AND has manually entered both
 //      W and H such that their ratio is off by more than 1%.
 //      "Correct" auto-fills the offending dimension (W is the
 //      source of truth, per the user's spec).
 //   2. "W must be a multiple of 8" / "H must be a multiple of
-//      8" â€” mmx rejects non-multiple-of-8 dimensions with a
+//      8" — mmx rejects non-multiple-of-8 dimensions with a
 //      cryptic 400. "Correct" rounds to the nearest multiple.
-//   3. Same for the subject-ref field â€” it must be a valid
+//   3. Same for the subject-ref field — it must be a valid
 //      filesystem path or http(s) URL; mmx rejects everything
 //      else.
 //
@@ -44,7 +44,7 @@ function attachSubjectRefGuard(subjRef) {
     if (!looksLikePath) {
       warning.innerHTML = '';
       warning.appendChild(el('span', { style: 'flex: 1;' },
-        'Subject reference must be a local image path or an http(s) URL. Examples: C:\\Users\\me\\char.png  Â·  https://example.com/char.png'));
+        'Subject reference must be a local image path or an http(s) URL. Examples: C:\\Users\\me\\char.png  ·  https://example.com/char.png'));
       warning.style.display = '';
       return;
     }

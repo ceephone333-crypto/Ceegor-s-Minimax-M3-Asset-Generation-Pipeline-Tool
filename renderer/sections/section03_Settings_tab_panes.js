@@ -5,7 +5,7 @@
 // ----------------- Settings tab panes -----------------
 // Each pane factory returns { root, instance }. The `instance`
 // object carries a `collect()` method that returns the pane's
-// pending changes as a partial config object â€” the parent
+// pending changes as a partial config object — the parent
 // `openSettings()` merges these into one setConfig call so the
 // save button works regardless of which tab the user is on.
 //
@@ -34,7 +34,7 @@ function buildSettingsGeneralPane() {
   root.appendChild(apiKeyRow.row);
   root.appendChild(el('div', { class: 'row' }, [
     el('label', {}, ['Output directory', helpButton('settings.outputDir')]),
-    el('div', { class: 'combo' }, [outInput, el('button', { class: 'btn-mini', onclick: async () => { const p = await window.api.pickFolder(); if (p) outInput.value = p; } }, 'Browseâ€¦')]),
+    el('div', { class: 'combo' }, [outInput, el('button', { class: 'btn-mini', onclick: async () => { const p = await window.api.pickFolder(); if (p) outInput.value = p; } }, 'Browse…')]),
   ]));
   root.appendChild(el('div', { class: 'row' }, [el('label', {}, ['Region', helpButton('settings.region')]), regInput]));
   root.appendChild(el('div', { class: 'row' }, [el('label', {}, ['Theme', helpButton('settings.theme')]), themeSel]));
@@ -45,7 +45,7 @@ function buildSettingsGeneralPane() {
   const test = el('button', { class: 'btn-mini' }, 'Test connection');
   const diag = el('button', { class: 'btn-mini' }, 'Diagnose');
   test.addEventListener('click', async () => {
-    test.disabled = true; test.innerHTML = '<span class="spinner"></span> Testingâ€¦';
+    test.disabled = true; test.innerHTML = '<span class="spinner"></span> Testing…';
     const r = await window.api.authStatus();
     test.disabled = false; test.textContent = 'Test connection';
     if (r.ok) {
@@ -88,9 +88,9 @@ function buildSettingsImagePane() {
     'The built-in pipeline is always available. Real-ESRGAN (BSD-3-Clause) gives noticeably better detail when the binary is installed.'));
 
   // ---- Real-ESRGAN status ----
-  const statusText = el('div', { class: 're-status' }, 'Detectingâ€¦');
-  const reBtn = el('button', { class: 'btn-mini' }, 'ðŸ”„ Re-detect');
-  const installBtnStatus = el('button', { class: 'btn-mini' }, 'â¬‡ Download & install');
+  const statusText = el('div', { class: 're-status' }, 'Detecting…');
+  const reBtn = el('button', { class: 'btn-mini' }, '🔄 Re-detect');
+  const installBtnStatus = el('button', { class: 'btn-mini' }, '⬇ Download & install');
   installBtnStatus.style.display = 'none';
   root.appendChild(el('div', { class: 'row' }, [
     el('label', {}, 'Real-ESRGAN upscaler'), statusText, installBtnStatus, reBtn,
@@ -99,7 +99,7 @@ function buildSettingsImagePane() {
   // ---- Real-ESRGAN model selector ----
   const modelSel = el('select', {});
   for (const [val, lbl] of [
-    ['realesrgan-x4plus', 'realesrgan-x4plus  (general-purpose 4Ã—, default)'],
+    ['realesrgan-x4plus', 'realesrgan-x4plus  (general-purpose 4×, default)'],
     ['realesrgan-x4plus-anime', 'realesrgan-x4plus-anime  (anime / illustration)'],
     ['realesrgan-animevideov3', 'realesrgan-animevideov3  (video frames)'],
     ['realesr-general-x4v3', 'realesr-general-x4v3  (latest general, smaller)'],
@@ -117,7 +117,7 @@ function buildSettingsImagePane() {
   ]));
 
   // ---- One-click installer ----
-  const installBtn = el('button', { class: 'btn-mini' }, 'â¬‡ Download Real-ESRGAN');
+  const installBtn = el('button', { class: 'btn-mini' }, '⬇ Download Real-ESRGAN');
   const installProgress = el('div', { class: 're-progress' });
   installProgress.style.display = 'none';
   installProgress.style.color = 'var(--fg-2)';
@@ -128,7 +128,7 @@ function buildSettingsImagePane() {
   ]));
 
   async function refreshStatus() {
-    statusText.textContent = 'Detectingâ€¦';
+    statusText.textContent = 'Detecting…';
     try {
       const r = await window.api.realesrganAvailable();
       if (r && r.available) {
@@ -155,28 +155,28 @@ function buildSettingsImagePane() {
     reBtn.disabled = true;
     installBtnStatus.disabled = true;
     installProgress.style.display = '';
-    installProgress.textContent = 'Starting downloadâ€¦';
+    installProgress.textContent = 'Starting download…';
     const offProgress = window.api.onRealesrganDownloadProgress((data) => {
       if (data.phase === 'download') {
         if (data.total > 0) {
           const pct = (data.downloaded / data.total) * 100;
           const mb = (data.downloaded / 1024 / 1024).toFixed(1);
           const totalMb = (data.total / 1024 / 1024).toFixed(1);
-          installProgress.textContent = `Downloadingâ€¦ ${mb} / ${totalMb} MB (${pct.toFixed(0)}%)`;
+          installProgress.textContent = `Downloading… ${mb} / ${totalMb} MB (${pct.toFixed(0)}%)`;
         } else {
-          installProgress.textContent = 'Downloadingâ€¦';
+          installProgress.textContent = 'Downloading…';
         }
       } else if (data.phase === 'extract') {
-        installProgress.textContent = 'Extractingâ€¦';
+        installProgress.textContent = 'Extracting…';
       } else if (data.phase === 'done') {
-        installProgress.textContent = 'Done. Refreshing statusâ€¦';
+        installProgress.textContent = 'Done. Refreshing status…';
       }
     });
     try {
       const r = await window.api.realesrganDownload();
       offProgress();
       if (r && r.ok) {
-        installProgress.textContent = 'Installed to ' + (r.binDir || './bin') + '. Re-detectingâ€¦';
+        installProgress.textContent = 'Installed to ' + (r.binDir || './bin') + '. Re-detecting…';
         await refreshStatus();
       } else {
         installProgress.textContent = 'Download failed: ' + ((r && r.error) || 'unknown');
@@ -200,14 +200,14 @@ function buildSettingsImagePane() {
   // separate popup because the addons install can stream
   // progress for minutes; embedding it in the settings pane
   // would freeze the rest of the dialog. ----
-  const openAddonsBtn = el('button', { class: 'btn-mini' }, 'ðŸ§© Open add-ons installer');
+  const openAddonsBtn = el('button', { class: 'btn-mini' }, '🧩 Open add-ons installer');
   openAddonsBtn.addEventListener('click', () => openOptionalAddons({ force: true }).catch(() => {}));
   root.appendChild(el('div', { class: 'row' }, [
     el('label', {}, 'Optional add-ons'),
     openAddonsBtn,
   ]));
 
-  // The pane does not modify config.txt directly â€” its writes
+  // The pane does not modify config.txt directly — its writes
   // go to state.json (realesrganModel), so collect() returns
   // an empty object. The save button still works.
   return { root, instance: { collect: () => ({}) } };
@@ -217,7 +217,7 @@ function buildSettingsStylesPane() {
   // The style-presets pane shows the existing list with
   // add/edit/delete + the "Save current prompt as style"
   // button. Implemented as a thin wrapper that calls the
-  // existing openStyleSettings() modal â€” but here we render
+  // existing openStyleSettings() modal — but here we render
   // the same UI inline so the user doesn't have to dismiss a
   // second modal to save settings.
   const root = el('div', {});
@@ -235,8 +235,8 @@ function buildSettingsStylesPane() {
     }
     styles.forEach((s, i) => {
       const actions = el('div', { class: 'sactions' }, [
-        el('button', { class: 'btn-mini', onclick: () => { editStyle(i); } }, 'âœŽ'),
-        el('button', { class: 'btn-mini danger', onclick: () => { deleteStyle(i, () => { renderList(); }); } }, 'âœ•'),
+        el('button', { class: 'btn-mini', onclick: () => { editStyle(i); } }, '✎'),
+        el('button', { class: 'btn-mini danger', onclick: () => { deleteStyle(i, () => { renderList(); }); } }, '✕'),
       ]);
       list.appendChild(el('li', {}, [
         el('div', {}, [
@@ -251,7 +251,7 @@ function buildSettingsStylesPane() {
   root.appendChild(list);
 
   const nameInput = el('input', { type: 'text', placeholder: 'Style name (e.g. "Pixel Art Berlin")' });
-  const valInput = el('textarea', { placeholder: 'Style value â€” the text that gets prepended to your prompt (e.g. "Pixel art, neon red lighting, dramatic shadows")' });
+  const valInput = el('textarea', { placeholder: 'Style value — the text that gets prepended to your prompt (e.g. "Pixel art, neon red lighting, dramatic shadows")' });
   valInput.style.minHeight = '70px';
   const editingIdx = { value: -1 };
   root.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Name'), nameInput]));
@@ -264,10 +264,10 @@ function buildSettingsStylesPane() {
     nameInput.value = s.name;
     valInput.value = s.value;
   }
-  // (deleteStyle is shared with the standalone popup â€” it
+  // (deleteStyle is shared with the standalone popup — it
   // already calls persistStyles on the renderer's state.)
-  const saveBtn = el('button', { class: 'btn-mini' }, 'ðŸ’¾ Save style');
-  const saveCurrentBtn = el('button', { class: 'btn-mini' }, 'âœš Save current prompt as styleâ€¦');
+  const saveBtn = el('button', { class: 'btn-mini' }, '💾 Save style');
+  const saveCurrentBtn = el('button', { class: 'btn-mini' }, '✚ Save current prompt as style…');
   saveBtn.addEventListener('click', async () => {
     const name = nameInput.value.trim();
     const value = valInput.value.trim();
@@ -318,7 +318,7 @@ function buildSettingsPopupsPane() {
     polSel,
   ]));
 
-  const resetBtn = el('button', { class: 'btn-mini' }, 'ðŸ”„ Reset popup history');
+  const resetBtn = el('button', { class: 'btn-mini' }, '🔄 Reset popup history');
   resetBtn.addEventListener('click', async () => {
     if (!confirm('Reset all popup "seen" history? Every popup will fire again the next time it is triggered (until you dismiss it).')) return;
     resetPopupSeen();
@@ -347,12 +347,12 @@ function buildSettingsShortcutsPane() {
   root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
     'Keyboard shortcuts work from anywhere in the app (no need to click into a specific tab first).'));
   const box = el('div', { class: 'shortcuts-box' });
-  box.appendChild(el('h4', {}, 'âŒ¨ Keyboard shortcuts'));
+  box.appendChild(el('h4', {}, '⌨ Keyboard shortcuts'));
   const shortcuts = [
     ['Ctrl+Enter', 'Generate on the active tab'],
     ['Ctrl+1 / 2 / 3 / 4', 'Switch to Image / Speech / Music / Video'],
     ['Ctrl+B', 'Open BatchGen for the active tab'],
-    ['Ctrl+T', 'Open Style Settings (also in Settings â†’ Style presets)'],
+    ['Ctrl+T', 'Open Style Settings (also in Settings → Style presets)'],
     ['Ctrl+S', 'Open this Settings dialog'],
     ['Ctrl+L', 'Toggle dark / light mode'],
     ['Ctrl+F', 'Focus the file-browser filter'],

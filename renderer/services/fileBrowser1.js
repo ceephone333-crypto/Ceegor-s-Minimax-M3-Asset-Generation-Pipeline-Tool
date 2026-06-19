@@ -24,7 +24,7 @@ async function refreshBrowser(opts = {}) {
   let startDir = state.fbDir || saved || state.config.output_dir || '';
   let out = await window.api.fbList(startDir);
   // If the user had a per-tab folder persisted but it's gone (deleted,
-  // drive removed, etc.) â€” fall back to the output root instead of just
+  // drive removed, etc.) — fall back to the output root instead of just
   // showing an error and forcing the user to click "Refresh". Same
   // fallback if the live fbDir fails for the same reason.
   if (!out.ok && startDir && startDir !== (state.config.output_dir || '')) {
@@ -48,7 +48,7 @@ async function refreshBrowser(opts = {}) {
   // Skip this when:
   //   - opts.keepCurrent is set (e.g. the Up button)
   //   - we already have a saved per-tab folder (the user has navigated
-  //     within this tab before â€” respect their choice)
+  //     within this tab before — respect their choice)
   let target = out;
   if (!opts.keepCurrent && !saved) {
     const sub = pathJoin(target.dir, state.currentTab);
@@ -68,7 +68,7 @@ async function refreshBrowser(opts = {}) {
   $('#fb-path').title = target.dir;
   // Apply the user's preferred sort before rendering so the DOM
   // is created in the right order on the first paint (avoids a
-  // flicker of "server-side default" â†’ "user's sort" on every
+  // flicker of "server-side default" → "user's sort" on every
   // refresh). sortFbItems never mutates the input array.
   const sorted = sortFbItems(target.items, state.fbSort);
   renderFbList(sorted);
@@ -78,7 +78,6 @@ async function refreshBrowser(opts = {}) {
 // Phase 3 Block 11: FB_SORT_MODES + normalizeFbSort + naturalCompare +
 // sortFbItems extrahiert nach renderer/utils/fbSort.js. Pure Modul,
 // 0 App-Coupling.
-const { FB_SORT_MODES, normalizeFbSort, naturalCompare, sortFbItems } = window.FbSort;
 
 // Build the CSS grid-template-columns string for the file
 // browser rows. Order: icon + name (mandatory), then the
@@ -87,7 +86,7 @@ const { FB_SORT_MODES, normalizeFbSort, naturalCompare, sortFbItems } = window.F
 // The icon column is wider (40px) when the image-thumbnail
 // toggle is on so a small thumbnail can be centered in the
 // cell. The 16px default matches the old behaviour for plain
-// icons â€” the change is invisible to the user unless they
+// icons — the change is invisible to the user unless they
 // enable thumbnails.
 function buildFbGridTemplate() {
   const iconW = state.fbThumbnails ? '44px' : '16px';
@@ -105,7 +104,7 @@ function buildFbGridTemplate() {
 // alignment per mode.
 function _buildFbIconCell(it) {
   if (state.fbThumbnails && !it.isDir && _isImageExt(it.ext)) {
-    const wrap = el('span', { class: 'icon fb-thumb', title: it.name + ' â€” thumbnail' });
+    const wrap = el('span', { class: 'icon fb-thumb', title: it.name + ' — thumbnail' });
     const img = el('img', {
       src: fileUrl(it.path),
       alt: '',
@@ -128,7 +127,7 @@ function _buildFbIconCell(it) {
     wrap.appendChild(img);
     return wrap;
   }
-  return el('span', { class: 'icon fb-icon', title: '' }, it.isDir ? 'ðŸ“' : iconForFile(it.ext));
+  return el('span', { class: 'icon fb-icon', title: '' }, it.isDir ? '📁' : iconForFile(it.ext));
 }
 
 // Open the folder-options overlay. Lists every optional column
@@ -142,13 +141,13 @@ function _buildFbIconCell(it) {
 function openFolderOptions() {
   showModal((m, close) => {
     m.classList.add('folder-options-modal');
-    m.appendChild(el('h2', {}, 'ðŸ“ Folder options'));
+    m.appendChild(el('h2', {}, '📁 Folder options'));
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-      'Pick which columns the folder explorer shows. The file-name column is always visible â€” turning it off would make the list unscannable. The horizontal scroll bar at the bottom of the list appears automatically when the columns don\'t fit the available width. Changes apply immediately.'));
+      'Pick which columns the folder explorer shows. The file-name column is always visible — turning it off would make the list unscannable. The horizontal scroll bar at the bottom of the list appears automatically when the columns don\'t fit the available width. Changes apply immediately.'));
 
     // Image-thumbnail toggle. When on, image rows in the file
     // browser show a centered thumbnail of the actual file
-    // instead of the ðŸ–¼ icon. Row heights grow automatically so
+    // instead of the 🖼 icon. Row heights grow automatically so
     // the thumbnail is fully visible even when every column is
     // enabled. Folder rows and non-image files are unaffected.
     const thumbCb = el('input', { type: 'checkbox', class: 'folder-options-thumbnail-cb' });
@@ -190,7 +189,7 @@ function openFolderOptions() {
       ]);
       colGrid.appendChild(label);
     }
-    // "Name" column (mandatory) â€” shown but locked, so the user
+    // "Name" column (mandatory) — shown but locked, so the user
     // knows the column order but can't accidentally remove it.
     {
       const cb = el('input', { type: 'checkbox', checked: 'checked', disabled: 'disabled' });
@@ -251,7 +250,7 @@ function renderFbList(items) {
     empty.appendChild(el('div', { class: 'fb-empty-hint' },
       isOutput
         ? 'Click Generate on a tab above to create your first asset.'
-        : 'Click ðŸ“‚ to pick a folder, or â†‘ to go up.'));
+        : 'Click 📂 to pick a folder, or ↑ to go up.'));
     ul.appendChild(empty);
     return;
   }
@@ -259,7 +258,7 @@ function renderFbList(items) {
   // grid-template-columns on the <ul>. The column definitions in
   // FB_COLUMNS (see above) drive the template string. The
   // <ul> uses `min-width: max-content` so the grid expands
-  // beyond the available width when necessary â€” the
+  // beyond the available width when necessary — the
   // overflow-x: auto on the list then kicks in to provide a
   // horizontal scroll bar (see styles.css). The "name" column
   // uses minmax(120px, 1fr) so the file name always gets at
@@ -286,13 +285,13 @@ function renderFbList(items) {
   const outRoot = state.config.output_dir || '';
   if (state.fbDir && outRoot && state.fbDir.toLowerCase() !== outRoot.toLowerCase()) {
     const parent = el('li', { class: 'fb-item' }, [
-      el('span', { class: 'icon fb-icon' }, 'â†©'),
+      el('span', { class: 'icon fb-icon' }, '↩'),
       el('span', { class: 'name' }, '.. (up)'),
       // .. gets a "size" column so the row stays aligned with
       // the regular rows below it; the other columns (if any)
       // are not rendered for the parent row to keep the visual
       // noise down.
-      el('span', { class: 'size' }, 'â€”'),
+      el('span', { class: 'size' }, '—'),
     ]);
     parent.addEventListener('click', () => {
       // Go up one level

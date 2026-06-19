@@ -31,23 +31,23 @@ window.TABS.image = {
     const model = buildParamRow('--model', {
       kind: 'enum', default: 'image-01',
       options: [
-        { value: 'image-01', label: 'image-01 (default â€” general purpose)' },
+        { value: 'image-01', label: 'image-01 (default — general purpose)' },
         { value: 'image-01-live', label: 'image-01-live (hand-drawn, cartoon, style control)' },
       ],
-      help: 'Image generation model.\n\nimage-01 (default):\n  â€¢ General-purpose text-to-image\n  â€¢ Aspect ratios: 1:1, 16:9, 9:16, 4:3, 3:4, 2:3, 3:2, 21:9\n  â€¢ Custom width/height: 512-2048 px (multiple of 8)\n  â€¢ --subject-ref, --prompt-optimizer, --aigc-watermark, --seed\n\nimage-01-live:\n  â€¢ Hand-drawn / cartoon / stylized outputs\n  â€¢ Finer style control\n  â€¢ Same flags as image-01',
+      help: 'Image generation model.\n\nimage-01 (default):\n  • General-purpose text-to-image\n  • Aspect ratios: 1:1, 16:9, 9:16, 4:3, 3:4, 2:3, 3:2, 21:9\n  • Custom width/height: 512-2048 px (multiple of 8)\n  • --subject-ref, --prompt-optimizer, --aigc-watermark, --seed\n\nimage-01-live:\n  • Hand-drawn / cartoon / stylized outputs\n  • Finer style control\n  • Same flags as image-01',
     });
     const aspect = buildParamRow('--aspect-ratio', {
       kind: 'enum', default: '',
       options: [
         { value: '', label: '(default — let the model pick)' },
-        { value: '1:1', label: '1:1 â€” square' },
-        { value: '16:9', label: '16:9 â€” widescreen' },
-        { value: '9:16', label: '9:16 â€” portrait / phone' },
-        { value: '4:3', label: '4:3 â€” classic' },
-        { value: '3:4', label: '3:4 â€” portrait classic' },
-        { value: '2:3', label: '2:3 â€” photo portrait' },
-        { value: '3:2', label: '3:2 â€” photo landscape' },
-        { value: '21:9', label: '21:9 â€” ultrawide / cinematic' },
+        { value: '1:1', label: '1:1 — square' },
+        { value: '16:9', label: '16:9 — widescreen' },
+        { value: '9:16', label: '9:16 — portrait / phone' },
+        { value: '4:3', label: '4:3 — classic' },
+        { value: '3:4', label: '3:4 — portrait classic' },
+        { value: '2:3', label: '2:3 — photo portrait' },
+        { value: '3:2', label: '3:2 — photo landscape' },
+        { value: '21:9', label: '21:9 — ultrawide / cinematic' },
       ],
       help: 'Output aspect ratio. The default (empty) lets the model pick its own ratio (image-01 falls back to 1:1). Ignored if you set both --width and --height. The 21:9 ultrawide option is image-01 only.',
     });
@@ -68,7 +68,7 @@ window.TABS.image = {
         { value: 1920, label: '1920' },
         { value: 2048, label: '2048' },
       ],
-      help: 'Pixel width (512â€“2048, multiple of 8). Overrides --aspect-ratio when paired with --height. image-01 only.',
+      help: 'Pixel width (512–2048, multiple of 8). Overrides --aspect-ratio when paired with --height. image-01 only.',
     });
     const height = buildParamRow('--height (px)', {
       kind: 'number', default: '', min: 512, max: 2048, step: 8,
@@ -82,7 +82,7 @@ window.TABS.image = {
         { value: 1080, label: '1080' },
         { value: 2048, label: '2048' },
       ],
-      help: 'Pixel height (512â€“2048, multiple of 8). Overrides --aspect-ratio when paired with --width. image-01 only.',
+      help: 'Pixel height (512–2048, multiple of 8). Overrides --aspect-ratio when paired with --width. image-01 only.',
     });
     const seed = buildParamRow('--seed', {
       kind: 'number', default: '', min: 0, max: 2_147_483_647, step: 1,
@@ -126,7 +126,7 @@ window.TABS.image = {
       el('h3', {}, 'Parameters'),
       buildFilePrefixRow(),
       el('div', { class: 'grid' }, [aspect.row, n.row, width.row, height.row, seed.row, respFmt.row, promptOpt.row, watermark.row, subjRef.row]),
-      // Live validity warnings for the W Ã— H combo and the subject
+      // Live validity warnings for the W × H combo and the subject
       // ref field. attachImageDimGuards wires the aspect/W/H
       // listeners (auto-fill on aspect change, ratio-mismatch
       // warning, div-by-8 warning) and returns the warning div
@@ -147,18 +147,18 @@ window.TABS.image = {
     const upscaleCb = el('input', { type: 'checkbox', title: 'Upscale the generated image after creation' });
     const upscaleLabel = el('label', { class: 'upscale-checkbox', title: 'Click to configure upscale settings' });
     const upscaleMult = el('span', { class: 'upscale-mult' }, '');
-    upscaleLabel.append(upscaleCb, 'ðŸ” Upscale', upscaleMult);
+    upscaleLabel.append(upscaleCb, '🔍 Upscale', upscaleMult);
     // Reflect persisted state
     if (state.upscaleEnabled) upscaleCb.checked = true;
     function refreshUpscaleCheckboxUI() {
       const m = (state.upscaleSettings && state.upscaleSettings.multiplier) || 2;
-      upscaleMult.textContent = state.upscaleEnabled ? ` (${m}Ã—)` : '';
+      upscaleMult.textContent = state.upscaleEnabled ? ` (${m}×)` : '';
       upscaleLabel.classList.toggle('active', !!state.upscaleEnabled);
     }
     refreshUpscaleCheckboxUI();
     upscaleLabel.addEventListener('click', (e) => {
       // Only open the settings overlay when the user clicks the label
-      // text (not the input itself â€” clicking the input toggles it).
+      // text (not the input itself — clicking the input toggles it).
       if (e.target === upscaleCb) return; // let the input toggle
       e.preventDefault();
       showUpscaleSettings();
@@ -245,7 +245,7 @@ window.TABS.image = {
       const promptShort = (promptText || '').replace(/\s+/g, ' ').slice(0, 120);
       const genStartEvId = addLogEvent({
         category: 'gen',
-        headline: `Image generation started: ${promptShort}${promptText && promptText.length > 120 ? 'â€¦' : ''}`,
+        headline: `Image generation started: ${promptShort}${promptText && promptText.length > 120 ? '…' : ''}`,
         details: [
           `Variants: ${variantsCount}`,
           `Seed: ${seedVal === '' ? '(random)' : String(seedVal)}`,
@@ -263,7 +263,7 @@ window.TABS.image = {
       // files are unknown at gen time, so we scan the directory at the
       // end of the loop (see resolveOutDirFiles). After the upscale +
       // crop step, the original file is replaced by the upscaled (and
-      // optionally cropped) one â€” we update the list in place.
+      // optionally cropped) one — we update the list in place.
       const outFiles = [];
       // lastFailedR captures the most recent failed mmxRun result so the
       // error UI (preview + toast) can surface its full details, including
@@ -292,7 +292,7 @@ window.TABS.image = {
       if ((wv0 && !hv0) || (!wv0 && hv0)) {
         toast('Width and height must both be set (or both unset). Width/height ignored.', 'warn');
       }
-      // Build the argv once and reuse it across variant attempts â€” the prompt
+      // Build the argv once and reuse it across variant attempts — the prompt
       // and parameters don't change between retries.
       function buildImageArgs() {
         const args = ['image', 'generate'];
@@ -342,8 +342,8 @@ window.TABS.image = {
           // so the ETA ticks down more accurately as the run progresses.
           const itemStart = Date.now();
           const statusMsg = variantsCount > 1
-            ? `Generating imageâ€¦ variant ${v}/${variantsCount}`
-            : (useOutDir ? `Generating imageâ€¦ (${nCount} images to ${outDir})` : 'Generating imageâ€¦');
+            ? `Generating image… variant ${v}/${variantsCount}`
+            : (useOutDir ? `Generating image… (${nCount} images to ${outDir})` : 'Generating image…');
           setStatus(statusMsg, true);
           preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(statusMsg)}</div>`;
 
@@ -358,13 +358,13 @@ window.TABS.image = {
             const isRateLimit = /rate|limit|throttl|too many|429/i.test(firstMsg);
             const maxRetries = 3;
             for (let attempt = 1; attempt <= maxRetries && !cancel.wasCancelled(); attempt++) {
-              // Exponential backoff: 1.5s, 3s, 6s (Ã—2 if rate-limited)
+              // Exponential backoff: 1.5s, 3s, 6s (×2 if rate-limited)
               const baseDelay = 1500 * Math.pow(2, attempt - 1);
               const delay = isRateLimit ? baseDelay * 2 : baseDelay;
               await new Promise((res) => setTimeout(res, delay));
               if (cancel.wasCancelled()) break;
-              setStatus(`Retrying image variant ${v}/${variantsCount} (attempt ${attempt + 1}/${maxRetries + 1})â€¦`, true);
-              preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(`Retrying variant ${v}/${variantsCount} (attempt ${attempt + 1})â€¦`)}</div>`;
+              setStatus(`Retrying image variant ${v}/${variantsCount} (attempt ${attempt + 1}/${maxRetries + 1})…`, true);
+              preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(`Retrying variant ${v}/${variantsCount} (attempt ${attempt + 1})…`)}</div>`;
               r = await window.api.mmxRun(args);
               if (r.ok) {
                 toast(`Image variant ${v}/${variantsCount} succeeded on retry ${attempt}.`, 'ok', 2500);
@@ -381,13 +381,13 @@ window.TABS.image = {
             // user can manually re-attempt this exact variant.
             allOk = false;
             lastFailedR = r;
-            preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}). Continuing with next variantâ€¦</div><div class="meta">${escapeHtml(formatMmxError(r))}</div>`;
+            preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}). Continuing with next variant…</div><div class="meta">${escapeHtml(formatMmxError(r))}</div>`;
             // Advance the queue counter even on failure so the ETA
             // doesn't keep counting this variant as "still in flight"
             // for the rest of the run. Failed variants still consume
             // wall-clock time, so we add their elapsed time to the
             // per-item average (so the ETA reflects the real pace of
-            // the call, not just the successful ones â€” otherwise a
+            // the call, not just the successful ones — otherwise a
             // string of slow failures would under-estimate the time
             // for the remaining variants).
             const failDur = (Date.now() - itemStart) / 1000;
@@ -418,13 +418,13 @@ window.TABS.image = {
           // Live-update the folder explorer + preview pane. The
           // gen handler knows the output path for non-(--out-dir)
           // runs, so we don't have to wait for the 1s polling
-          // to discover the file â€” the UI reacts on the same
+          // to discover the file — the UI reacts on the same
           // tick the file is written. The polling is still
           // running in the background as a safety net for the
           // --out-dir case (and for the post-processed upscaled
           // / cropped / no-bg / optimised files the gen handler
           // creates after the raw mmx call returns). Idempotent
-          // â€” calling it with the same path twice is a no-op.
+          // — calling it with the same path twice is a no-op.
           if (!useOutDir) {
             try { notifyImageGenerated(outFile); } catch (_) {}
             // Add the blink class to the row for the CSS animation.
@@ -439,13 +439,13 @@ window.TABS.image = {
             });
           }
         }
-        // Post-processing INSIDE the try block â€” the previous layout ran
+        // Post-processing INSIDE the try block — the previous layout ran
         // the upscale + crop + background-removal AFTER the finally, which
         // meant cancel.cleanup() had already restored the Generate button
         // to its idle state and cleared state.generating. The post-
         // processing then ran for several seconds under a "Generate"
         // button that the user could click again, racing the still-
-        // running upscale and â€” when they did â€” the new click would
+        // running upscale and — when they did — the new click would
         // arm another cancel handler while the old run's pending
         // promises leaked. Now the button stays as "Cancel" and the
         // state.generating guard stays set until every post-processing
@@ -478,8 +478,8 @@ window.TABS.image = {
           } catch (_) { /* fall back to whatever we have */ }
         }
         // Post-processing chain: for EVERY generated file (not just
-        // the last one â€” that was the bug fixed in this revision),
-        // run the upscale â†’ crop â†’ remove-background â†’ optimize chain
+        // the last one — that was the bug fixed in this revision),
+        // run the upscale → crop → remove-background → optimize chain
         // and collect the final paths. Each step is independently
         // non-fatal: a failure on variant N keeps the original file
         // for variant N and continues with the next one, so the user
@@ -534,21 +534,21 @@ window.TABS.image = {
           }
         }
         // The last entry of displayFiles is the most recently
-        // processed path â€” treat it as the canonical "last preview"
+        // processed path — treat it as the canonical "last preview"
         // for legacy callers (toast messages that reference it, the
         // preview-ready message at the end, etc.). For a single-
         // file run, this is the same file as the raw generated
         // output (or its post-processed replacement).
         const displayFile = displayFiles.length ? displayFiles[displayFiles.length - 1] : lastOutFile;
         // The image tab's left-side preview no longer shows the
-        // generated image â€” per the user's request, the picture
+        // generated image — per the user's request, the picture
         // preview lives in the right-side folder-explorer's preview
         // pane (which subdivides into N thumbnails for N images).
         // The left-side area only carries a short status line so the
         // layout doesn't collapse but the prompt / parameter inputs
         // are no longer obscured.
         preview.innerHTML = '';
-        // v1.1.1 polish: include a "â†» Regenerate" button on the
+        // v1.1.1 polish: include a "↻ Regenerate" button on the
         // success state so the user can re-run the same prompt
         // with one click instead of scrolling up to the Generate
         // button. Power users iterate a lot on the same prompt
@@ -557,12 +557,12 @@ window.TABS.image = {
         // improvement we can make to the success state.
         const readyWrap = el('div', { class: 'empty' });
         const readyMsg = el('div', { class: 'preview-ready-msg' }, [
-          'âœ… ',
+          '✅ ',
           String(displayFiles.length),
           (displayFiles.length === 1 ? ' image' : ' images'),
-          ' ready â€” see the preview pane on the right. Click any thumbnail to open it at 1:1.',
+          ' ready — see the preview pane on the right. Click any thumbnail to open it at 1:1.',
         ]);
-        const regenBtn = el('button', { class: 'btn-mini preview-regen-btn', type: 'button' }, 'â†» Regenerate');
+        const regenBtn = el('button', { class: 'btn-mini preview-regen-btn', type: 'button' }, '↻ Regenerate');
         regenBtn.title = 'Re-run the same prompt (no changes to inputs)';
         regenBtn.addEventListener('click', () => { try { genBtn.click(); } catch (_) {} });
         readyWrap.appendChild(readyMsg);
@@ -579,7 +579,7 @@ window.TABS.image = {
           category: 'gen',
           result: 'ok',
           headline: `Generated ${displayFiles.length} image${displayFiles.length === 1 ? '' : 's'}`,
-          details: displayFiles.map((p) => 'â€¢ ' + p),
+          details: displayFiles.map((p) => '• ' + p),
         });
       } else if (!allOk) {
         // Log a "generation failed" event so the user can copy
@@ -604,7 +604,7 @@ window.TABS.image = {
           });
         } catch (_) { /* never block the rest of the error UI on log */ }
         // Build a detailed, actionable error block. The user has been
-        // hitting "API error: system error (HTTP 200)" which is opaque â€”
+        // hitting "API error: system error (HTTP 200)" which is opaque —
         // we now classify the error (auth, rate, quota, network, server,
         // unknown) and show targeted tips + buttons to diagnose / retry /
         // copy the raw error for support.
@@ -614,17 +614,17 @@ window.TABS.image = {
           auth: [
             'Your API key may be invalid, expired, or revoked.',
             'Click "Test connection" below to verify.',
-            'Re-paste your key in âš™ Settings if needed.',
+            'Re-paste your key in ⚙ Settings if needed.',
           ],
           rate: [
             'The service is rate-limiting your account.',
-            'Wait 30â€“60 seconds, then click Retry.',
+            'Wait 30–60 seconds, then click Retry.',
             'Avoid running many batches back-to-back.',
           ],
           quota: [
             'Your Token Plan quota is exhausted for this model.',
             'Wait for the rolling window to reset, or upgrade your plan.',
-            'Check the âš¡ quota display in the top bar.',
+            'Check the ⚡ quota display in the top bar.',
           ],
           network: [
             'Could not reach the service (DNS / firewall / offline).',
@@ -634,7 +634,7 @@ window.TABS.image = {
           server: [
             'The service returned a server-side error. Usually transient.',
             'Wait a few seconds and click Retry.',
-            'If it persists, the service may be degraded â€” try again later.',
+            'If it persists, the service may be degraded — try again later.',
           ],
           unknown: [
             'The service returned an unrecognised error.',
@@ -645,27 +645,27 @@ window.TABS.image = {
         const tipList = tips[classification] || tips.unknown;
         preview.innerHTML = '';
         const wrap = el('div', { class: 'empty preview-error' });
-        wrap.appendChild(el('div', { class: 'preview-error-title' }, 'âš  Generation failed'));
+        wrap.appendChild(el('div', { class: 'preview-error-title' }, '⚠ Generation failed'));
         const detail = el('div', { class: 'preview-error-message' });
         detail.textContent = lastErrMsg || 'Unknown error (see log pane for details).';
         wrap.appendChild(detail);
         // Classified troubleshooting tips
         const tipsBlock = el('div', { class: 'preview-error-tips' });
         for (const t of tipList) {
-          const li = el('div', { class: 'preview-error-tip' }, 'â€¢ ' + t);
+          const li = el('div', { class: 'preview-error-tip' }, '• ' + t);
           tipsBlock.appendChild(li);
         }
         wrap.appendChild(tipsBlock);
         // Action buttons: Retry / Test connection / Diagnose / Copy error
-        const retryBtn = el('button', { class: 'primary' }, 'ðŸ”„ Retry');
-        const testBtn = el('button', { class: 'btn-mini' }, 'ðŸ”‘ Test connection');
-        const diagBtn = el('button', { class: 'btn-mini' }, 'ðŸ©º Diagnose');
-        const copyBtn = el('button', { class: 'btn-mini' }, 'ðŸ“‹ Copy error');
+        const retryBtn = el('button', { class: 'primary' }, '🔄 Retry');
+        const testBtn = el('button', { class: 'btn-mini' }, '🔑 Test connection');
+        const diagBtn = el('button', { class: 'btn-mini' }, '🩺 Diagnose');
+        const copyBtn = el('button', { class: 'btn-mini' }, '📋 Copy error');
         retryBtn.addEventListener('click', () => genBtn.click());
         testBtn.addEventListener('click', async () => {
-          testBtn.disabled = true; testBtn.textContent = 'Testingâ€¦';
+          testBtn.disabled = true; testBtn.textContent = 'Testing…';
           const r = await window.api.authStatus();
-          testBtn.disabled = false; testBtn.textContent = 'ðŸ”‘ Test connection';
+          testBtn.disabled = false; testBtn.textContent = '🔑 Test connection';
           if (r.ok) {
             toast(r.message || 'API key is valid.', 'ok', 4000);
           } else {
@@ -688,7 +688,7 @@ window.TABS.image = {
             toast('Error details copied to clipboard.', 'ok', 1500);
           } catch (_) {
             // Fallback: just toast the message
-            toast('Clipboard unavailable â€” error: ' + lastErrMsg, 'warn', 6000);
+            toast('Clipboard unavailable — error: ' + lastErrMsg, 'warn', 6000);
           }
         });
         const actions = el('div', { class: 'preview-error-actions' }, [retryBtn, testBtn, diagBtn, copyBtn]);
@@ -712,7 +712,7 @@ window.TABS.image = {
       } finally {
         cancel.cleanup();
         setStatus('Ready', false);
-        // Always refresh â€” even on cancel/failure, partial files may exist
+        // Always refresh — even on cancel/failure, partial files may exist
         // on disk and the user should see them.
         try { await refreshBrowser(); } catch {}
         try { await refreshQuota(); } catch {}

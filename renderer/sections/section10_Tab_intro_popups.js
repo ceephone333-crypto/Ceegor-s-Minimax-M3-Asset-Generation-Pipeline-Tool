@@ -5,27 +5,27 @@
 // ----------------- Tab intro popups -----------------
 // A short, friendly "what's this tab about" popup shown the first
 // time the user opens each tab. Gated by the popup policy in
-// state.popupPolicy (configured in âš™ Settings â†’ Popups). The popup
+// state.popupPolicy (configured in ⚙ Settings → Popups). The popup
 // is rendered with the same showModal() primitive so it gets the
 // full Esc/click-outside/stack behaviour. The default text is short
 // on purpose: the detailed field-level help is still available via
 // the `?` icons on every input.
 function maybeShowTabIntro(tabName) {
   const intros = {
-    image:  'ðŸ–¼ Image tab â€” describe what you want to generate in the prompt, tweak the model + aspect + variants, then click Generate. Enable the Upscale / Optimize toggle to run a local pipeline after the API returns.',
-    speech: 'ðŸ—£ Speech tab â€” type or paste the text, pick a voice, then click Generate. Use the â–¶ button next to each voice to hear a quick preview. The output is an MP3 (or your chosen format) saved to the folder browser on the right.',
-    music:  'ðŸŽµ Music tab â€” describe the music you want (genre, mood, instruments, tempo). Toggle "Instrumental only" to skip vocals. Each click of Generate produces one short track and writes it to the folder browser.',
-    video:  'ðŸŽ¬ Video tab â€” describe the short video you want, pick the model + resolution + duration, then click Generate. Note: Token Plan keys allow only 3 video generations per week; pay-as-you-go (PAYG) keys are billed per video with no weekly cap. Each video takes a few minutes to render.',
+    image:  '🖼 Image tab — describe what you want to generate in the prompt, tweak the model + aspect + variants, then click Generate. Enable the Upscale / Optimize toggle to run a local pipeline after the API returns.',
+    speech: '🗣 Speech tab — type or paste the text, pick a voice, then click Generate. Use the ▶ button next to each voice to hear a quick preview. The output is an MP3 (or your chosen format) saved to the folder browser on the right.',
+    music:  '🎵 Music tab — describe the music you want (genre, mood, instruments, tempo). Toggle "Instrumental only" to skip vocals. Each click of Generate produces one short track and writes it to the folder browser.',
+    video:  '🎬 Video tab — describe the short video you want, pick the model + resolution + duration, then click Generate. Note: Token Plan keys allow only 3 video generations per week; pay-as-you-go (PAYG) keys are billed per video with no weekly cap. Each video takes a few minutes to render.',
   };
   const text = intros[tabName];
   if (!text) return;
   openGatedPopup('tab-intro:' + tabName, (m, close, markSeen) => {
     m.classList.add('tab-intro-modal');
     const titles = { image: 'Image', speech: 'Speech', music: 'Music', video: 'Video' };
-    m.appendChild(el('h2', {}, 'ðŸ‘‹ Welcome to the ' + (titles[tabName] || tabName) + ' tab'));
+    m.appendChild(el('h2', {}, '👋 Welcome to the ' + (titles[tabName] || tabName) + ' tab'));
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 13px; line-height: 1.55;' }, text));
     m.appendChild(el('p', { style: 'color: var(--fg-3); font-size: 11px;' },
-      'You can disable these intro popups in âš™ Settings â†’ Popups.'));
+      'You can disable these intro popups in ⚙ Settings → Popups.'));
     m.appendChild(el('div', { class: 'footer' }, [
       el('button', { class: 'primary', onclick: () => { markSeen(); close(); } }, 'Got it'),
     ]));
@@ -34,11 +34,11 @@ function maybeShowTabIntro(tabName) {
 }
 
 // Update the colored status dots on the tab buttons. The rules are:
-//   - genStatus === 'running'  â†’ red dot
-//   - genStatus === 'done' and tab !== currentTab â†’ green dot
-//   - genStatus === 'done' and tab === currentTab â†’ no dot (the user has
+//   - genStatus === 'running'  → red dot
+//   - genStatus === 'done' and tab !== currentTab → green dot
+//   - genStatus === 'done' and tab === currentTab → no dot (the user has
 //     effectively "seen" the result by switching into the tab)
-//   - genStatus === 'idle'     â†’ no dot
+//   - genStatus === 'idle'     → no dot
 function refreshTabStatusDots() {
   for (const tabKey of ['image', 'speech', 'music', 'video']) {
     const t = $(`.tab[data-tab="${tabKey}"]`);
@@ -58,7 +58,7 @@ function refreshTabStatusDots() {
 // the countdown reflects the TOTAL remaining time for all items in the
 // queue (current item + future items). As each item completes, the
 // running average is updated and the ETA is recomputed on the next
-// 1-second tick. The countdown is an estimate, not a guarantee â€” but it
+// 1-second tick. The countdown is an estimate, not a guarantee — but it
 // gives the user a sense of how long the current call will still take.
 function refreshTabEtas() {
   for (const tabKey of ['image', 'speech', 'music', 'video']) {
@@ -86,7 +86,7 @@ function _formatTabEta(tabKey) {
     const defaults = { image: 35, speech: 12, music: 75, video: 90 };
     avg = defaults[tabKey] || 30;
   }
-  // Total queue size for the current run (variants Ã— n, where n is the
+  // Total queue size for the current run (variants × n, where n is the
   // --n count). When the gen handler kicks off, it sets
   // state.genQueueSize[tabKey] and increments state.genQueueDone[tabKey]
   // after each completed item. -1 for "the item currently in flight".
@@ -117,7 +117,7 @@ function _formatTabEta(tabKey) {
   const s = remaining % 60;
   return `- ${m}:${String(s).padStart(2, '0')}`;
 }
-// Update the ETA once a second while a tab is running. Cheap text update â€”
+// Update the ETA once a second while a tab is running. Cheap text update —
 // the tab has only 4 instances.
 let _etaTimer = null;
 function ensureEtaTimer() {

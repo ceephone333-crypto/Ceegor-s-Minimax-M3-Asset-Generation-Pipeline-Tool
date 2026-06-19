@@ -3,7 +3,7 @@
 // Source: app.js L1652..2014
 
 // ----------------- Image pipeline (Upscale / Crop / Convert) -----------------
-// All three operations are pure browser/Electron â€” no external libraries,
+// All three operations are pure browser/Electron — no external libraries,
 // no network calls, fully open source. They all use the HTML5 Canvas
 // API to read the source image into a canvas, then export it to the
 // target format via canvas.toDataURL. The main process only handles
@@ -16,7 +16,7 @@
 // Tries `basePath`, `basePath (2)`, `basePath (3)`, ... via
 // window.api.fbExists. Caps at 1000 attempts (which would only
 // realistically happen if a script is bulk-renaming to the same
-// stem â€” the user can still rename / move existing files). On
+// stem — the user can still rename / move existing files). On
 // exhaustion, falls back to a timestamp suffix so the operation
 // never silently overwrites a file.
 async function uniqueOutputPath(basePath) {
@@ -30,10 +30,10 @@ async function uniqueOutputPath(basePath) {
   return `${stem}_${Date.now()}${ext}`;
 }
 
-// Module-level re-render of the "ðŸ” Upscale 2Ã—" label in the image
+// Module-level re-render of the "🔍 Upscale 2×" label in the image
 // tab. The label is created (and its refreshUpscaleCheckboxUI
 // closure is defined) inside the image tab's build(), so by the
-// time the user opens the âš™ Settings â†’ Upscale popup, that
+// time the user opens the ⚙ Settings → Upscale popup, that
 // closure is long gone. This module-level helper re-queries the
 // DOM by class and updates the label + .active class on save
 // and on every render-pass. (For "one-off" upscale/crop flows
@@ -44,7 +44,7 @@ function refreshUpscaleLabel() {
   if (!label) return;
   const mult = label.querySelector('.upscale-mult');
   const m = (state.upscaleSettings && state.upscaleSettings.multiplier) || 2;
-  if (mult) mult.textContent = state.upscaleEnabled ? ` (${m}Ã—)` : '';
+  if (mult) mult.textContent = state.upscaleEnabled ? ` (${m}×)` : '';
   label.classList.toggle('active', !!state.upscaleEnabled);
 }
 
@@ -58,7 +58,7 @@ function refreshUpscaleLabel() {
 // appended to keep the original safe.
 
 // One resize step. Prefers createImageBitmap with resizeQuality: 'high'
-// â€” Chromium uses a Lanczos-style resampler for that, which is
+// — Chromium uses a Lanczos-style resampler for that, which is
 // noticeably sharper than the default canvas drawImage path. Falls
 // back to canvas drawImage with imageSmoothingQuality = 'high' for
 // older runtimes that don't expose createImageBitmap.
@@ -84,7 +84,7 @@ async function upscaleStep(src, w, h) {
 
 // Toast-once latch: don't re-spam the user with the "Real-ESRGAN
 // missing" message on every upscale. Resetting it requires a restart
-// of the app, which is what we want â€” a single reminder per session
+// of the app, which is what we want — a single reminder per session
 // is enough.
 let _reEsrganNotified = false;
 
@@ -107,7 +107,7 @@ async function probeIsnetbgStatus(forceRefresh = false) {
 
 // Run the optional isnetbg binary on a local image and return the
 // path to the transparent PNG it wrote. Refuses to do anything when
-// the binary / model is missing â€” the caller is expected to probe
+// the binary / model is missing — the caller is expected to probe
 // via `probeIsnetbgStatus()` first and show a precise error.
 //
 // We never overwrite the source: the output is written to
@@ -118,7 +118,7 @@ async function removeBackgroundFile(srcPath, opts = {}) {
   const st = await probeIsnetbgStatus();
   if (!st.checked) throw new Error('Could not contact background-removal backend.');
   if (!st.available) {
-    throw new Error('Background removal is not set up. Run `npm run setup` in the project root to download the IS-Net model into ./bin/models/. The Optional add-ons popup (âš™ Settings â†’ Image upscaling â†’ "Re-open add-ons") walks you through every install path.');
+    throw new Error('Background removal is not set up. Run `npm run setup` in the project root to download the IS-Net model into ./bin/models/. The Optional add-ons popup (⚙ Settings → Image upscaling → "Re-open add-ons") walks you through every install path.');
   }
   if (!st.modelPresent) throw new Error('Background-removal model file missing. Run `npm run setup` (or place isnet-general-use.onnx in ./bin/models/ by hand).');
 
@@ -127,7 +127,7 @@ async function removeBackgroundFile(srcPath, opts = {}) {
   const lastSep = srcPath.lastIndexOf(sep);
   const dir = lastSep >= 0 ? srcPath.slice(0, lastSep) : '';
   const lastDot = srcPath.lastIndexOf('.');
-  // Same infix pattern as upscale (`_2x` â†’ `_nobg`). PNG is the
+  // Same infix pattern as upscale (`_2x` → `_nobg`). PNG is the
   // only sensible output for a transparent image; we keep the
   // input extension only for human-readability (the actual file is
   // always PNG inside, since the isnetbg binary writes a PNG).
@@ -141,11 +141,11 @@ async function removeBackgroundFile(srcPath, opts = {}) {
   return r.outputPath || target;
 }
 
-// Upscale an image to multiplierÃ— its original size. If the
+// Upscale an image to multiplier× its original size. If the
 // realesrgan-ncnn-vulkan binary is installed (PATH or ./bin/), we
-// run it to get a high-quality 4Ã— intermediate, then resize the
-// result down to the requested multiplier (or do an extra 2Ã— step
-// for 8Ã—). Real-ESRGAN's x4plus model is BSD-3-Clause licensed and
+// run it to get a high-quality 4× intermediate, then resize the
+// result down to the requested multiplier (or do an extra 2× step
+// for 8×). Real-ESRGAN's x4plus model is BSD-3-Clause licensed and
 // produces noticeably more detail than the built-in
 // multi-step createImageBitmap pipeline. If the binary is missing,
 // we fall back to the multi-step pipeline so the tool is never
@@ -174,7 +174,7 @@ async function upscaleImageFile(srcPath, multiplier) {
   } else if (!_reEsrganNotified) {
     _reEsrganNotified = true;
     toast(
-      'Real-ESRGAN not installed â€” using the built-in upscale. ' +
+      'Real-ESRGAN not installed — using the built-in upscale. ' +
       'Drop the binary into ./bin/ (or add it to PATH) for noticeably higher-quality output. ' +
       'See README for the download link.',
       'info', 6000,
@@ -229,22 +229,22 @@ const REAL_ESRGAN_MODELS = new Set([
 ]);
 
 // Real-ESRGAN path. The ncnn-vulkan binary always outputs at the
-// model's native scale (4Ã— for x4plus). For multipliers other than
-// 4Ã—, we resize the intermediate using the same createImageBitmap
+// model's native scale (4× for x4plus). For multipliers other than
+// 4×, we resize the intermediate using the same createImageBitmap
 // step the built-in path uses:
-//   - 2Ã—: 4Ã— â†’ 2Ã—  (downscale)
-//   - 3Ã—: 4Ã— â†’ 3Ã—  (downscale)
-//   - 4Ã—: 4Ã— as-is
-//   - 8Ã—: 4Ã— â†’ 8Ã—  (extra 2Ã— step)
+//   - 2×: 4× → 2×  (downscale)
+//   - 3×: 4× → 3×  (downscale)
+//   - 4×: 4× as-is
+//   - 8×: 4× → 8×  (extra 2× step)
 async function upscaleImageFileRealesrgan(srcPath, multiplier, reStatus) {
   // Pick a model: prefer the user's saved choice, but only if it's on
   // the whitelist. Anything else (default, typo, exploit attempt)
-  // falls back to the general-purpose 4Ã— BSD-3 model.
+  // falls back to the general-purpose 4× BSD-3 model.
   const wanted = (state.realesrganModel || '').trim();
   const model = REAL_ESRGAN_MODELS.has(wanted) ? wanted : 'realesrgan-x4plus';
 
   // The Real-ESRGAN binary needs a writable output path. Write its
-  // 4Ã— intermediate to a `.realesrgan_tmp.png` next to the source
+  // 4× intermediate to a `.realesrgan_tmp.png` next to the source
   // (in output_dir, so it's already in the allowed roots) and
   // clean it up in `finally`.
   const sep = srcPath.includes('\\') ? '\\' : '/';
@@ -267,7 +267,7 @@ async function upscaleImageFileRealesrgan(srcPath, multiplier, reStatus) {
   }
 
   try {
-    // Load the 4Ã— intermediate and resize to the user's multiplier.
+    // Load the 4× intermediate and resize to the user's multiplier.
     const reImg = await loadImageFromFile(tempOut);
     const naturalW = reImg.naturalWidth / 4;
     const naturalH = reImg.naturalHeight / 4;
@@ -327,7 +327,7 @@ async function cropImageFile(srcPath, x, y, w, h) {
   const dataUrl = canvas.toDataURL(mime);
   const b64 = dataUrl.split(',')[1];
   // Same collision-avoidance as upscale: re-cropping the same file
-  // to the same W Ã— H now produces " (2)" / " (3)" instead of
+  // to the same W × H now produces " (2)" / " (3)" instead of
   // silently overwriting the previous output.
   const out = await uniqueOutputPath(derivedOutputPath(srcPath, `_cropped_${w}x${h}`));
   const r = await window.api.fbWrite(out, b64);

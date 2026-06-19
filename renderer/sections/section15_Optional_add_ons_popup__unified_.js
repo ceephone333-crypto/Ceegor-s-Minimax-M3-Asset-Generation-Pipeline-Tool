@@ -7,18 +7,18 @@
 // the tool supports: Real-ESRGAN upscaler, isnetbg binary, and the
 // IS-Net ONNX model. Designed to be shown both as a first-run
 // prompt (when nothing is installed) and as a re-openable manager
-// from âš™ Settings (the "Re-open add-ons" link in the Upscale
+// from ⚙ Settings (the "Re-open add-ons" link in the Upscale
 // Settings section re-invokes it).
 //
 // Per-component install options:
-//   1. "Download" (Real-ESRGAN only) â€” fixed GitHub URL in main.js.
+//   1. "Download" (Real-ESRGAN only) — fixed GitHub URL in main.js.
 //      Streams progress via the existing realesrganDownload IPC.
-//   2. "Open download page" (Real-ESRGAN + model) â€” opens the
+//   2. "Open download page" (Real-ESRGAN + model) — opens the
 //      upstream release page / HuggingFace mirror in the user's
 //      default browser. The user then downloads the file
 //      themselves and uses the file-picker. This is the universal
 //      "no auto-download breakage" path.
-//   3. "Pick fileâ€¦" (all three) â€” file-picker copies the picked
+//   3. "Pick file…" (all three) — file-picker copies the picked
 //      file into ./bin/ (or ./bin/models/) under the name the
 //      wrapper probes for. This is the universal fallback for
 //      when neither auto-download nor the upstream URL is
@@ -35,7 +35,7 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
   // Probe both backends BEFORE opening the modal. If everything
   // is already installed (e.g. the developer pre-bundled the
   // files in ./bin/ before building the portable .exe), skip the
-  // popup entirely on first run â€” the same "don't nag" logic the
+  // popup entirely on first run — the same "don't nag" logic the
   // previous Real-ESRGAN-only popup had.
   const probeAll = async () => {
     let reSt = null, isSt = null;
@@ -45,7 +45,7 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
   };
   // If this is the first-run auto-open, AND everything is
   // installed, AND the user hasn't explicitly opened the popup
-  // via the âš™ Settings link, silently dismiss.
+  // via the ⚙ Settings link, silently dismiss.
   if (autoOpened) {
     const { reSt, isSt } = await probeAll();
     const reOk = reSt && reSt.available;
@@ -64,16 +64,16 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
 
   showModal((m, close) => {
     m.classList.add('optional-addons-modal');
-    m.appendChild(el('h2', {}, 'ðŸ§© Optional add-ons'));
+    m.appendChild(el('h2', {}, '🧩 Optional add-ons'));
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-      'The tool ships with built-in defaults that work without any extra software. The components below are optional quality upgrades â€” install them if you want sharper upscale, transparent backgrounds, or both. You can re-open this popup any time from âš™ Settings â†’ Image upscaling â†’ "Re-open add-ons".'));
+      'The tool ships with built-in defaults that work without any extra software. The components below are optional quality upgrades — install them if you want sharper upscale, transparent backgrounds, or both. You can re-open this popup any time from ⚙ Settings → Image upscaling → "Re-open add-ons".'));
 
     // ---- Section 1: Real-ESRGAN upscaler ----
     const reCard = el('div', { class: 'addon-card' });
-    reCard.appendChild(el('h3', {}, 'ðŸ” Real-ESRGAN upscaler (BSD-3-Clause)'));
+    reCard.appendChild(el('h3', {}, '🔍 Real-ESRGAN upscaler (BSD-3-Clause)'));
     reCard.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
-      'Drop-in upgrade for the built-in multi-step upscaler. Noticeably more detail on 4Ã— upscale, and the only way to use the official 4Ã— BSD-3 model.'));
-    const reStatus = el('div', { class: 'addon-status' }, 'Detectingâ€¦');
+      'Drop-in upgrade for the built-in multi-step upscaler. Noticeably more detail on 4× upscale, and the only way to use the official 4× BSD-3 model.'));
+    const reStatus = el('div', { class: 'addon-status' }, 'Detecting…');
     reCard.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Status'), reStatus]));
     const reProgress = el('div', { class: 'addon-progress' });
     reProgress.style.display = 'none';
@@ -82,7 +82,7 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
     reCard.appendChild(reProgress);
     const reActions = el('div', { class: 'addon-actions' });
     const reDownload = el('button', { class: 'primary' }, 'Download from GitHub');
-    const rePick = el('button', {}, 'Pick fileâ€¦');
+    const rePick = el('button', {}, 'Pick file…');
     const reOpenPage = el('button', { class: 'btn-mini' }, 'Open releases page');
     reActions.append(reOpenPage, rePick, reDownload);
     reCard.appendChild(reActions);
@@ -90,13 +90,13 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
 
     // ---- Section 2: IS-Net background-removal binary ----
     const isBinCard = el('div', { class: 'addon-card' });
-    isBinCard.appendChild(el('h3', {}, 'âœ¨ IS-Net background removal â€” binary (MIT)'));
+    isBinCard.appendChild(el('h3', {}, '✨ IS-Net background removal — binary (MIT)'));
     isBinCard.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
       'The local ONNX-driven background-removal engine. Build the binary from the C# reference in the project README (Microsoft.ML.OnnxRuntime + SixLabors.ImageSharp), then point this popup at the resulting .exe.'));
-    const isBinStatus = el('div', { class: 'addon-status' }, 'Detectingâ€¦');
+    const isBinStatus = el('div', { class: 'addon-status' }, 'Detecting…');
     isBinCard.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Status'), isBinStatus]));
     const isBinActions = el('div', { class: 'addon-actions' });
-    const isBinPick = el('button', { class: 'primary' }, 'Pick binaryâ€¦');
+    const isBinPick = el('button', { class: 'primary' }, 'Pick binary…');
     const isBinOpenReadme = el('button', { class: 'btn-mini' }, 'Open README');
     isBinActions.append(isBinOpenReadme, isBinPick);
     isBinCard.appendChild(isBinActions);
@@ -104,13 +104,13 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
 
     // ---- Section 3: IS-Net model file ----
     const isModelCard = el('div', { class: 'addon-card' });
-    isModelCard.appendChild(el('h3', {}, 'âœ¨ IS-Net model â€” isnet-general-use.onnx (MIT, ~170 MB)'));
+    isModelCard.appendChild(el('h3', {}, '✨ IS-Net model — isnet-general-use.onnx (MIT, ~170 MB)'));
     isModelCard.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
       'The ONNX model the isnetbg binary loads at startup. Download from a HuggingFace mirror of your choice, or any of the official IS-Net model repos, then point this popup at the file.'));
-    const isModelStatus = el('div', { class: 'addon-status' }, 'Detectingâ€¦');
+    const isModelStatus = el('div', { class: 'addon-status' }, 'Detecting…');
     isModelCard.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Status'), isModelStatus]));
     const isModelActions = el('div', { class: 'addon-actions' });
-    const isModelPick = el('button', { class: 'primary' }, 'Pick modelâ€¦');
+    const isModelPick = el('button', { class: 'primary' }, 'Pick model…');
     const isModelOpenPage = el('button', { class: 'btn-mini' }, 'Open HuggingFace');
     isModelActions.append(isModelOpenPage, isModelPick);
     isModelCard.appendChild(isModelActions);
@@ -118,7 +118,7 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
 
     // ---- Footer: Re-detect + Dismiss + Don't-ask-again ----
     const footer = el('div', { class: 'footer' });
-    const redetect = el('button', { class: 'btn-mini' }, 'ðŸ”„ Re-detect');
+    const redetect = el('button', { class: 'btn-mini' }, '🔄 Re-detect');
     const skipBtn = el('button', { onclick: () => { markPopupSeen('optional-addons'); close(); } }, 'Skip for now');
     const neverBtn = el('button', { class: 'btn-mini' }, "Don't ask again");
     footer.append(neverBtn, skipBtn, redetect);
@@ -131,15 +131,15 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
     }
 
     async function refreshAll() {
-      setStatus(reStatus, 'Detectingâ€¦');
-      setStatus(isBinStatus, 'Detectingâ€¦');
-      setStatus(isModelStatus, 'Detectingâ€¦');
+      setStatus(reStatus, 'Detecting…');
+      setStatus(isBinStatus, 'Detecting…');
+      setStatus(isModelStatus, 'Detecting…');
       const { reSt, isSt } = await probeAll();
       if (reSt && reSt.available) {
         const v = reSt.version ? ` v${reSt.version}` : '';
         setStatus(reStatus, 'Detected: ' + (reSt.binaryPath || '') + v, 'var(--success)');
       } else {
-        setStatus(reStatus, 'Not found â€” choose an install method below.', 'var(--fg-2)');
+        setStatus(reStatus, 'Not found — choose an install method below.', 'var(--fg-2)');
       }
       if (isSt && isSt.available && isSt.modelPresent) {
         // Differentiate the Node.js backend from a hand-built C#
@@ -157,16 +157,16 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
         }
         setStatus(isModelStatus, 'Detected: ' + (isSt.modelPath || ''), 'var(--success)');
       } else if (isSt && isSt.available && !isSt.modelPresent) {
-        setStatus(isBinStatus, 'Binary detected â€” model file missing.', 'var(--warn, #d9a300)');
-        setStatus(isModelStatus, 'Not found â€” pick the .onnx file below.', 'var(--fg-2)');
+        setStatus(isBinStatus, 'Binary detected — model file missing.', 'var(--warn, #d9a300)');
+        setStatus(isModelStatus, 'Not found — pick the .onnx file below.', 'var(--fg-2)');
       } else {
-        setStatus(isBinStatus, 'Not found â€” pick the binary you built.', 'var(--fg-2)');
-        setStatus(isModelStatus, 'Not found â€” pick the .onnx file below.', 'var(--fg-2)');
+        setStatus(isBinStatus, 'Not found — pick the binary you built.', 'var(--fg-2)');
+        setStatus(isModelStatus, 'Not found — pick the .onnx file below.', 'var(--fg-2)');
       }
     }
     refreshAll();
 
-    // Re-detect button â€” single place to refresh after any install.
+    // Re-detect button — single place to refresh after any install.
     redetect.addEventListener('click', () => refreshAll());
 
     // Don't-ask-again: persist dismissal and close. We use the
@@ -184,21 +184,21 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
       reDownload.disabled = true; rePick.disabled = true; reOpenPage.disabled = true;
       reProgress.style.display = '';
       reProgress.style.color = 'var(--fg-2)';
-      reProgress.textContent = 'Starting downloadâ€¦';
+      reProgress.textContent = 'Starting download…';
       const off = window.api.onRealesrganDownloadProgress((data) => {
         if (data.phase === 'download') {
           if (data.total > 0) {
             const pct = (data.downloaded / data.total) * 100;
             const mb = (data.downloaded / 1024 / 1024).toFixed(1);
             const totalMb = (data.total / 1024 / 1024).toFixed(1);
-            reProgress.textContent = `Downloadingâ€¦ ${mb} / ${totalMb} MB (${pct.toFixed(0)}%)`;
+            reProgress.textContent = `Downloading… ${mb} / ${totalMb} MB (${pct.toFixed(0)}%)`;
           } else {
-            reProgress.textContent = 'Downloadingâ€¦';
+            reProgress.textContent = 'Downloading…';
           }
         } else if (data.phase === 'extract') {
-          reProgress.textContent = 'Extractingâ€¦';
+          reProgress.textContent = 'Extracting…';
         } else if (data.phase === 'done') {
-          reProgress.textContent = 'Done. Refreshing statusâ€¦';
+          reProgress.textContent = 'Done. Refreshing status…';
         }
       });
       try {
@@ -211,13 +211,13 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
           try { await scheduleStateSave(); } catch (_) {}
         } else {
           reProgress.textContent = 'Download failed: ' + ((r && r.error) || 'unknown') +
-            ' â€” try "Pick fileâ€¦" or "Open releases page" instead.';
+            ' — try "Pick file…" or "Open releases page" instead.';
           reProgress.style.color = 'var(--danger)';
         }
       } catch (e) {
         off();
         reProgress.textContent = 'Download failed: ' + (e && e.message || e) +
-          ' â€” try "Pick fileâ€¦" or "Open releases page" instead.';
+          ' — try "Pick file…" or "Open releases page" instead.';
         reProgress.style.color = 'var(--danger)';
       } finally {
         reDownload.disabled = false; rePick.disabled = false; reOpenPage.disabled = false;
@@ -232,7 +232,7 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
         toast('Real-ESRGAN binary installed.', 'ok', 2500);
         await refreshAll();
       } else if (r && r.canceled) {
-        // Silent â€” user just cancelled the dialog.
+        // Silent — user just cancelled the dialog.
       } else {
         toast('Install failed: ' + ((r && r.error) || 'unknown'), 'err', 6000);
       }
@@ -251,7 +251,7 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
       }
     });
     isBinOpenReadme.addEventListener('click', () => {
-      // Open the upstream IS-Net project page (DIS on GitHub) â€”
+      // Open the upstream IS-Net project page (DIS on GitHub) —
       // the README there links to every current ONNX mirror +
       // a C# reference implementation the user can build their
       // isnetbg binary from. We don't try to ship a bundled

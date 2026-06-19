@@ -12,6 +12,10 @@ function setStatus(text, busy = false) {
   s.classList.toggle('busy', !!busy);
 }
 
+function getStyleById(id) {
+  return (state.config.styles || []).find((s) => s.name === id);
+}
+
 function getStyleText(id) {
   const s = getStyleById(id);
   return s && s.value ? s.value.trim() : '';

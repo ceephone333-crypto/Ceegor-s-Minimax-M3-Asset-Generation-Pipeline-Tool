@@ -120,7 +120,7 @@ window.TABS.music = {
     });
     // Lyrics-mode info banner (shown only when mode === 'lyrics')
     const lyricsModeBanner = el('div', { class: 'info-banner', style: 'display:none;' });
-    lyricsModeBanner.appendChild(el('div', { class: 'info-banner-title' }, 'ðŸŽ¤ Custom Lyrics mode'));
+    lyricsModeBanner.appendChild(el('div', { class: 'info-banner-title' }, '🎤 Custom Lyrics mode'));
     const bannerBody = el('div', {});
     const bannerText = document.createTextNode('Fill the textarea above (or use a .txt file). Ensure --model is set to ');
     bannerBody.appendChild(bannerText);
@@ -165,7 +165,7 @@ window.TABS.music = {
     const model = buildParamRow('--model', {
       kind: 'enum', default: 'music-2.6',
       options: [
-        { value: 'music-2.6', label: 'music-2.6 (newest â€” cover, instrumental, lyrics-optimizer, default)' },
+        { value: 'music-2.6', label: 'music-2.6 (newest — cover, instrumental, lyrics-optimizer, default)' },
         { value: 'music-2.5+', label: 'music-2.5+ (instrumental unlocked, richer arrangements)' },
         { value: 'music-2.5', label: 'music-2.5 (paragraph-level precision, 14+ structure tags)' },
         { value: 'music-2.0', label: 'music-2.0 (legacy)' },
@@ -191,7 +191,7 @@ window.TABS.music = {
         { value: 'metal', label: 'metal' },
         { value: 'indie', label: 'indie' },
       ],
-      help: 'Music genre tag. Free-text fallback if you pick "Customâ€¦".',
+      help: 'Music genre tag. Free-text fallback if you pick "Custom…".',
     });
     const mood = buildParamRow('--mood', {
       kind: 'enum-text', default: '',
@@ -208,7 +208,7 @@ window.TABS.music = {
         { value: 'uplifting', label: 'uplifting' },
         { value: 'dreamy', label: 'dreamy' },
       ],
-      help: 'Mood or emotion. Free-text fallback if you pick "Customâ€¦".',
+      help: 'Mood or emotion. Free-text fallback if you pick "Custom…".',
     });
     const vocals = buildParamRow('--vocals', {
       kind: 'enum-text', default: '',
@@ -219,7 +219,7 @@ window.TABS.music = {
         { value: 'duet with harmonies', label: 'duet with harmonies' },
         { value: 'choir', label: 'choir' },
       ],
-      help: 'Vocal style descriptor. Free-text fallback if you pick "Customâ€¦".',
+      help: 'Vocal style descriptor. Free-text fallback if you pick "Custom…".',
     });
     const instruments = buildParamRow('--instruments', {
       kind: 'enum-text', default: '',
@@ -233,7 +233,7 @@ window.TABS.music = {
         { value: 'synth', label: 'synth' },
         { value: 'orchestral', label: 'orchestral' },
       ],
-      help: 'Featured instruments. Free-text fallback if you pick "Customâ€¦".',
+      help: 'Featured instruments. Free-text fallback if you pick "Custom…".',
     });
     const bpm = buildParamRow('--bpm', {
       kind: 'number', default: '', min: 40, max: 220, step: 1,
@@ -263,7 +263,7 @@ window.TABS.music = {
         { value: 'A minor', label: 'A minor' },
         { value: 'B major', label: 'B major' },
       ],
-      help: 'Musical key. Free-text fallback if you pick "Customâ€¦".',
+      help: 'Musical key. Free-text fallback if you pick "Custom…".',
     });
     const tempo = buildParamRow('--tempo', {
       kind: 'enum-text', default: '',
@@ -331,7 +331,7 @@ window.TABS.music = {
       kind: 'enum', default: 'hex',
       options: [
         { value: 'hex', label: 'hex (default, saved to file)' },
-        { value: 'url', label: 'url (24h expiry â€” download promptly)' },
+        { value: 'url', label: 'url (24h expiry — download promptly)' },
       ],
       help: 'How audio bytes come back. hex is saved directly; url requires separate download.',
     });
@@ -470,8 +470,8 @@ window.TABS.music = {
           args.push('--out', outFile);
           lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
           const statusMsg = variantsCount > 1
-            ? `Generating musicâ€¦ variant ${v}/${variantsCount} (may take 30sâ€“2min each)`
-            : 'Generating musicâ€¦ (may take 30sâ€“2min)';
+            ? `Generating music… variant ${v}/${variantsCount} (may take 30s–2min each)`
+            : 'Generating music… (may take 30s–2min)';
           setStatus(statusMsg, true);
           preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(statusMsg)}</div>`;
           const r = await window.api.mmxRun(args);
@@ -527,12 +527,12 @@ window.TABS.music = {
 
 // Phase 3 Block 10: fileUrl() extrahiert nach
 // renderer/utils/fileUrl.js. Pure Funktion, 0 App-Coupling.
-const { fileUrl } = window.FileUrl;
+var { fileUrl } = window.FileUrl;
 
 function showImagePreview(rootEl, file, parsed) {
   // Use file:// to let the renderer display the local file.
   // We add a cache-busting query string in case the same path is regenerated.
-  // The preview now renders a 400Ã—400 thumbnail instead of the full image
+  // The preview now renders a 400×400 thumbnail instead of the full image
   // (the preview pane was locking the screen when the generation produced
   // a large image). Clicking the thumbnail opens the image overlay at
   // 1:1 pixel mode with a zoom dropdown.
@@ -545,7 +545,7 @@ function showImagePreview(rootEl, file, parsed) {
       src: url,
       alt: filename,
       class: 'preview-thumb',
-      title: `${preLoad.naturalWidth}Ã—${preLoad.naturalHeight} â€” click to view full size`,
+      title: `${preLoad.naturalWidth}×${preLoad.naturalHeight} — click to view full size`,
     });
     thumb.addEventListener('click', () => {
       openImageOverlay(url, filename, preLoad.naturalWidth, preLoad.naturalHeight, file);
@@ -554,7 +554,7 @@ function showImagePreview(rootEl, file, parsed) {
     const meta = el('div', { class: 'meta' });
     meta.appendChild(document.createTextNode(file));
     meta.appendChild(el('div', { class: 'preview-thumb-size' },
-      `${preLoad.naturalWidth}Ã—${preLoad.naturalHeight} â€” click for 1:1 view`));
+      `${preLoad.naturalWidth}×${preLoad.naturalHeight} — click for 1:1 view`));
     if (parsed) meta.appendChild(el('div', {}, '[mmx] ' + safeStringify(parsed)));
     rootEl.appendChild(meta);
   };
@@ -593,7 +593,7 @@ function showAudioPreview(rootEl, file, parsed) {
 let _openImageOverlayClose = null;
 
 // Set of extensions the overlay's arrow-key navigation considers
-// "browsable" â€” i.e. an image file the user can step through.
+// "browsable" — i.e. an image file the user can step through.
 // Mirrors the same set the file browser / preview pane use to
 // decide what to render.
 const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'];
@@ -610,7 +610,7 @@ const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'];
 // could be built (e.g. no folder context, no batch, no match).
 function buildOverlayNavList(currentPath) {
   const cur = (currentPath || '').toLowerCase();
-  // 1) Multi-image batch â€” only if the current path is actually in it.
+  // 1) Multi-image batch — only if the current path is actually in it.
   if (state._previewBatch && Array.isArray(state._previewBatch.paths) && state._previewBatch.paths.length > 1) {
     const idx = state._previewBatch.paths.findIndex((p) => (p || '').toLowerCase() === cur);
     if (idx >= 0) {
@@ -643,14 +643,14 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight, filePath) 
     _openImageOverlayClose = null;
   }
   // The previous code did `existing.remove()` here, which
-  // removed the DOM but never called close() â€” so the keydown
+  // removed the DOM but never called close() — so the keydown
   // listener stayed attached forever. The cleanup is now in
   // _openImageOverlayClose above.
   const overlay = el('div', { class: 'image-overlay', id: 'image-overlay' });
   // Header
   const fname = el('span', { class: 'image-overlay-filename', title: filename || '' }, filename || '');
   const size = el('span', { class: 'image-overlay-size' },
-    (naturalWidth && naturalHeight) ? `${naturalWidth}Ã—${naturalHeight}` : '');
+    (naturalWidth && naturalHeight) ? `${naturalWidth}×${naturalHeight}` : '');
   // Position counter (e.g. "3 / 12") on the overlay header. Shown
   // when the arrow keys can navigate, hidden otherwise. Built
   // from the same nav list the arrow keys use, so the two stay
@@ -672,14 +672,14 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight, filePath) 
     if (val === '100') opt.selected = true;
     zoom.appendChild(opt);
   }
-  const closeBtn = el('button', { class: 'btn-mini image-overlay-close', title: 'Close (Esc)' }, 'Ã—');
+  const closeBtn = el('button', { class: 'btn-mini image-overlay-close', title: 'Close (Esc)' }, '×');
   // Prev / next arrow buttons on the header. Same keyboard / click
-  // behaviour â€” the buttons exist so the user can navigate on a
+  // behaviour — the buttons exist so the user can navigate on a
   // touch device or with the mouse without using the keyboard.
-  const prevBtn = el('button', { class: 'btn-mini image-overlay-prev', title: 'Previous (â†)' }, 'â€¹');
-  const nextBtn = el('button', { class: 'btn-mini image-overlay-next', title: 'Next (â†’)' }, 'â€º');
+  const prevBtn = el('button', { class: 'btn-mini image-overlay-prev', title: 'Previous (←)' }, '‹');
+  const nextBtn = el('button', { class: 'btn-mini image-overlay-next', title: 'Next (→)' }, '›');
   if (!navList || navList.paths.length <= 1) {
-    // Single-image overlay â€” hide the nav controls so the user
+    // Single-image overlay — hide the nav controls so the user
     // doesn't think there's more to see.
     prevBtn.style.display = 'none';
     nextBtn.style.display = 'none';
@@ -710,8 +710,8 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight, filePath) 
   // Close on background click (not on the image)
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   // The keyboard handler covers:
-  //   Esc   â†’ close the overlay
-  //   â† / â†’ â†’ step to the previous / next image (with wrap-around
+  //   Esc   → close the overlay
+  //   ← / → → step to the previous / next image (with wrap-around
   //           when the user reaches the ends, so the keyboard
   //           navigation matches what the user expects from a
   //           typical image viewer)
@@ -719,7 +719,7 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight, filePath) 
   // each arrow press so a newly-shown multi-image batch is picked
   // up the moment the user opens the overlay (and so the list
   // stays accurate even if the user clicks into a different
-  // thumbnail in the preview pane while the overlay is open â€”
+  // thumbnail in the preview pane while the overlay is open —
   // which is currently not possible, but defensive code is cheap).
   const onKey = (e) => {
     if (e.key === 'Escape') { close(); return; }
@@ -728,8 +728,8 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight, filePath) 
     const list = buildOverlayNavList(filePath);
     if (!list || list.paths.length <= 1) return;
     const delta = e.key === 'ArrowLeft' ? -1 : +1;
-    // Wrap-around: at the end, â† jumps to the last; at the start,
-    // â†’ jumps to the first. The preview-pane highlight + the
+    // Wrap-around: at the end, ← jumps to the last; at the start,
+    // → jumps to the first. The preview-pane highlight + the
     // folder-explorer .selected row follow.
     const nextIdx = (list.index + delta + list.paths.length) % list.paths.length;
     navigateToOverlayImage(list.paths[nextIdx], { wrap: true });
@@ -795,7 +795,7 @@ function navigateToOverlayImage(path, opts) {
   // Update the multi-image preview-pane highlight so the new
   // "current" thumbnail gets the .preview-active class. We
   // update _previewBatch.index even if the path is not in the
-  // batch â€” buildOverlayNavList falls back to the folder list
+  // batch — buildOverlayNavList falls back to the folder list
   // in that case.
   if (state._previewBatch && Array.isArray(state._previewBatch.paths)) {
     const idx = state._previewBatch.paths.findIndex((p) => (p || '').toLowerCase() === path.toLowerCase());
@@ -849,6 +849,6 @@ function navigateToOverlayImage(path, opts) {
 
 // Phase 3 Block 6: escapeHtml() ist schon in DomHelpers.js
 // verfügbar. Drop-in-Alias unten.
-const { escapeHtml } = window;
+var { escapeHtml } = window;
 
 window.MusicTab = window.TABS.music;

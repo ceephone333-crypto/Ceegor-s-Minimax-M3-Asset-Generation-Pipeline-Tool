@@ -84,6 +84,11 @@ function buildParamRow(label, def, id) {
       }
     });
     input = el('div', { class: 'combo-select-number', style: 'display: flex; gap: 4px; align-items: center;' }, [sel, num]);
+    input.getValue = () => {
+      if (sel.value === '__custom__') return num.value;
+      return sel.value;
+    };
+    input.el = sel;
   } else if (def.kind === 'text' && def.fileFilters) {
     const text = el('input', { type: 'text', value: String(value), placeholder: def.placeholder || '', class: 'text-input-with-browse' });
     if (id) text.id = id;
@@ -95,6 +100,8 @@ function buildParamRow(label, def, id) {
       } catch (_) { /* user cancelled */ }
     });
     input = el('div', { class: 'text-browse-row', style: 'display: flex; gap: 4px; align-items: center;' }, [text, browseBtn]);
+    input.getValue = () => text.value;
+    input.el = text;
   } else if (def.kind === 'enum-text') {
     const sel = el('select', {});
     for (const o of def.options) {
@@ -107,6 +114,8 @@ function buildParamRow(label, def, id) {
     else text.value = String(value);
     sel.addEventListener('change', () => { text.value = ''; });
     input = el('div', { class: 'enum-text-row', style: 'display: flex; gap: 4px; align-items: center;' }, [sel, text]);
+    input.getValue = () => text.value || sel.value;
+    input.el = sel;
   } else if (def.kind === 'enum') {
     const sel = el('select', {});
     for (const o of def.options) {
@@ -125,6 +134,7 @@ function buildParamRow(label, def, id) {
   const row = el('div', { class: 'row' }, [lbl, input.el || input]);
   const elAlias = input.el || input;
   const getValueAlias = input.getValue || (() => input.value);
+  input.getValue = getValueAlias;
   return { row, input, el: elAlias, getValue: getValueAlias };
 }
 

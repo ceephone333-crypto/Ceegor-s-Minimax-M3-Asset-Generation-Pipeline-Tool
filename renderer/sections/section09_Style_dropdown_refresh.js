@@ -4,7 +4,7 @@
 
 // ----------------- Style dropdown refresh -----------------
 // Refresh every open style-preset dropdown so the new list of styles is
-// immediately reflected after add/edit/delete â€” without requiring the user
+// immediately reflected after add/edit/delete — without requiring the user
 // to switch tabs. Implemented as a class query so detached dropdowns
 // (from rebuilt tabs) are automatically ignored.
 function _refreshAllStyleDropdowns() {

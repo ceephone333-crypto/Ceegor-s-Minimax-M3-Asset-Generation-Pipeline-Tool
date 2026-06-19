@@ -10,7 +10,7 @@
 function buildVariantsRow({ id, seedInput = null, defaultN = 1, label = '--variants' } = {}) {
   const sel = el('select', { class: 'variants-select', id: id || 'variants' });
   for (let i = 1; i <= 5; i++) {
-    sel.appendChild(el('option', { value: String(i) }, `${i}Ã—`));
+    sel.appendChild(el('option', { value: String(i) }, `${i}×`));
   }
   sel.value = String(defaultN);
   const lbl = el('label', { class: 'variants-label' }, [
@@ -69,7 +69,7 @@ function showTab(name) {
   scheduleStateSave();
   // First-time intro popup for the tab. Gated by the same popup
   // policy as the startup / first-time-setup popups, so the user
-  // can flip "never" in âš™ Settings â†’ Popups to silence every
+  // can flip "never" in ⚙ Settings → Popups to silence every
   // intro popup in one go. The popup id is `tab-intro:<name>` so
   // each tab's intro is independently dismissable.
   maybeShowTabIntro(name);

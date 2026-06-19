@@ -9,7 +9,7 @@ function showConvertOverlay(srcPath) {
   const ext = (srcPath.split('.').pop() || '').toLowerCase();
   const srcFmt = ext.toUpperCase() || '?';
   showModal((m, close) => {
-    m.appendChild(el('h2', {}, 'â‡„ Convert image format'));
+    m.appendChild(el('h2', {}, '⇄ Convert image format'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
       'Source: ' + srcPath));
     const srcFmtLabel = el('input', { type: 'text', value: srcFmt, readonly: '' });
@@ -33,13 +33,13 @@ function showConvertOverlay(srcPath) {
     convertBtn.addEventListener('click', async () => {
       const target = outSel.value;
       if (target === ext) {
-        toast('Source and target format are the same â€” nothing to do.', 'warn', 3000);
+        toast('Source and target format are the same — nothing to do.', 'warn', 3000);
         return;
       }
-      convertBtn.disabled = true; convertBtn.textContent = 'Convertingâ€¦';
+      convertBtn.disabled = true; convertBtn.textContent = 'Converting…';
       try {
         const out = await convertImageFile(srcPath, target);
-        toast(`Converted to ${target.toUpperCase()} â†’ ${out}`, 'ok', 4000);
+        toast(`Converted to ${target.toUpperCase()} → ${out}`, 'ok', 4000);
         await refreshBrowser();
         if (typeof updatePreviewPane === 'function') {
           try { previewImageFromFile(out); } catch (_) {}
@@ -60,7 +60,7 @@ function showConvertOverlay(srcPath) {
 // user can drag the frame to position it; clicking Crop finalizes.
 function showCropOverlay(srcPath) {
   showModal((m, close) => {
-    m.appendChild(el('h2', {}, 'âœ‚ Crop image'));
+    m.appendChild(el('h2', {}, '✂ Crop image'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
       'Source: ' + srcPath));
 
@@ -149,7 +149,7 @@ function showCropOverlay(srcPath) {
       const w = Math.max(1, parseInt(wInput.value, 10) || 1);
       const h = Math.max(1, parseInt(hInput.value, 10) || 1);
       if (img.naturalW && (w > img.naturalW || h > img.naturalH)) {
-        toast(`Frame size ${w}Ã—${h} exceeds image size ${img.naturalW}Ã—${img.naturalH}.`, 'warn', 4000);
+        toast(`Frame size ${w}×${h} exceeds image size ${img.naturalW}×${img.naturalH}.`, 'warn', 4000);
         return;
       }
       if (frame) frame.remove();
@@ -175,10 +175,10 @@ function showCropOverlay(srcPath) {
       if (!frame) { toast('Click Apply first to position the crop frame.', 'warn'); return; }
       const w = parseInt(wInput.value, 10) || 1;
       const h = parseInt(hInput.value, 10) || 1;
-      cropBtn.disabled = true; cropBtn.textContent = 'Croppingâ€¦';
+      cropBtn.disabled = true; cropBtn.textContent = 'Cropping…';
       try {
         const out = await cropImageFile(srcPath, frameX, frameY, w, h);
-        toast(`Cropped to ${w}Ã—${h} â†’ ${out}`, 'ok', 4000);
+        toast(`Cropped to ${w}×${h} → ${out}`, 'ok', 4000);
         await refreshBrowser();
         if (typeof updatePreviewPane === 'function') {
           try { previewImageFromFile(out); } catch (_) {}
@@ -193,25 +193,25 @@ function showCropOverlay(srcPath) {
 }
 
 // Image-optimisation overlay used by the folder-browser right-click
-// menu ("ðŸ—œ Optimize / Compressâ€¦"). Lets the user re-encode a
+// menu ("🗜 Optimize / Compress…"). Lets the user re-encode a
 // single image to shrink its file size while preserving best-
 // possible visual quality, using the Sharp-backed `image:optimize`
 // IPC.
 //
 // Three controls, matching the spec:
-//   - Quality slider (1..100, default 82 â€” the perceptual sweet
+//   - Quality slider (1..100, default 82 — the perceptual sweet
 //     spot for JPEG / WebP).
 //   - Format dropdown (Keep / JPEG / PNG / WebP / AVIF). "Keep"
 //     preserves the source format; the other four re-encode the
-//     image to the target format (e.g. PNG â†’ WebP for ~30%
+//     image to the target format (e.g. PNG → WebP for ~30%
 //     smaller files at the same Q).
 //   - "Strip non-essential EXIF (keep ICC profile)" checkbox, on
-//     by default â€” drops camera model / GPS / software tags but
+//     by default — drops camera model / GPS / software tags but
 //     keeps the colour profile so the image still renders
 //     correctly on colour-managed displays.
 //
 // On success, the dialog stays open and shows a results block
-// ("4.2 MB â†’ 612 KB Â· 85% smaller") with a one-click "Open
+// ("4.2 MB → 612 KB · 85% smaller") with a one-click "Open
 // folder" link. The user can keep clicking "Run" with different
 // settings without re-opening the dialog (the slider
 // reposition would otherwise re-trigger the action).
@@ -220,12 +220,12 @@ function showOptimizeOverlay(srcPath) {
   const srcFmt = (ext === 'jpg' ? 'jpeg' : ext) || 'jpeg';
   // Pre-fill from the persisted settings so the user only has to
   // override the field they care about on a given run. The
-  // settings dialog (Upscale settings â†’ "Optimize" sub-section)
+  // settings dialog (Upscale settings → "Optimize" sub-section)
   // shares the same state, so a user who picked Q=70 for
   // "all generated images" gets the same starting point here.
   const cfg = state.optimizeSettings || { quality: 82, format: 'keep', stripMetadata: true };
   showModal((m, close) => {
-    m.appendChild(el('h2', {}, 'ðŸ—œ Optimize / Compress image'));
+    m.appendChild(el('h2', {}, '🗜 Optimize / Compress image'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
       'Source: ' + srcPath));
 
@@ -260,7 +260,7 @@ function showOptimizeOverlay(srcPath) {
     // ---- Format dropdown ----
     // "Keep" preserves the source format; the other four re-encode
     // the image. We never show the current source format as a
-    // separate "Same" option â€” that's exactly what "Keep" means.
+    // separate "Same" option — that's exactly what "Keep" means.
     const fmtSel = el('select', {});
     const fmtDefs = [
       ['keep', `Keep source (${srcFmt.toUpperCase()})`],
@@ -291,7 +291,7 @@ function showOptimizeOverlay(srcPath) {
     // container so the dialog can be re-used for multiple
     // consecutive runs (e.g. user picks a different Q, hits
     // Run again). Results are wiped on each click.
-    const runBtn = el('button', { class: 'primary' }, 'ðŸ—œ Optimize');
+    const runBtn = el('button', { class: 'primary' }, '🗜 Optimize');
     const cancelBtn = el('button', { onclick: close }, 'Cancel');
     const status = el('div', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; min-height: 16px; margin: 4px 0;' }, '');
     const resultsBox = el('div', { style: 'margin: 8px 0; display: none;' });
@@ -312,8 +312,8 @@ function showOptimizeOverlay(srcPath) {
       await scheduleStateSave();
 
       runBtn.disabled = true;
-      runBtn.textContent = 'Optimizingâ€¦';
-      status.textContent = `Re-encoding at quality ${quality}â€¦`;
+      runBtn.textContent = 'Optimizing…';
+      status.textContent = `Re-encoding at quality ${quality}…`;
       resultsBox.style.display = 'none';
       resultsBox.innerHTML = '';
       try {
@@ -328,18 +328,18 @@ function showOptimizeOverlay(srcPath) {
         const outSize = humanSize(r.outputSize);
         const saved = r.savedPercent || 0;
         const colorClass = saved >= 30 ? 'ok' : (saved >= 10 ? 'meta' : 'warn');
-        const dimLbl = r.width && r.height ? `${r.width} Ã— ${r.height}` : '';
+        const dimLbl = r.width && r.height ? `${r.width} × ${r.height}` : '';
         resultsBox.innerHTML = '';
         resultsBox.style.display = '';
         resultsBox.appendChild(el('div', { class: 'fb-item-info' }, [
           el('div', { class: 'fb-info-row' }, [
             el('span', { class: 'fb-info-key' }, 'Result'),
             el('span', { style: 'color: var(--' + (saved >= 30 ? 'ok' : 'fg-1') + ');' },
-              `${inSize} â†’ ${outSize}  (âˆ’${saved}%)`),
+              `${inSize} → ${outSize}  (−${saved}%)`),
           ]),
           el('div', { class: 'fb-info-row' }, [
             el('span', { class: 'fb-info-key' }, 'Format'),
-            el('span', {}, fmtLbl + (dimLbl ? ` Â· ${dimLbl}` : '')),
+            el('span', {}, fmtLbl + (dimLbl ? ` · ${dimLbl}` : '')),
           ]),
           el('div', { class: 'fb-info-row' }, [
             el('span', { class: 'fb-info-key' }, 'Output'),
@@ -349,8 +349,8 @@ function showOptimizeOverlay(srcPath) {
         // "Reveal in Explorer" + "Preview" buttons, so the user
         // doesn't have to dig through the folder browser to
         // find the result.
-        const revealBtn = el('button', { class: 'btn-mini', onclick: () => window.api.fbReveal(r.outputPath) }, 'â†— Reveal in Explorer');
-        const previewBtn = el('button', { class: 'btn-mini', onclick: () => { try { previewImageFromFile(r.outputPath); } catch (_) {} } }, 'ðŸ–¼ Preview');
+        const revealBtn = el('button', { class: 'btn-mini', onclick: () => window.api.fbReveal(r.outputPath) }, '↗ Reveal in Explorer');
+        const previewBtn = el('button', { class: 'btn-mini', onclick: () => { try { previewImageFromFile(r.outputPath); } catch (_) {} } }, '🖼 Preview');
         resultsBox.appendChild(el('div', { class: 'row', style: 'margin-top: 6px; gap: 6px;' }, [revealBtn, previewBtn]));
         // Refresh the file browser so the new sibling shows up
         // in the listing.
@@ -358,13 +358,13 @@ function showOptimizeOverlay(srcPath) {
         // Toast + status so the user gets a clear "it worked"
         // signal even if they missed the inline result block.
         const tone = saved >= 1 ? 'ok' : 'info';
-        toast(`Optimized ${inSize} â†’ ${outSize} (âˆ’${saved}%) â†’ ${r.outputPath}`, tone, 4000);
-        status.textContent = `Done. ${inSize} â†’ ${outSize} (âˆ’${saved}%).`;
+        toast(`Optimized ${inSize} → ${outSize} (−${saved}%) → ${r.outputPath}`, tone, 4000);
+        status.textContent = `Done. ${inSize} → ${outSize} (−${saved}%).`;
         // Mark the saved settings as "the ones the user just
         // ran with" so a follow-up right-click on the optimised
         // file pre-fills the same choices.
         runBtn.disabled = false;
-        runBtn.textContent = 'ðŸ—œ Optimize';
+        runBtn.textContent = '🗜 Optimize';
       } catch (e) {
         // Structured failure from the IPC. Show the precise
         // message in the status line (toast is redundant here
@@ -372,7 +372,7 @@ function showOptimizeOverlay(srcPath) {
         status.textContent = 'Failed: ' + (e && e.message || e);
         toast('Optimize failed: ' + (e && e.message || e), 'err', 6000);
         runBtn.disabled = false;
-        runBtn.textContent = 'ðŸ—œ Optimize';
+        runBtn.textContent = '🗜 Optimize';
       }
     });
     m.appendChild(el('div', { class: 'footer' }, [cancelBtn, runBtn]));

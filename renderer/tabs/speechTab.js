@@ -2,7 +2,7 @@
 // ----------------- SPEECH TAB -----------------
 window.TABS = window.TABS || {};
 window.TABS.speech = {
-  prefilled: 'Welcome to MiniMax â€” Token Plan or PAYG, both work here.',
+  prefilled: 'Welcome to MiniMax — Token Plan or PAYG, both work here.',
   build() {
     const root = $('#tab-speech');
     root.innerHTML = '';
@@ -30,7 +30,7 @@ window.TABS.speech = {
     const model = buildParamRow('--model', {
       kind: 'enum', default: 'speech-2.8-hd',
       options: [
-        { value: 'speech-2.8-hd', label: 'speech-2.8-hd (newest, best quality â€” default)' },
+        { value: 'speech-2.8-hd', label: 'speech-2.8-hd (newest, best quality — default)' },
         { value: 'speech-2.8-turbo', label: 'speech-2.8-turbo (faster, lower latency)' },
         { value: 'speech-2.6-hd', label: 'speech-2.6-hd' },
         { value: 'speech-2.6-turbo', label: 'speech-2.6-turbo' },
@@ -44,7 +44,7 @@ window.TABS.speech = {
     const voice = buildParamRow('--voice', {
       kind: 'enum', default: 'English_expressive_narrator',
       options: [{ value: 'English_expressive_narrator', label: 'English_expressive_narrator (default)' }],
-      help: 'Which voice speaks. 300+ voices available â€” list loaded from `mmx speech voices`.',
+      help: 'Which voice speaks. 300+ voices available — list loaded from `mmx speech voices`.',
     });
     const speed = buildParamRow('--speed', {
       kind: 'number', default: 1.0, step: 0.05,
@@ -54,7 +54,7 @@ window.TABS.speech = {
     const volume = buildParamRow('--volume', {
       kind: 'number', default: 1, min: 0, max: 10, step: 1,
       options: [0, 1, 2, 3, 5, 7, 10].map((v) => ({ value: v, label: String(v) })),
-      help: 'Volume level 0 (silent) â€“ 10 (loudest).',
+      help: 'Volume level 0 (silent) – 10 (loudest).',
     });
     const pitch = buildParamRow('--pitch', {
       kind: 'number', default: 0, min: -12, max: 12, step: 1,
@@ -252,8 +252,8 @@ window.TABS.speech = {
           args.push('--out', outFile);
           lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
           const statusMsg = variantsCount > 1
-            ? `Generating speechâ€¦ variant ${v}/${variantsCount}`
-            : 'Generating speechâ€¦';
+            ? `Generating speech… variant ${v}/${variantsCount}`
+            : 'Generating speech…';
           setStatus(statusMsg, true);
           preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(statusMsg)}</div>`;
           const r = await window.api.mmxRun(args);

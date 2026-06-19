@@ -45,9 +45,9 @@ function showItemContextMenuForPath(path, x, y) {
 // Standalone "Remove background" action triggered by the folder
 // browser's right-click context menu. Unlike the in-tab flow
 // (which is gated on the upscaling popup's checkbox) and the
-// right-click "Upscale" dialog (which can chain upscale â†’
-// crop â†’ background removal in one step), this is a single-shot
-// "drop the alpha, write <name>_nobg.png next to it" â€” the user
+// right-click "Upscale" dialog (which can chain upscale →
+// crop → background removal in one step), this is a single-shot
+// "drop the alpha, write <name>_nobg.png next to it" — the user
 // picks an existing image, the wrapper runs, the result appears
 // in the preview pane + the file browser.
 //
@@ -61,24 +61,24 @@ async function runRemoveBackgroundOnItem(it) {
     return;
   }
   if (!st.available) {
-    toast('Background removal not set up. Run "npm run setup" to download the IS-Net model, or open the add-ons manager (âš™ Settings â†’ Image upscaling â†’ Re-open add-ons).', 'err', 8000);
+    toast('Background removal not set up. Run "npm run setup" to download the IS-Net model, or open the add-ons manager (⚙ Settings → Image upscaling → Re-open add-ons).', 'err', 8000);
     return;
   }
   if (!st.modelPresent) {
-    toast('isnetbg model file missing â€” drop isnet-general-use.onnx into ./bin/models/.', 'err', 6000);
+    toast('isnetbg model file missing — drop isnet-general-use.onnx into ./bin/models/.', 'err', 6000);
     return;
   }
   // Show a brief progress toast so the user knows the action was
   // received. The actual binary run can take a few seconds on CPU
   // (longer on large images), and the binary doesn't stream
-  // progress â€” so we rely on a single "Workingâ€¦" toast and then a
+  // progress — so we rely on a single "Working…" toast and then a
   // final success / failure toast.
-  setStatus('Removing backgroundâ€¦', true);
-  toast('Removing backgroundâ€¦', 'info', 2000);
+  setStatus('Removing background…', true);
+  toast('Removing background…', 'info', 2000);
   try {
     const out = await removeBackgroundFile(it.path);
     setStatus('Background removed.', false);
-    toast(`Background removed â†’ ${out}`, 'ok', 4000);
+    toast(`Background removed → ${out}`, 'ok', 4000);
     try { await refreshBrowser(); } catch (_) {}
     if (typeof previewImageFromFile === 'function') {
       try { previewImageFromFile(out); } catch (_) {}
@@ -140,7 +140,7 @@ async function confirmDelete(it) {
       const r = await window.api.fbDelete(it.path);
       if (!r.ok) toast(r.error, 'err'); else { toast('Deleted.', 'ok'); await refreshBrowser(); }
       // If the deleted file was the one being previewed, clear the
-      // preview pane â€” the previous code left a broken <img> with an
+      // preview pane — the previous code left a broken <img> with an
       // invalid file:// URL, which Chromium would log as a console
       // error every time the user opened a different file.
       if (!it.isDir && state._selected && state._selected.path === it.path) {
@@ -181,7 +181,7 @@ async function refreshQuota() {
   const el2 = $('#quota-value');
   el2.innerHTML = '<span class="spinner"></span>';
   const r = await window.api.quota();
-  if (!r.ok) { el2.textContent = r.error || 'â€”'; return; }
+  if (!r.ok) { el2.textContent = r.error || '—'; return; }
   // The mmx CLI has returned the quota in a few different shapes depending
   // on the version. Try the documented one first (`model_remains` at root
   // or under `data`), then fall back to other common shapes.
@@ -194,17 +194,17 @@ async function refreshQuota() {
     else if (Array.isArray(data.quota)) models = data.quota;
   }
   if (!models || !models.length) {
-    // No recognizable models â€” log the raw response so the user can see
+    // No recognizable models — log the raw response so the user can see
     // exactly what the API is returning (helps diagnose shape changes
     // between mmx-cli versions). Truncate to keep the log readable.
     try {
       const raw = JSON.stringify(data).slice(0, 4000);
-      log(`[quota] unexpected response shape â€” raw: ${raw}${raw.length >= 4000 ? 'â€¦' : ''}`);
+      log(`[quota] unexpected response shape — raw: ${raw}${raw.length >= 4000 ? '…' : ''}`);
     } catch (_) { /* ignore circular refs etc. */ }
     el2.textContent = 'no data';
     return;
   }
   const parts = models.map(_formatQuotaModel);
-  el2.innerHTML = parts.join(' Â· ');
+  el2.innerHTML = parts.join(' · ');
 }
 

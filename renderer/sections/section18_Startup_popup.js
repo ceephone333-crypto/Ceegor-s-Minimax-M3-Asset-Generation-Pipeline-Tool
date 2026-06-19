@@ -4,14 +4,14 @@
 
 // ----------------- Startup popup -----------------
 // Shown on every fresh launch. Single OK button to dismiss. Reachable later
-// from the âš™ Settings menu (TODO: wire into settings if needed).
+// from the ⚙ Settings menu (TODO: wire into settings if needed).
 //
 // Honours the user-configurable popup policy (state.popupPolicy):
-//   'once-fresh'   â€” default. Show on every fresh launch until the user
+//   'once-fresh'   — default. Show on every fresh launch until the user
 //                    dismisses it; once dismissed, never show again.
-//   'per-session'  â€” Show once per app start.
-//   'never'        â€” Skip entirely.
-//   'always'       â€” Always show (ignoring any prior dismissal).
+//   'per-session'  — Show once per app start.
+//   'never'        — Skip entirely.
+//   'always'       — Always show (ignoring any prior dismissal).
 // The popup id is 'startup'. openGatedPopup() is the central dispatcher;
 // new tab-triggered popups should reuse it with their own stable id.
 function shouldShowPopup(id) {
@@ -23,7 +23,7 @@ function shouldShowPopup(id) {
   }
   // 'once-fresh' (default): persist dismissal in state.seenPopups so
   // a returning user never sees the popup again unless they reset
-  // the seen set from âš™ Settings â†’ Popups.
+  // the seen set from ⚙ Settings → Popups.
   return !(state.seenPopups && state.seenPopups[id]);
 }
 function markPopupSeen(id) {
@@ -35,7 +35,7 @@ function markPopupSeen(id) {
 }
 function resetPopupSeen() {
   // Wipe both the persistent record AND the per-session set so a
-  // "Reset all popup history" action in âš™ Settings immediately
+  // "Reset all popup history" action in ⚙ Settings immediately
   // re-triggers every popup on the very next trigger.
   state.seenPopups = {};
   _popupSeenThisSession.clear();
@@ -62,7 +62,7 @@ function showStartupPopup() {
     m.appendChild(el('div', { class: 'startup-version' }, BUILD_VERSION));
     m.appendChild(el('p', { class: 'startup-info' }, TOOL_INFO));
     const shortcuts = el('div', { class: 'shortcuts-box' });
-    shortcuts.appendChild(el('h4', {}, 'âŒ¨ Keyboard shortcuts'));
+    shortcuts.appendChild(el('h4', {}, '⌨ Keyboard shortcuts'));
     const list = [
       ['Ctrl+Enter', 'Generate on the active tab (same as clicking the big Generate button)'],
       ['Ctrl+1 / 2 / 3 / 4', 'Switch to the Image / Speech / Music / Video tab'],
@@ -72,7 +72,7 @@ function showStartupPopup() {
       ['Ctrl+L', 'Switch between dark and light mode'],
       ['Ctrl+F', 'Focus the file-browser filter (start typing to filter the file list)'],
       ['Ctrl+R', 'Refresh the quota counter (how many generations you have left)'],
-      ['â† / â†’', 'When the image overlay is open: step to the previous / next image (multi-image batch, or all images in the current folder)'],
+      ['← / →', 'When the image overlay is open: step to the previous / next image (multi-image batch, or all images in the current folder)'],
     ];
     for (const [keys, desc] of list) {
       shortcuts.appendChild(el('div', { class: 'shortcut-row' }, [

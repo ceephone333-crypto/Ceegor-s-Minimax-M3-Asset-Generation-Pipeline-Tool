@@ -26,7 +26,7 @@ function markFbItemActive(path) {
     // an existing fs-item record; otherwise the context menu would
     // be missing the size/ext metadata. Look it up by path from the
     // last-rendered list (state._fbItems is populated by
-    // refreshBrowser when we wired it up â€” see the read in the
+    // refreshBrowser when we wired it up — see the read in the
     // helper below).
     if (Array.isArray(state._fbItems)) {
       const found = state._fbItems.find((it) => (it.path || '').toLowerCase() === target);
@@ -57,7 +57,7 @@ function previewImageFromFile(p) {
     return;
   }
   // If the user clicks the same file twice, the preview is already
-  // showing it â€” don't waste a re-decode + flicker on the redundant
+  // showing it — don't waste a re-decode + flicker on the redundant
   // click. We compare on the file path (the naturalWidth wouldn't
   // have changed since the file didn't change).
   if (state._lastPreviewPath === p) return;
@@ -106,10 +106,10 @@ function previewImagesFromFiles(paths) {
     return;
   }
   if (valid.length === 1) {
-    // Single image â†’ the old behaviour, no subdivision needed.
+    // Single image → the old behaviour, no subdivision needed.
     return previewImageFromFile(valid[0]);
   }
-  // N > 1 â†’ grid of thumbnails. Build the container once, then async-
+  // N > 1 → grid of thumbnails. Build the container once, then async-
   // resolve each path's natural dimensions for the title hint.
   content.innerHTML = '';
   // Stash the current batch on state so the image overlay's
@@ -143,7 +143,7 @@ function previewImagesFromFiles(paths) {
     // which file is currently highlighted.
     const slot = el('div', {
       class: 'preview-pane-thumb',
-      title: filename + ' â€” click to view 1:1',
+      title: filename + ' — click to view 1:1',
       'data-path': p,
     });
     if (i === 0) slot.classList.add('preview-active');
@@ -153,7 +153,7 @@ function previewImagesFromFiles(paths) {
     // Flag the click handler attachment so the slow-disk fallback
     // below doesn't double-bind (the previous code used
     // `if (!slot.onclick)`, but addEventListener doesn't write to
-    // `.onclick` â€” so both the onload path and the setTimeout path
+    // `.onclick` — so both the onload path and the setTimeout path
     // attached a listener, and a single click opened the overlay
     // twice in a row).
     let clickBound = false;
@@ -167,7 +167,7 @@ function previewImagesFromFiles(paths) {
         // does the same thing on every keypress.) We look up
         // the index in `state._previewBatch.paths` (which is a
         // slice copy of `valid`) rather than comparing array
-        // references â€” the previous `===` check was always false
+        // references — the previous `===` check was always false
         // because `valid` is created fresh and then sliced into
         // the batch, so the index update was silently dropped.
         if (state._previewBatch && Array.isArray(state._previewBatch.paths)) {
@@ -185,7 +185,7 @@ function previewImagesFromFiles(paths) {
     // Resolve the natural size async so the overlay can show it.
     const probe = new Image();
     probe.onload = () => {
-      slot.title = `${filename} (${probe.naturalWidth}Ã—${probe.naturalHeight}) â€” click to view 1:1`;
+      slot.title = `${filename} (${probe.naturalWidth}×${probe.naturalHeight}) — click to view 1:1`;
       bind(probe.naturalWidth, probe.naturalHeight);
     };
     probe.onerror = () => bind(0, 0);
@@ -199,24 +199,24 @@ function previewImagesFromFiles(paths) {
   // Below the grid, a small summary line so the user knows how many
   // images they got (and the click hint).
   const summary = el('div', { class: 'preview-pane-summary' },
-    `${valid.length} image${valid.length === 1 ? '' : 's'} â€” click any thumbnail to open at 1:1.`);
+    `${valid.length} image${valid.length === 1 ? '' : 's'} — click any thumbnail to open at 1:1.`);
   content.appendChild(summary);
 }
 
 // Render the file-browser image into the new Picture preview pane.
 // The image is fit-to-content (object-fit: contain in the CSS) so a
 // 4K screenshot is shown shrunken and a tiny icon stays at its natural
-// size â€” both rendered completely, no cropping. Clicking the image
+// size — both rendered completely, no cropping. Clicking the image
 // (or the filename) opens the image overlay at 1:1 mode.
 function updatePreviewPane(src, filename, naturalWidth, naturalHeight, filePath) {
   const content = $('#fb-preview-content');
   if (!content) return;
   content.innerHTML = '';
-  const size = (naturalWidth && naturalHeight) ? ` (${naturalWidth}Ã—${naturalHeight})` : '';
+  const size = (naturalWidth && naturalHeight) ? ` (${naturalWidth}×${naturalHeight})` : '';
   const img = el('img', {
     src,
     alt: filename || '',
-    title: (filename || '') + size + ' â€” click to view 1:1',
+    title: (filename || '') + size + ' — click to view 1:1',
   });
   img.addEventListener('click', () => {
     openImageOverlay(src, filename, naturalWidth, naturalHeight, filePath);
@@ -229,7 +229,7 @@ function updatePreviewPane(src, filename, naturalWidth, naturalHeight, filePath)
 
 // Track the paths that have already been pushed to the preview
 // pane for the current multi-image batch (or single-image preview).
-// Used by notifyImageGenerated() to dedupe â€” the same file can
+// Used by notifyImageGenerated() to dedupe — the same file can
 // arrive via the gen handler's "variant complete" callback AND
 // the 1s polling, so without this set we'd double-add thumbnails.
 // Keyed on lowercase path so a Windows path-case change doesn't
@@ -252,7 +252,7 @@ function _buildPreviewThumb(p, options) {
   const url = fileUrl(p) + cacheBust;
   const slot = el('div', {
     class: 'preview-pane-thumb',
-    title: filename + ' â€” click to view 1:1',
+    title: filename + ' — click to view 1:1',
     'data-path': p,
   });
   if (opts.isActive) slot.classList.add('preview-active');
@@ -265,7 +265,7 @@ function _buildPreviewThumb(p, options) {
     if (clickBound) return;
     clickBound = true;
     const open = () => {
-      // Update active selection â€” the user's last action wins.
+      // Update active selection — the user's last action wins.
       $$('.preview-pane-thumb').forEach((n) => n.classList.remove('preview-active'));
       slot.classList.add('preview-active');
       if (state._previewBatch) {
@@ -291,7 +291,7 @@ function _buildPreviewThumb(p, options) {
   };
   const probe = new Image();
   probe.onload = () => {
-    slot.title = `${filename} (${probe.naturalWidth}Ã—${probe.naturalHeight}) â€” click to view 1:1`;
+    slot.title = `${filename} (${probe.naturalWidth}×${probe.naturalHeight}) — click to view 1:1`;
     bind(probe.naturalWidth, probe.naturalHeight);
   };
   probe.onerror = () => bind(0, 0);
@@ -305,7 +305,7 @@ function _buildPreviewThumb(p, options) {
 // preview-pane thumbnail + active-row mark) without waiting
 // for the full generation run to finish. Called from:
 //   1. The image tab's gen handler after each variant (when
-//      the output path is known in advance â€” i.e. not
+//      the output path is known in advance — i.e. not
 //      --out-dir runs).
 //   2. The 1s polling timer in startGenPolling() that watches
 //      the output directory for new files (catches --out-dir
@@ -313,5 +313,5 @@ function _buildPreviewThumb(p, options) {
 //
 // Idempotent: if the same path is reported twice (e.g. both
 // the gen handler AND the polling saw it), the second call
-// is a no-op â€” we use the lowercased path as the dedup key
+// is a no-op — we use the lowercased path as the dedup key
 // via _previewedPaths.
