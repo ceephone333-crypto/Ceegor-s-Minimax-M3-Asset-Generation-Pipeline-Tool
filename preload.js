@@ -151,4 +151,10 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('mmx:log', fn);
     return () => ipcRenderer.removeListener('mmx:log', fn);
   },
+
+  // ---- Phase 4 Fix 21: renderer-side error log ----
+  // Schreibt eine Zeile in renderer-error.log im Projekt-Root.
+  // Wird vom debugLog.js benutzt um JEDEN Error einzusammeln
+  // ohne DevTools (F12) zu brauchen.
+  logToFile: (line) => ipcRenderer.send('renderer:log', line),
 });

@@ -3,10 +3,24 @@
 // startet das Haupt-BrowserWindow. Enthält **keine** Geschäftslogik.
 
 const path = require('path');
-const { app, BrowserWindow } = require('electron');
+const fs = require('fs');
+const { app, BrowserWindow, ipcMain } = require('electron');
 
 const APP_ROOT = __dirname;
 const PARENT_ROOT = path.resolve(APP_ROOT, '..'); // __dirname = main/, parent = project root
+
+// Phase 4 Fix 21: renderer-error.log Handler. Schreibt alle
+// Errors aus dem Renderer in eine Datei im Projekt-Root, damit
+// wir ohne DevTools sehen was passiert.
+const RENDERER_LOG = path.join(PARENT_ROOT, 'renderer-error.log');
+ipcMain.on('renderer:log', (event, line) => {
+  try {
+    const ts = new Date().toISOString().slice(11, 23);
+    fs.appendFileSync(RENDERER_LOG, ts + ' ' + line + '\n');
+  } catch (e) { /* ignore - secondary failure */ }
+});
+// Truncate log on app start
+try { fs.writeFileSync(RENDERER_LOG, '=== renderer-error.log @ ' + new Date().toISOString() + ' ===\n'); } catch (_) {}
 
 // Side-Effect: setzt globale Electron-Switches (DPI, Occlusion).
 require('./window/windowSecurity');
