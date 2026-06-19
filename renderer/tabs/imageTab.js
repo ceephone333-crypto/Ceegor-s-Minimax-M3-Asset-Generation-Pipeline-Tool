@@ -236,7 +236,14 @@ window.TABS.image = {
       }
       let outDir;
       try { outDir = await ensureSubDir('image'); }
-      catch (e) { toast('No output directory set. Open Settings.', 'err'); return; }
+      catch (e) {
+        // Surface the real reason instead of the old hard-coded
+        // "No output directory set" — that was misleading when
+        // the actual cause was an fs/allow-list error.
+        const msg = (e && e.message) || String(e);
+        toast('Cannot resolve output folder: ' + msg, 'err', 6000);
+        return;
+      }
       const slug = slugify(promptText).slice(0, 60) || 'image';
       const cancel = armGenBtnWithCancel(genBtn, 'Generate');
       // Log a "generation started" event up front so the user

@@ -414,7 +414,11 @@ window.TABS.music = {
       const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
       let outDir;
       try { outDir = await ensureSubDir('music'); }
-      catch (e) { toast('No output directory set. Open Settings.', 'err'); return; }
+      catch (e) {
+        const msg = (e && e.message) || String(e);
+        toast('Cannot resolve output folder: ' + msg, 'err', 6000);
+        return;
+      }
       const slug = slugify(promptText).slice(0, 60) || 'music';
       const ext = (audioFormat.input.value || 'mp3');
       // Total assets this run will produce. The per-tab ETA timer reads

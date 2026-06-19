@@ -206,7 +206,11 @@ window.TABS.speech = {
       const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
       let outDir;
       try { outDir = await ensureSubDir('speech'); }
-      catch (e) { toast('No output directory set. Open Settings.', 'err'); return; }
+      catch (e) {
+        const msg = (e && e.message) || String(e);
+        toast('Cannot resolve output folder: ' + msg, 'err', 6000);
+        return;
+      }
       const slug = slugify(txt).slice(0, 60) || 'speech';
       const ext = (format.input.value || 'mp3').split('_')[0];
       // Total assets this run will produce. The per-tab ETA timer reads

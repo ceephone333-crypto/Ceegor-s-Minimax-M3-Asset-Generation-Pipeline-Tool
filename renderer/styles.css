@@ -990,7 +990,24 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
 :root[data-theme="light"] .fb-item:nth-child(even):not(.selected):not(.fb-drop-target) {
   background: rgba(0, 0, 0, 0.035);
 }
-.fb-item:nth-child(even):hover { background: var(--bg-3); }
+/* Bug-fix (2026-06-19, reported by user): the previous rule
+   `.fb-item:nth-child(even):hover { background: var(--bg-3); }`
+   was DEAD CODE because the zebra selector above has higher
+   specificity (4 classes/pseudos) than the hover selector (3),
+   so the zebra background won every time. Hover on every
+   second row was invisible — a usability regression that
+   looked like a contrast issue.
+   Fix: mirror the same selector structure (including the two
+   :not() guards) on the hover rule so its specificity matches
+   and the cascade order (this rule comes after the zebra rule
+   in the file) lets it win. Both themes get the same selector
+   pattern, so the dark + light hover overlays stay in sync. */
+.fb-item:nth-child(even):not(.selected):not(.fb-drop-target):hover {
+  background: var(--bg-3);
+}
+:root[data-theme="light"] .fb-item:nth-child(even):not(.selected):not(.fb-drop-target):hover {
+  background: var(--bg-3);
+}
 /* v1.1.1 polish: empty-state cell for the file browser. The
    previous version rendered an empty <ul> with no message
    (looked broken on a new install). The hint cell uses

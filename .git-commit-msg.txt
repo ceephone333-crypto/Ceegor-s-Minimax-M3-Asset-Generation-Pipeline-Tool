@@ -1,56 +1,47 @@
-v1.1.4: 360° hunt remediation — 13 fixes from _plan.md
+v1.1.5: fix output folder regression + asar example-write + CSS hover + %APPDATA% default
 
-State + crop round-trip (#1, #2): single source of truth via
-window.STATE_PERSIST_KEYS, applied to both saveAllStates and the
-load block in init(). Replaces the hard-coded 5-key snapshot
-that silently dropped ~13 fields on every restart.
+Three user-reported regressions squashed in one pass:
 
-Config-dir unification (#6): state.json + batches.json now route
-through src/config.configDir() so MINIMAX_CONFIG_DIR and the
-exe/cwd fallback chain apply to all three files (was split).
+1. Generate always says "No output directory set" even after picking one.
+   Root cause: `ensureSubDir(name)` (called from imageTab/speechTab/
+   musicTab/videoTab) was lost during the Phase 3 Block 29 refactor
+   that extracted app.js into 24 section files. The ReferenceError
+   from the undefined function landed in the catch block, which
+   hard-coded the misleading "No output directory set" toast.
+   Fix: restored `ensureSubDir` in renderer/app.js (also exported on
+   window so the tab scripts loaded earlier in index.html can see it).
+   Also improved the four catch blocks to surface the real error.
 
-Blank output_dir fallback (#4): getAllowedRoots() uses
-effectiveOutputDir(cfg) so a fresh install with output_dir=''
-still has <configDir>/generated in the allow-list.
+2. Exporting the example batch file fails with ENOENT inside the asar.
+   The `batches:generateExamples` IPC wrote to `deps.appRoot/example_*.md`,
+   where `appRoot = path.resolve(APP_ROOT, '..')`. In a packaged build
+   APP_ROOT is inside `resources/app.asar/main`, so `appRoot` resolves
+   to `resources/app.asar/` itself — a read-only archive. fs.writeFile
+   threw ENOENT and the user couldn't get the example docs at all.
+   Fix: write the examples to `cfgMod.effectiveOutputDir(cfg)` (the
+   user's actual output folder) with a mkdir-p so it exists on first
+   run. Updated the toast to reflect the new destination.
 
-Batch editor object-aware (#5): pure batchEntryText /
-withBatchEntryText helpers so imported snapshot entries
-({prompt, params}) don't stringify to "[object Object]" when
-edited + saved. UI badge "+params" indicates captured settings.
+3. Folder explorer: every second row has no hover effect.
+   CSS specificity bug: the zebra rule
+   `.fb-item:nth-child(even):not(.selected):not(.fb-drop-target)`
+   has 4-class specificity and beat the hover rule
+   `.fb-item:nth-child(even):hover` (3-class), so the zebra background
+   won every time. Fix: mirror the same selector structure
+   (including the two :not() guards) on the hover rule so its
+   specificity matches and cascade order lets it win.
 
-Redirect-loop counter (#3): thread `remaining` through the
-recursion in httpsGetFollowingRedirects (was closed-over but
-never decremented). New DI seam { get = https.get } lets
-tests cover it without TLS.
+4. User-requested feature: default output_dir to %APPDATA% when unset.
+   Previously the fallback was `<exe-dir>/generated` (for packaged
+   builds: `<dist-stable>/win-unpacked/generated`) — an unexpected
+   location. Now: `<userData>/generated` (Electron's app.getPath
+   ('userData') = %APPDATA%/<productName>). Wired through:
+   - src/config.js: new `defaultOutputDir()` helper.
+   - main/ipc/registerConfigIpc.js: new `config:defaultOutputDir` IPC.
+   - preload.js: bridge.
+   - renderer/app.js init(): use the IPC for the fallback instead
+     of fabricating a path from configPath().
 
-PowerShell env vars (#10): Expand-Archive paths now flow via
-$env:MMX_SRC_ZIP / $env:MMX_DEST_DIR instead of string
-interpolation — no quoting hazards.
-
-Symlink-aware isPathUnder (#12): realIfExists() before
-comparison so a symlink inside an allowed root that points
-outside is rejected. Non-existent leaves still work via the
-parent-dir helper.
-
-logService.js case (#8): index.html include matches the
-tracked filename (capital L) so case-sensitive FSes load the
-log pane.
-
-Test glob + engines (#7): "node --test" (auto-discovers on
-18+); added engines.node >= 18.
-
-CSP connect-src (#13): tightened to 'self' — renderer makes
-no direct network calls; everything goes through IPC.
-
-Splitter drag (#14): new renderer/components/SplitterDrag.js
-wires mousedown on every [data-splitter], persists sizes via
-state.layoutSettings + scheduleStateSave(), seeds CSS
-variables from saved state on init().
-
-Dead code cleanup (#9): removed AppState.js, StatePersister.js,
-ThemeService.js, MmxService.js, EventBus.js (and its test).
-bootstrap.js trimmed to the one live job (version stamp).
-voicesCache.reset() now wired into config:set so a key change
-invalidates cached voices.
-
-Tests: 107 pass (was 77; +36 new, -6 removed with EventBus).
+Tests: 123 pass (was 107; +16 new covering ensureSubDir,
+defaultOutputDir, batches:generateExamples destination, and
+the asar-vs-output-dir regression guard). 0 lint errors.

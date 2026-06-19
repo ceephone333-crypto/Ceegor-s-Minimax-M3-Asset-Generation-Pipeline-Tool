@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('api', {
   setConfig: (cfg) => ipcRenderer.invoke('config:set', cfg),
   pickFolder: () => ipcRenderer.invoke('config:pickFolder'),
   configPath: () => ipcRenderer.invoke('config:path'),
+  defaultOutputDir: () => ipcRenderer.invoke('config:defaultOutputDir'),
 
   // ---- mmx ----
   mmxRun: (args) => ipcRenderer.invoke('mmx:run', args),

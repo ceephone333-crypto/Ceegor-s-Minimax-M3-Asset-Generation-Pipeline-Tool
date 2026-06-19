@@ -136,7 +136,42 @@ function write(cfg) {
 
 function effectiveOutputDir(cfg) {
   if (cfg.output_dir && cfg.output_dir.trim()) return cfg.output_dir.trim();
-  return path.join(configDir(), 'generated');
+  return defaultOutputDir();
 }
 
-module.exports = { configPath, read, write, effectiveOutputDir, defaultConfig, parse, serialize, configDir };
+/**
+ * Default output directory when `cfg.output_dir` is blank.
+ * Bug-fix (2026-06-19, reported by user): the previous default
+ * was `<configDir>/generated` — i.e. `<exe-dir>/generated`. For a
+ * packaged build that's `<dist-stable>/win-unpacked/generated`,
+ * which is on the user's system but not where they'd expect to
+ * find generated assets (it's "next to the .exe", not "in my
+ * documents"). For a Windows install via the user's AppData dir
+ * it's also a write to a folder the user didn't pick.
+ *
+ * The user explicitly asked to use `%APPDATA%` instead.
+ * Electron's `app.getPath('userData')` resolves to
+ * `%APPDATA%/<productName>` (e.g. `C:\Users\<user>\AppData\
+ * Roaming\MiniMaxAssetTool`), which is the right canonical
+ * per-user, per-app data location. We add a `generated` subdir
+ * so generated assets are grouped under one easily-discoverable
+ * path and never collide with config.txt / state.json / batches.
+ * .json / voices.json.
+ *
+ * In dev (`electron .`) `app.getPath('userData')` returns
+ * `<project-root>` by default — which is also fine; the user can
+ * change it via ⚙ Settings at any time.
+ */
+function defaultOutputDir() {
+  let base;
+  try {
+    const { app } = require('electron');
+    base = app.getPath('userData');
+  } catch {
+    // Fallback for tests / non-Electron contexts.
+    base = path.join(process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'), 'MiniMaxAssetTool');
+  }
+  return path.join(base, 'generated');
+}
+
+module.exports = { configPath, read, write, effectiveOutputDir, defaultConfig, parse, serialize, configDir, defaultOutputDir };

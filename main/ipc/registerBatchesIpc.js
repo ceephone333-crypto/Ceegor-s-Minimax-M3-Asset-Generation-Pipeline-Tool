@@ -6,6 +6,7 @@ const { ipcMain } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const batchMod = require('../../src/batches');
+const cfgMod = require('../../src/config');
 
 /**
  * @param {{ appRoot: string }} deps
@@ -22,7 +23,27 @@ function register(deps) {
 
   ipcMain.handle('batches:generateExamples', async () => {
     try {
-      const appRoot = deps.appRoot;
+      // Bug-fix (2026-06-19, reported by user): the example files
+      // used to be written to `deps.appRoot/example_batch_import.{md,txt}`,
+      // where `appRoot = path.resolve(APP_ROOT, '..')`. In dev
+      // that's the project root (writable). In a packaged build
+      // (electron-builder `dir` target) `APP_ROOT` resolves to
+      // `<dist-stable>/win-unpacked/resources/app.asar/main`, so
+      // `appRoot` resolves to `<...>/resources/app.asar/` — INSIDE
+      // the asar archive, which is mounted read-only. fs.writeFileSync
+      // throws ENOENT/EROFS, the renderer surfaces it as
+      // "Failed to generate examples: ENOENT: no such file or
+      // directory, open '.../resources/app.asar/example_batch_import.md'",
+      // and the user can't get the example files at all.
+      //
+      // The example files are user-facing documentation — they
+      // belong next to the user's actual generated assets. Write
+      // them to the effective output dir instead (which is what
+      // the renderer already shows in the file browser). We
+      // mkdir-p so the directory exists on first run.
+      const cfg = cfgMod.read();
+      const targetDir = cfgMod.effectiveOutputDir(cfg);
+      try { fs.mkdirSync(targetDir, { recursive: true }); } catch (_) { /* best-effort */ }
       
       const mdContent = `# MiniMax Asset Import Instructions (AI-Readable)
 
@@ -195,12 +216,12 @@ music | Upbeat 80s style retro arcade theme | --model music-2.6 --genre synthwav
 video | A drone shot flying through a forest valley | --model video-01-live --duration 5 --resolution 1080p
 `;
 
-      fs.writeFileSync(path.join(appRoot, 'example_batch_import.md'), mdContent, 'utf8');
-      fs.writeFileSync(path.join(appRoot, 'example_batch_import.txt'), txtContent, 'utf8');
+      fs.writeFileSync(path.join(targetDir, 'example_batch_import.md'), mdContent, 'utf8');
+      fs.writeFileSync(path.join(targetDir, 'example_batch_import.txt'), txtContent, 'utf8');
       return {
         ok: true,
-        mdPath: path.join(appRoot, 'example_batch_import.md'),
-        txtPath: path.join(appRoot, 'example_batch_import.txt')
+        mdPath: path.join(targetDir, 'example_batch_import.md'),
+        txtPath: path.join(targetDir, 'example_batch_import.txt')
       };
     } catch (e) {
       return { ok: false, error: String(e.message || e) };

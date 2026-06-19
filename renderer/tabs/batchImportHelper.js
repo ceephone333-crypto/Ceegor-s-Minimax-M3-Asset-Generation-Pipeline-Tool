@@ -334,7 +334,13 @@ async function generateExampleFiles() {
   try {
     const r = await window.api.batchesGenerateExamples();
     if (r.ok) {
-      toast('Examples generated in installation root: example_batch_import.md & .txt', 'ok', 5000);
+      // Bug-fix (2026-06-19): examples now land in the user's
+      // output folder (the same one the file browser shows), not
+      // next to the .exe. The old message was misleading because
+      // the examples were actually written inside the asar
+      // archive (read-only) and the user got an ENOENT error.
+      const dir = (r.mdPath || '').replace(/[\\/]example_batch_import\.[a-z]+$/i, '') || 'your output folder';
+      toast(`Examples generated in ${dir}: example_batch_import.md & .txt`, 'ok', 5000);
     } else {
       toast('Failed to generate examples: ' + r.error, 'err');
     }

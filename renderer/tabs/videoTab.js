@@ -131,7 +131,11 @@ window.TABS.video = {
       const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
       let outDir;
       try { outDir = await ensureSubDir('video'); }
-      catch (e) { toast('No output directory set. Open Settings.', 'err'); return; }
+      catch (e) {
+        const msg = (e && e.message) || String(e);
+        toast('Cannot resolve output folder: ' + msg, 'err', 6000);
+        return;
+      }
       const slug = slugify(promptText).slice(0, 60) || 'video';
       const cancel = armGenBtnWithCancel(genBtn, 'Generate');
       let allOk = true;

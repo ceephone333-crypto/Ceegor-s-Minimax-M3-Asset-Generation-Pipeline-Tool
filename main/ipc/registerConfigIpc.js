@@ -38,6 +38,20 @@ function register({ getMainWindow }) {
   ipcMain.handle('config:path', () => {
     try { return cfgMod.configPath(); } catch (e) { return null; }
   });
+  // Bug-fix (2026-06-19): return the resolved default output
+  // directory (which encodes the same `<userData>/generated`
+  // fallback as the main process's `effectiveOutputDir()`). The
+  // renderer needs this at init() time so a fresh launch with a
+  // blank output_dir can still pre-populate the in-memory
+  // state.config.output_dir and the file browser can land on a
+  // real, writable directory instead of throwing "no output dir"
+  // when the user clicks Generate. Without this IPC the renderer
+  // had to fake a default by appending "/generated" to the
+  // config.txt path — which (a) is the exe dir for packaged
+  // builds (not what the user asked for) and (b) doesn't exist.
+  ipcMain.handle('config:defaultOutputDir', () => {
+    try { return cfgMod.defaultOutputDir(); } catch (e) { return null; }
+  });
   ipcMain.handle('config:pickFolder', async () => {
     try {
       const win = getMainWindow();

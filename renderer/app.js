@@ -184,8 +184,21 @@ async function init() {
   setStatus('Ready');
 
   // Initial values
+  // Bug-fix (2026-06-19): the previous fallback was
+  //   `configPath().replace(/config\.txt$/i, 'generated')`
+  // which for a packaged build resolves to `<exe-dir>/generated`
+  // — i.e. `<dist-stable>/win-unpacked/generated`. The user
+  // asked to use `%APPDATA%` instead (a per-user, per-app
+  // location they can easily find later). The main process
+  // owns the resolution (so both sides stay in sync via the
+  // same `effectiveOutputDir(cfg)` helper).
   if (!state.config.output_dir) {
-    state.config.output_dir = await window.api.configPath().then((p) => p.replace(/config\.txt$/i, 'generated'));
+    try {
+      state.config.output_dir = await window.api.defaultOutputDir();
+    } catch (_) {
+      // IPC missing in some test contexts — leave blank, the
+      // ensureSubDir() guard will toast a clear error.
+    }
   }
 
   showTab(startTab);
@@ -215,6 +228,79 @@ function toggleTheme() {
   window.api.setConfig(state.config).catch(() => {});
   toast(`Theme: ${next}`, 'ok', 1500);
 }
+
+// ----------------- ensureSubDir -----------------
+// Resolves the per-tab output folder and creates it (idempotently)
+// via the allow-listed fbMkdir IPC. Each tab calls this once at
+// the top of its generate handler.
+//
+// Bug-fix (2026-06-19, reported by user):
+//   The function was lost during the Phase 3 Block 29 refactor
+//   (extracted from app.js into 24 sections). The generate handler
+//   in imageTab / speechTab / musicTab / videoTab still references
+//   `ensureSubDir(name)` as a global, so when the user clicks
+//   Generate the call throws a ReferenceError, the catch block
+//   fires, and the renderer always shows "No output directory set.
+//   Open Settings." — even when the user JUST set an output
+//   directory. This was the single biggest UX regression after the
+//   refactor.
+//
+// Behaviour:
+//   1. If output_dir is blank → throw (caller shows the toast).
+//   2. If the file-browser's current folder (state.fbDir) is the
+//      output_dir or a subdir of it → use it (so a user who
+//      navigated into <output>/image sees their selection
+//      respected instead of having every image land in
+//      <output>/image regardless).
+//   3. Otherwise fall back to <output_dir>/<tabName> (the per-tab
+//      default) and create it.
+//
+// Folder creation goes through window.api.fbMkdir (NOT fs.write
+// or any direct write path) so the allow-list in main/services/
+// PathSecurityService gates the directory creation and a future
+// bug can't bypass it.
+async function ensureSubDir(name) {
+  const base = state.config.output_dir || '';
+  if (!base) throw new Error('No output directory set. Open Settings.');
+  const normForCompare = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const baseNorm = normForCompare(base);
+  const fbNorm = normForCompare(state.fbDir || '');
+  const baseSep = base.includes('\\') ? '\\' : '/';
+  const fbSep = (state.fbDir || '').includes('\\') ? '\\' : '/';
+  const join = (a, b, sep) => a.replace(/[\\/]+$/, '') + sep + b;
+  let targetDir = null;
+  if (fbNorm && (fbNorm === baseNorm || fbNorm.startsWith(baseNorm + '/'))) {
+    targetDir = (state.fbDir || '').replace(/[\\/]+$/, '');
+  } else {
+    targetDir = join(base, name, baseSep);
+  }
+  if (targetDir === join(base, name, baseSep)) {
+    // Default path: a single fbMkdir call. fbMkdir is idempotent
+    // (returns ok even if the dir already exists), so a benign
+    // retry is fine.
+    await window.api.fbMkdir(base, name).catch(() => null);
+  } else {
+    // Deeper folder (user navigated into <output>/foo/bar/...):
+    // walk the path segment-by-segment so each mkdir is
+    // individually allow-list-checked.
+    const stripped = targetDir.replace(/[\\/]+$/, '');
+    const baseN = base.replace(/[\\/]+$/, '');
+    const relParts = [];
+    if (stripped.length > baseN.length) {
+      const rel = stripped.slice(baseN.length).replace(/^[\\/]+/, '');
+      for (const p of rel.split(/[\\/]/).filter(Boolean)) relParts.push(p);
+    }
+    let cur = base;
+    for (const p of relParts) {
+      await window.api.fbMkdir(cur, p).catch(() => null);
+      cur = join(cur, p, baseSep);
+    }
+  }
+  return targetDir;
+}
+// Phase 4 Fix 15: 'window.ensureSubDir = ensureSubDir' so the tab
+// scripts (loaded BEFORE app.js) can see it without crashing.
+window.ensureSubDir = ensureSubDir;
 
 function installKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
