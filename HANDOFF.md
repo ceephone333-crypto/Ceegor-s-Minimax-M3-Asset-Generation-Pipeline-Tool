@@ -161,7 +161,51 @@ In `renderer/index.html`:
 - `renderer-error.log` (mein Output): `C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\renderer-error.log`
 - `dist/MiniMaxAssetTool-1.1.1-x64.zip` (430 MB, mit stable .exe + neuem asar): `C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\dist\MiniMaxAssetTool-1.1.1-x64.zip`
 - `dist/MiniMaxAssetTool-Dev-1.1.1-x64.zip` (516 MB, komplettes Projekt): `C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\dist\MiniMaxAssetTool-Dev-1.1.1-x64.zip`
-- `dist-stable/MiniMaxAssetTool.exe` (stable .exe, SHA256 `1b384ee8ea56e1a18ed0e11626fe2da8c05efda2aab44085b0576e23c6811871`): `C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\dist-stable\MiniMaxAssetTool.exe`
+
+## Fresh-version Folder (KANONISCH — für User und alle Agents)
+
+**`C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\dist-stable\win-unpacked\MiniMaxAssetTool.exe`**
+
+Dies ist der **eine Ordner**, aus dem der User immer die neueste Version startet.
+
+### Aufbau
+```
+dist-stable/
+└── win-unpacked/
+    ├── MiniMaxAssetTool.exe          ← START-HIER (stabiler .exe, SHA256 bleibt gleich)
+    └── resources/
+        ├── app.asar                  ← Aktuelle Source (nach jedem Commit via sync-stable-asar.js)
+        └── app.asar.bak              ← Backup des vorigen asar (für Rollback)
+```
+
+### Workflow für jeden Agent
+
+**Wenn du Source-Änderungen machst, MUSST du am Ende:**
+
+1. Committen (wie üblich).
+2. Den asar neu packen:
+   ```bash
+   node scripts/sync-stable-asar.js
+   ```
+3. In deiner Antwort an den User immer den vollen Pfad + .exe-Filename posten:
+   ```
+   Vollständiger Pfad: C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\dist-stable\win-unpacked\MiniMaxAssetTool.exe
+   ```
+
+### Fresh-version Folder neu erstellen (von Null auf)
+
+Falls `dist-stable/` gelöscht wurde:
+```powershell
+mkdir dist-stable
+Expand-Archive -Path 'dist\MiniMaxAssetTool-1.1.1-x64.zip' -DestinationPath 'dist-stable' -Force
+node scripts/sync-stable-asar.js
+```
+
+### Warum dieser Pfad?
+
+- **Stabiler .exe** — die `MiniMaxAssetTool.exe` in `dist-stable/` hat einen festen SHA256-Hash (`1b384ee8…`). Windows SmartScreen / Defender flaggt sie deshalb nur beim allerersten Start; danach ist sie "bekannt" und läuft sofort durch. Ein jedes Mal neu gebauter `.exe` würde den Hash ändern und erneutes SmartScreen-Prompting auslösen.
+- **Frischer asar** — der `app.asar` enthält den gesamten Renderer + Main-Code. `sync-stable-asar.js` packt ihn aus, ersetzt die Source-Files, und packt ihn neu — ohne den stabilen `.exe` anzufassen.
+- **Eine Quelle der Wahrheit** — der User muss nicht zwischen `dist-stable/`, `dist-out/`, `dist/` und `ReleaseGithub/` raten. Immer dieser eine Pfad.
 
 ## Was ICH falsch gemacht habe
 
