@@ -139,4 +139,4 @@ function effectiveOutputDir(cfg) {
   return path.join(configDir(), 'generated');
 }
 
-module.exports = { configPath, read, write, effectiveOutputDir, defaultConfig, parse, serialize };
+module.exports = { configPath, read, write, effectiveOutputDir, defaultConfig, parse, serialize, configDir };

@@ -10,6 +10,15 @@
 function openBatchManager(tabKey) {
   const tabName = tabKey.charAt(0).toUpperCase() + tabKey.slice(1);
   const current = (state.batches[tabKey] || []).slice();
+  // Bug-fix #5 (2026-06-19): resolve the helpers defensively — the
+  // editor's <script> tag (this file) is loaded AFTER batchImportHelper,
+  // but tests and bundling reshuffles can break that ordering, and a
+  // missing helper here would mean every imported batch entry
+  // stringified to "[object Object]".
+  const getEntryText = (window.BatchManager && window.BatchManager.batchEntryText)
+    || ((e) => (typeof e === 'string' ? e : ''));
+  const setEntryText = (window.BatchManager && window.BatchManager.withBatchEntryText)
+    || ((e, t) => (typeof e === 'string' ? String(t || '') : ''));
   showModal((m, close) => {
     m.appendChild(el('h2', {}, `BatchGen — ${tabName} Tab`));
     m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
@@ -23,12 +32,30 @@ function openBatchManager(tabKey) {
         list.appendChild(el('div', { class: 'batch-empty' }, 'No prompts yet. Click "+ Add prompt" below to add the first one.'));
         return;
       }
-      current.forEach((text, i) => {
+      current.forEach((entry, i) => {
         const row = el('div', { class: 'batch-row' });
         const num = el('div', { class: 'batch-num' }, String(i + 1));
-        const ta = el('textarea', {}, text);
+        // Bug-fix #5: extract text from either shape (string or
+        // {prompt, params...}); previously the textarea was seeded
+        // with the raw entry, so object entries rendered as
+        // "[object Object]".
+        const ta = el('textarea', {}, getEntryText(entry));
         ta.placeholder = tabKey === 'speech' ? 'Text to read…' : 'Prompt for asset…';
-        ta.addEventListener('input', () => { current[i] = ta.value; });
+        ta.addEventListener('input', () => {
+          // Preserve params on object entries; collapse to string on
+          // string entries. The helper centralises this logic.
+          current[i] = setEntryText(current[i], ta.value);
+        });
+        // Bug-fix #5 (UX nicety): small badge on object entries so the
+        // user knows settings are attached to this row.
+        if (entry && typeof entry === 'object') {
+          const badge = el('span', {
+            class: 'batch-params-badge',
+            title: 'This entry has captured settings (style, upscale, etc.) that will be applied at run time.',
+            style: 'margin-left: 4px; padding: 1px 5px; border-radius: 8px; font-size: 10px; background: var(--accent, #d9a300); color: var(--bg-1, #1a1a1a); font-weight: bold;',
+          }, '+params');
+          row.appendChild(badge);
+        }
         const up = el('button', { class: 'btn-mini', title: 'Move up', onclick: () => { if (i > 0) { [current[i-1], current[i]] = [current[i], current[i-1]]; renderList(); } } }, '↑');
         const down = el('button', { class: 'btn-mini', title: 'Move down', onclick: () => { if (i < current.length-1) { [current[i+1], current[i]] = [current[i], current[i+1]]; renderList(); } } }, '↓');
         const del = el('button', { class: 'btn-mini danger', title: 'Remove', onclick: () => { current.splice(i, 1); renderList(); } }, '✕');
@@ -71,8 +98,15 @@ function openBatchManager(tabKey) {
     const save = el('button', { class: 'primary' }, `Save (${current.length})`);
     const closeBtn = el('button', { onclick: close }, 'Close');
     save.addEventListener('click', async () => {
-      // Trim + filter empties
-      const cleaned = current.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 100);
+      // Bug-fix #5: trim + filter empties via the shape-aware helpers
+      // so a snapshot entry keeps its params after the user edits the
+      // prompt. Previous version stringified everything (`String(s)`
+      // on an object → "[object Object]"), losing all the per-entry
+      // settings that the BatchGen runner reads at run time.
+      const cleaned = current
+        .map((e) => setEntryText(e, getEntryText(e).trim()))
+        .filter((e) => getEntryText(e).length > 0)
+        .slice(0, 100);
       if (cleaned.length === 0) {
         if (!confirm('Save an EMPTY batch (this removes the Start Batch button)?')) return;
       }

@@ -2,7 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none';" />
+  <!-- Bug-fix #13 (2026-06-19): tighten `connect-src` to `'self'`.
+     The renderer makes no direct network calls — every external
+     fetch (voice list, model run, file download) goes through IPC
+     to the main process, which has its own node-side access. The
+     previous `https:` token let any in-renderer script open a
+     socket to any HTTPS origin, which a compromised renderer
+     (XSS via a future feature, malicious AI prompt, etc.) could
+     exploit. img-src / media-src stay as-is (already exclude
+     remote). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none';" />
   <title>MiniMax Assets Tool — Token Plan &amp; PAYG</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -94,11 +103,8 @@
   <!-- Phase 3: Atomic-Architecture Foundation -->
   <script src="debugLog.js"></script>
   <script src="core/DomHelpers.js"></script>
-  <script src="core/EventBus.js"></script>
   <script src="core/ToastService.js"></script>
   <script src="core/ApiClient.js"></script>
-  <script src="state/AppState.js"></script>
-  <script src="state/StatePersister.js"></script>
   <script src="utils/FormatUtils.js"></script>
   <script src="utils/PathBuilder.js"></script>
   <script src="utils/securityUtils.js"></script>
@@ -106,7 +112,13 @@
   <script src="utils/fbSort.js"></script>
   <script src="utils/quotaFormatter.js"></script>
   <script src="services/LogCategories.js"></script>
-  <script src="services/logService.js"></script>
+  <!-- Bug-fix #8 (2026-06-19): the tracked file is
+       services/LogService.js (capital L). The previous lowercase
+       include only worked on case-insensitive Windows; on a
+       case-sensitive FS (macOS APFS case-sensitive, Linux, CI)
+       the script 404'd, the entire log pane (addLogEvent, log, …)
+       failed to load, and bootstrap.js's LogService.init() threw. -->
+  <script src="services/LogService.js"></script>
   <script src="utils/dropTarget.js"></script>
   <script src="utils/tinyUtils.js"></script>
   <script src="utils/pureFuncs.js"></script>
@@ -127,6 +139,11 @@
   <script src="components/LastCmdTooltip.js"></script>
   <script src="components/HelpDelegation.js"></script>
   <script src="components/CropFrameDrag.js"></script>
+  <!-- Bug-fix #14 (2026-06-19): wires the three [data-splitter]
+       bars in the layout so dragging them resizes the panes and
+       persists the size to state.layoutSettings (loaded back
+       on the next launch by SplitterDrag.applyLayoutSettings). -->
+  <script src="components/SplitterDrag.js"></script>
   <!-- Phase 3 Block 29: 24 sections extracted from app.js -->
   <script src="sections/section24_State.js"></script>
   <script src="sections/section23_Centralized_help_system.js"></script>
@@ -152,8 +169,6 @@
   <script src="sections/section03_Settings_tab_panes.js"></script>
   <script src="sections/section02_Popups_settings.js"></script>
   <script src="sections/section01_Diagnose_dialog.js"></script>
-  <script src="services/ThemeService.js"></script>
-  <script src="services/MmxService.js"></script>
   <script src="bootstrap.js"></script>
   <!-- Legacy: wird in den Folge-Phasen inkrementell ausgemustert -->
   <script src="tabs/batchImportHelper.js"></script>

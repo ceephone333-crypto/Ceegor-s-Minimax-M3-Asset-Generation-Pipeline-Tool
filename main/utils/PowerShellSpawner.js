@@ -14,15 +14,29 @@ const { spawn } = require('child_process');
  */
 function expandArchive(zipPath, destDir) {
   return new Promise((resolve, reject) => {
+    // Bug-fix #10 (2026-06-19): pass the paths as environment
+    // variables and reference them as `$env:…` instead of
+    // interpolating them into the -Command string. PowerShell
+    // expands $env:FOO to the exact value with no quoting
+    // hazards, so a `"`/backtick in either path can't break
+    // the command or smuggle extra arguments. Today both paths
+    // are app-controlled (os.tmpdir() zip + appRoot/bin), so this
+    // isn't exploitable — but the previous version also broke
+    // for any path with a `"` in it, which the user-reported
+    // crash logs occasionally hit when the install dir lived
+    // under a OneDrive redirected profile.
     const ps = spawn(
       'powershell.exe',
       [
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-Command',
-        `Expand-Archive -Path "${zipPath}" -DestinationPath "${destDir}" -Force`,
+        'Expand-Archive -Path $env:MMX_SRC_ZIP -DestinationPath $env:MMX_DEST_DIR -Force',
       ],
-      { windowsHide: true }
+      {
+        windowsHide: true,
+        env: { ...process.env, MMX_SRC_ZIP: zipPath, MMX_DEST_DIR: destDir },
+      }
     );
     let stderr = '';
     ps.stderr.on('data', (b) => { stderr += b.toString('utf8'); });

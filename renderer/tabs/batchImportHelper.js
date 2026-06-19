@@ -2,6 +2,40 @@
 // Helper functions for BatchGen unstructured file import, example template generation,
 // and multi-tab batch generation.
 
+// ---- Bug-fix #5 (2026-06-19): pure helpers for the batch entry shape ----
+//
+// The renderer stores TWO per-entry shapes:
+//   1. Legacy: a non-empty trimmed string (the prompt itself).
+//   2. Snapshot: an object { prompt, settings, ts, label, upscale? … }
+//      captured via the "+ Add" button next to Generate. These carry
+//      per-entry form state so the BatchGen runner can re-apply the
+//      exact settings at run time.
+//
+// The BatchGen editor (batchManager.js → openBatchManager) needs to
+// (a) seed each textarea from either shape, (b) write the edited
+// prompt back into the same shape (preserving the snapshot's params),
+// and (c) trim + filter empty rows without dropping params.
+//
+// These helpers centralise the shape logic so it's testable and so a
+// future third shape (e.g. array of segments) only needs one edit.
+
+// Extract the editable prompt text from a batch entry of either shape.
+function batchEntryText(entry) {
+  if (typeof entry === 'string') return entry;
+  if (entry && typeof entry === 'object') return String((entry && entry.prompt) || '');
+  return '';
+}
+
+// Return a new entry of the same shape with the given prompt text.
+// Strings stay strings; objects keep their params and just update
+// `prompt`. null/undefined yields an empty string (consistent with
+// the legacy shape so the editor doesn't have to special-case it).
+function withBatchEntryText(entry, text) {
+  if (typeof entry === 'string') return String(text || '');
+  if (entry && typeof entry === 'object') return Object.assign({}, entry, { prompt: String(text || '') });
+  return String(text || '');
+}
+
 // ---- Helper Functions for Custom Option Extraction & Mapping ----
 
 function getTabInputs(tabKey) {
@@ -355,3 +389,7 @@ window.BatchManager.importBatchFileDialog = importBatchFileDialog;
 window.BatchManager.generateExampleFiles = generateExampleFiles;
 window.BatchManager.startAllBatchGen = startAllBatchGen;
 window.BatchManager.parseParams = parseParams;
+// Bug-fix #5 (2026-06-19): exposed so batchManager.js (the editor)
+// can call them and so tests can import them without DOM shims.
+window.BatchManager.batchEntryText = batchEntryText;
+window.BatchManager.withBatchEntryText = withBatchEntryText;

@@ -16,12 +16,18 @@ const trustedPickPaths = new Set();
 
 /**
  * Aktuelle Liste der erlaubten Roots.
- * @returns {string[]} output_dir + trustedPickPaths
+ * @returns {string[]} effectiveOutputDir + trustedPickPaths
  */
 function getAllowedRoots() {
   const cfg = cfgMod.read();
-  const roots = [];
-  if (cfg.output_dir) roots.push(cfg.output_dir);
+  // Bug-fix #4 (2026-06-19): use the *effective* output dir so a
+  // blank `output_dir` (user skipped first-run setup) still yields
+  // a valid root = `<configDir>/generated`. That's exactly the path
+  // the renderer fabricates as its in-memory default and the path
+  // the app actually writes generated files into. Before this
+  // change, every fb:*/image:optimize/upscale/audio IPC on a freshly
+  // generated file was rejected because the allow-list was empty.
+  const roots = [cfgMod.effectiveOutputDir(cfg)];
   for (const p of trustedPickPaths) roots.push(p);
   return roots;
 }

@@ -45,10 +45,11 @@ require('./window/windowSecurity');
 
 const { createMainWindow } = require('./window/createMainWindow');
 
-// Service: Cache für Voice-Liste (per API-Key).
-const voicesCache = require('./services/VoicesCacheService');
-
 // IPC-Registrierungen (jede Datei kapselt eine Domäne).
+// Bug-fix #9 (2026-06-19): dropped the unused voicesCache
+// require here — the cache is constructed lazily by
+// registerMmxIpc, and reset() is now invoked from
+// registerConfigIpc when the user changes their API key.
 const ipcRegistrars = [
   require('./ipc/registerAppIpc'),
   require('./ipc/registerConfigIpc'),

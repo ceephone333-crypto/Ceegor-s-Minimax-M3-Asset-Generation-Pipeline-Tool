@@ -46,12 +46,25 @@ function canon(p) {
 // True iff `p` is `root` itself, or sits under `root` (after both are
 // resolved). Both are compared case-insensitively so it works on
 // Windows.
+//
+// Bug-fix #12 (2026-06-19): resolve symlinks via realIfExists()
+// before comparison so a symlink *inside* an allowed root that points
+// outside the root is not silently treated as under-the-root.
+// Previously a symlink at `<output>/escape -> C:/Windows/System32`
+// would have been accepted by isPathUnder, allowing an IPC handler
+// to operate on files outside the user's authorised directory.
+//
+// realIfExists falls back to the normalised path when realpath
+// throws, so non-existent leaves (write targets that don't exist
+// yet, like fb:write / audio:cut dst) still work — the parent
+// directory is the one that gets realpath-resolved through the
+// existing isParentUnderAny helper.
 function isPathUnder(p, root) {
   const pAbs = normalize(p);
   const rAbs = normalize(root);
   if (!pAbs || !rAbs) return false;
-  const pLow = canon(pAbs);
-  const rLow = canon(rAbs);
+  const pLow = canon(realIfExists(pAbs));
+  const rLow = canon(realIfExists(rAbs));
   if (pLow === rLow) return true;
   return pLow.startsWith(rLow + path.sep);
 }

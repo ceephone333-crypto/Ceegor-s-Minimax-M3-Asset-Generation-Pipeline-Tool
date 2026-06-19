@@ -2,14 +2,15 @@
 // Per-tab batch storage for BatchGen. Lives in batches.json next to config.txt.
 const fs = require('fs');
 const path = require('path');
-const { app } = require('electron');
+// Bug-fix #6 (2026-06-19): route through configDir() so batches.json
+// honours MINIMAX_CONFIG_DIR and the exe/cwd fallback chain the
+// same way config.txt does. Previously batches.json always landed
+// next to the exe, which split storage when a launcher set the
+// override (config in one place, batches in another).
+const { configDir } = require('./config');
 
 function batchesPath() {
-  try {
-    return path.join(path.dirname(app.getPath('exe')), 'batches.json');
-  } catch {
-    return path.join(process.cwd(), 'batches.json');
-  }
+  return path.join(configDir(), 'batches.json');
 }
 
 function defaultBatches() {

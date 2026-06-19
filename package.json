@@ -10,7 +10,7 @@
     "setup": "node scripts/setup.js",
     "check": "node scripts/check.js",
     "lint": "node scripts/lint.js",
-    "test": "node --test tests/unit/**/*.test.js",
+    "test": "node --test",
     "prebuild": "node scripts/check.js",
     "build": "node scripts/zip-portable.js",
     "build:asar": "node scripts/update-zip.js",
@@ -40,6 +40,9 @@
   "devDependencies": {
     "electron": "^32.0.0",
     "electron-builder": "^25.0.0"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "build": {
     "appId": "com.ceegor.minimax-asset-tool",

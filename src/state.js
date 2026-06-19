@@ -3,14 +3,15 @@
 // to state.json next to config.txt.
 const fs = require('fs');
 const path = require('path');
-const { app } = require('electron');
+// Bug-fix #6 (2026-06-19): route through configDir() so state.json
+// honours MINIMAX_CONFIG_DIR and the exe/cwd fallback chain the
+// same way config.txt does. Previously state.json always landed
+// next to the exe (or cwd if no electron app), which split storage
+// when a launcher set the override.
+const { configDir } = require('./config');
 
 function statePath() {
-  try {
-    return path.join(path.dirname(app.getPath('exe')), 'state.json');
-  } catch {
-    return path.join(process.cwd(), 'state.json');
-  }
+  return path.join(configDir(), 'state.json');
 }
 
 function read() {

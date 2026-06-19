@@ -1,4 +1,4 @@
-// renderer/services/logService.js
+// renderer/services/LogService.js
 // Log pane + log event API. Phase 3 Block 21.
 //
 // Exports: addLogEvent, renderLogEvent, formatLogEventForCopy,

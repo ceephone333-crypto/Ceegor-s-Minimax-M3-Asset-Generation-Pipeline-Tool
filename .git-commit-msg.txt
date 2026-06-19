@@ -1,0 +1,56 @@
+v1.1.4: 360° hunt remediation — 13 fixes from _plan.md
+
+State + crop round-trip (#1, #2): single source of truth via
+window.STATE_PERSIST_KEYS, applied to both saveAllStates and the
+load block in init(). Replaces the hard-coded 5-key snapshot
+that silently dropped ~13 fields on every restart.
+
+Config-dir unification (#6): state.json + batches.json now route
+through src/config.configDir() so MINIMAX_CONFIG_DIR and the
+exe/cwd fallback chain apply to all three files (was split).
+
+Blank output_dir fallback (#4): getAllowedRoots() uses
+effectiveOutputDir(cfg) so a fresh install with output_dir=''
+still has <configDir>/generated in the allow-list.
+
+Batch editor object-aware (#5): pure batchEntryText /
+withBatchEntryText helpers so imported snapshot entries
+({prompt, params}) don't stringify to "[object Object]" when
+edited + saved. UI badge "+params" indicates captured settings.
+
+Redirect-loop counter (#3): thread `remaining` through the
+recursion in httpsGetFollowingRedirects (was closed-over but
+never decremented). New DI seam { get = https.get } lets
+tests cover it without TLS.
+
+PowerShell env vars (#10): Expand-Archive paths now flow via
+$env:MMX_SRC_ZIP / $env:MMX_DEST_DIR instead of string
+interpolation — no quoting hazards.
+
+Symlink-aware isPathUnder (#12): realIfExists() before
+comparison so a symlink inside an allowed root that points
+outside is rejected. Non-existent leaves still work via the
+parent-dir helper.
+
+logService.js case (#8): index.html include matches the
+tracked filename (capital L) so case-sensitive FSes load the
+log pane.
+
+Test glob + engines (#7): "node --test" (auto-discovers on
+18+); added engines.node >= 18.
+
+CSP connect-src (#13): tightened to 'self' — renderer makes
+no direct network calls; everything goes through IPC.
+
+Splitter drag (#14): new renderer/components/SplitterDrag.js
+wires mousedown on every [data-splitter], persists sizes via
+state.layoutSettings + scheduleStateSave(), seeds CSS
+variables from saved state on init().
+
+Dead code cleanup (#9): removed AppState.js, StatePersister.js,
+ThemeService.js, MmxService.js, EventBus.js (and its test).
+bootstrap.js trimmed to the one live job (version stamp).
+voicesCache.reset() now wired into config:set so a key change
+invalidates cached voices.
+
+Tests: 107 pass (was 77; +36 new, -6 removed with EventBus).

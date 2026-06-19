@@ -7,6 +7,13 @@ const { ipcMain, dialog } = require('electron');
 const cfgMod = require('../../src/config');
 const { sanitize } = require('../models/ConfigSchema');
 const pathSecurity = require('../services/PathSecurityService');
+// Bug-fix #9 (2026-06-19): wire voicesCache.reset() into
+// config:set so a user who swaps API keys (or switches between
+// Token Plan and PAYG) sees the new key's voice list on the
+// next call to mmx speech voices — previously the cache was
+// keyed by api_key but never invalidated, so the stale voices
+// silently stuck around until app restart.
+const voicesCache = require('../services/VoicesCacheService');
 
 /**
  * @param {{ getMainWindow: () => (Electron.BrowserWindow|null) }} deps
@@ -19,6 +26,12 @@ function register({ getMainWindow }) {
     try {
       const safe = sanitize(cfg);
       cfgMod.write(safe);
+      // API key changed → drop the cached voice list so the next
+      // fetch hits the live API (or bundled voices.json as a
+      // fallback) instead of returning a stale result.
+      if (typeof voicesCache?.reset === 'function') {
+        try { voicesCache.reset(); } catch { /* best-effort */ }
+      }
       return cfgMod.read();
     } catch (e) { return null; }
   });

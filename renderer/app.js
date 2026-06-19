@@ -140,17 +140,33 @@ async function init() {
   // Build tabs (assign ids + load saved state + start autosave)
   const savedState = await window.api.stateGet() || {};
   state.tabSettings = savedState.tabs || {};
+  // Bug-fix #1+#2 (2026-06-19): round-trip every persisted key through
+  // the canonical STATE_PERSIST_KEYS list (defined in section24_State.js).
+  // Previously only ~5 of ~18 keys were loaded, and the upscaleSettings
+  // object was collapsed to { multiplier } — silently dropping the
+  // auto-crop fields on every restart.
+  const persistKeys = window.STATE_PERSIST_KEYS || [];
+  for (const k of persistKeys) {
+    if (k === 'fbDirs' || k === 'currentTab') continue; // handled below
+    if (savedState[k] === undefined || savedState[k] === null) continue;
+    state[k] = savedState[k];
+  }
   if (savedState.fbDirs && typeof savedState.fbDirs === 'object') {
     for (const k of ['image', 'speech', 'music', 'video']) {
       if (typeof savedState.fbDirs[k] === 'string') state.fbDirs[k] = savedState.fbDirs[k];
     }
   }
-  if (typeof savedState.upscaleEnabled === 'boolean') state.upscaleEnabled = savedState.upscaleEnabled;
-  if (savedState.upscaleSettings && typeof savedState.upscaleSettings === 'object' && savedState.upscaleSettings.multiplier) {
-    state.upscaleSettings = { multiplier: parseInt(savedState.upscaleSettings.multiplier, 10) || 2 };
-  }
   const startTab = (savedState.currentTab && ['image','speech','music','video'].includes(savedState.currentTab))
     ? savedState.currentTab : 'image';
+  // Bug-fix #14 (2026-06-19): seed the CSS variables that the
+  // splitter drag handlers write to, from the just-loaded state.
+  // The drag handlers attach themselves on DOMContentLoaded
+  // (their own IIFE); this call just replays the persisted sizes
+  // onto the root element so a fresh launch opens with the user's
+  // previous sidebar/logbar/preview widths.
+  if (window.SplitterDrag && typeof window.SplitterDrag.applyLayoutSettings === 'function') {
+    window.SplitterDrag.applyLayoutSettings();
+  }
   for (const tabKey of ['image', 'speech', 'music', 'video']) {
     if (TABS[tabKey] && typeof TABS[tabKey].build === 'function') TABS[tabKey].build();
     assignTabFormIds(tabKey);
@@ -489,13 +505,18 @@ function saveAllStates() {
   }
   state.batches = state.batches || { image: [], speech: [], music: [], video: [] };
   if (window.api && typeof window.api.stateSet === 'function') {
-    window.api.stateSet({
-      currentTab: state.currentTab,
-      fbDirs: state.fbDirs,
-      upscaleEnabled: state.upscaleEnabled,
-      upscaleSettings: state.upscaleSettings,
-      tabs: state.tabSettings,
-    }).catch(() => {});
+    // Bug-fix #1+#2 (2026-06-19): build the snapshot from the
+    // canonical STATE_PERSIST_KEYS list. Previously only 5 of ~18
+    // keys were included, so every other persisted field silently
+    // reset to its default on every autosave (filePrefix, sort
+    // mode, optimise settings, popup dismissals, layout sizes,
+    // …). The main process (src/state.js write()) already
+    // deep-sanitizes every key on write, so the renderer can
+    // round-trip the whole set safely.
+    const snapshot = { tabs: state.tabSettings };
+    const persistKeys = window.STATE_PERSIST_KEYS || [];
+    for (const k of persistKeys) snapshot[k] = state[k];
+    window.api.stateSet(snapshot).catch(() => {});
   }
 }
 

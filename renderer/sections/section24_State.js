@@ -10,6 +10,21 @@
 // am Top-Level ist NICHT global. Wenn imageTab/musicTab/section05
 // usw. auf 'state.config' zugreifen, kriegen sie ReferenceError.
 // Fix: state auf window exposen.
+//
+// Bug-fix #1 (2026-06-19): single source of truth for the persistent
+// keys (window.STATE_PERSIST_KEYS). The previous renderer snapshot
+// was hard-coded to 5 of ~18 fields, so every other state key
+// silently reset to its default on every restart. The keys below
+// MUST stay in sync with the shape produced by src/state.js write().
+// `tabs` is special-cased (the renderer holds it as state.tabSettings)
+// and is added to the snapshot before sending.
+window.STATE_PERSIST_KEYS = [
+  'currentTab', 'fbDirs', 'filePrefix', 'realesrganModel',
+  'realesrganFirstRunDismissed', 'upscaleEnabled', 'upscaleSettings',
+  'removeBackgroundEnabled', 'removeBackgroundUseGpu',
+  'optimizeSettings', 'layoutSettings', 'fbSort', 'fbColumns',
+  'fbThumbnails', 'lastSeenVersion', 'popupPolicy', 'seenPopups',
+];
 window.state = {
   config: { api_key: '', output_dir: '', region: 'global', theme: 'dark', styles: [] },
   voices: [],
@@ -200,6 +215,14 @@ window.state = {
   // for the 'per-session' policy so popups don't re-show inside
   // the same launch. see _popupSeenThisSession below.
   seenPopups: {},
+  // Bug-fix #1 (2026-06-19): declare this so the first read isn't
+  // `undefined`. The startup popup logic checks this to decide
+  // whether to show the "what's new" toast on a version bump.
+  // Previously the key was missing from the default object, which
+  // made the round-trip logic in app.js init() silently skip the
+  // assignment — and the autosave in saveAllStates never included
+  // it either.
+  lastSeenVersion: '',
 };
 // Phase 4 Fix 15: backward-compat alias. 'const state' am Top-Level
 // eines <script>-Tags ist NICHT global. Aeltere Dateien (imageTab,
