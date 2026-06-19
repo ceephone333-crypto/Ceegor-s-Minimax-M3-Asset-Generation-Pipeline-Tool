@@ -58,7 +58,7 @@ async function init() {
   });
   // File browser live filter
   const fbSearch = $('#fb-search');
-  if (fbSearch) fbSearch.addEventListener('input', applyFileSearch);
+  if (fbSearch) fbSearch.addEventListener('input', window.applyFileSearch || applyFileSearch);
   $('#fb-refresh').addEventListener('click', () => refreshBrowser());
   $('#fb-new').addEventListener('click', () => promptNewFolder());
   $('#fb-open').addEventListener('click', () => window.api.fbReveal(state.fbDir || state.config.output_dir || ''));

@@ -1,8 +1,11 @@
 // renderer/services/fileBrowser1.js (Phase 3 Block 27)
 // First half of the File browser section.
 
-// ----------------- File browser -----------------
-async function refreshBrowser(opts = {}) {
+// Phase 4 Fix 19: explizites window-Exposing.
+// Vorher waren alle functions top-level und sollten auf window sein.
+// Aber 'var' am Top-Level ist in strict mode anders. Sicherheits-
+// halber exposen wir die wichtigsten functions explizit auf window.
+window.refreshBrowser = async function refreshBrowser(opts = {}) {
   // Prefer the per-tab saved folder (set when the user last visited this
   // tab), then the current fbDir, then the output root.
   const saved = (state.currentTab && state.fbDirs[state.currentTab]) || '';
@@ -195,14 +198,17 @@ function openFolderOptions() {
 }
 
 
-function applyFileSearch() {
+window.applyFileSearch = function applyFileSearch() {
   const q = ($('#fb-search')?.value || '').toLowerCase();
   for (const item of $$('.fb-item')) {
     if (!q) { item.style.display = ''; continue; }
     const name = (item.dataset.name || item.querySelector('.name')?.textContent || '').toLowerCase();
     item.style.display = name.includes(q) ? '' : 'none';
   }
-}
+};
+// Backward-compat: bare-Name access from other script tags
+var applyFileSearch = window.applyFileSearch;
+var refreshBrowser = window.refreshBrowser;
 
 // Phase 3 Block 13: _attachDropTarget() extrahiert nach
 // renderer/utils/dropTarget.js. Shim-Alias unten.
