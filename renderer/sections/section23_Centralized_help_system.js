@@ -173,8 +173,8 @@ function helpButton(topic) {
 
 function showHelp(topicKey, fallbackText) {
   // Open a modal that displays the help text for the given
-  // topic key. If the key is not in the registry, fall back
-  // to whatever inline text the caller supplied.
+  // topic key. If the key is not in the registry, fall back to
+  // whatever inline text the caller supplied.
   let topic = null;
   if (topicKey && helpTopics[topicKey]) {
     topic = helpTopics[topicKey];
@@ -187,6 +187,19 @@ function showHelp(topicKey, fallbackText) {
   } else {
     topic = { title: 'Help', text: 'No help text available for this option.' };
   }
+  // Bug-fix: the ? help button kept its :focus / :focus-visible blue
+  // background after the modal opened (it stays focused until the
+  // user clicks somewhere else). Detach the focus from the trigger
+  // element RIGHT BEFORE the modal opens so the CSS :focus state
+  // no longer applies, and the button goes back to its grey state.
+  // We blur synchronously — showModal() moves focus to the modal's
+  // primary button immediately after, so there's no race where the
+  // user is left without keyboard focus.
+  try {
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
+  } catch (_) { /* ignore */ }
   // Pass an id derived from the topic key so the modal-stack
   // dedup catches repeated clicks on the same help button.
   // Without this, mashing the ? icon on a glitchy trackpad

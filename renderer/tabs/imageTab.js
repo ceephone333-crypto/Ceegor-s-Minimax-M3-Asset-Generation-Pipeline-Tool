@@ -17,8 +17,11 @@ window.TABS.image = {
     styleRow.sel.addEventListener('change', updatePreview);
     prompt.input.addEventListener('input', updatePreview);
     updatePreview();
-    // mmx image API hard limit is 1500 chars on --prompt; counter goes red above.
-    const counter = buildPromptCounter({ selEl: styleRow.sel, manualEl: prompt.input, max: 1500, id: 'image' });
+    // mmx image API hard limit is 1500 chars on --prompt, but the
+    // user explicitly asked for a 2000-char cap on the textarea
+    // (room to draft longer prompts and trim them down). The counter
+    // turns red above 2000.
+    const counter = buildPromptCounter({ selEl: styleRow.sel, manualEl: prompt.input, max: 2000, id: 'image' });
     root.appendChild(el('div', { class: 'section' }, [
       el('h3', {}, 'Prompt'),
       styleRow.row,
@@ -125,7 +128,7 @@ window.TABS.image = {
     root.appendChild(el('div', { class: 'section' }, [
       el('h3', {}, 'Parameters'),
       buildFilePrefixRow(),
-      el('div', { class: 'grid' }, [aspect.row, n.row, width.row, height.row, seed.row, respFmt.row, promptOpt.row, watermark.row, subjRef.row]),
+      el('div', { class: 'grid' }, [aspect.row, width.row, height.row, n.row, seed.row, respFmt.row, promptOpt.row, watermark.row, subjRef.row]),
       // Live validity warnings for the W × H combo and the subject
       // ref field. attachImageDimGuards wires the aspect/W/H
       // listeners (auto-fill on aspect change, ratio-mismatch

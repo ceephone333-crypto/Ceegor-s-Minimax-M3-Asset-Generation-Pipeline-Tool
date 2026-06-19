@@ -29,6 +29,7 @@ const _modalStack = [];
 function showModal(build, opts) {
   const root = $('#modal-root');
   const id = (opts && opts.id) || null;
+  const onClose = (opts && typeof opts.onClose === 'function') ? opts.onClose : null;
   // Stack dedup: refuse to open a second modal with the same id
   // when one is already showing. The user gets the existing one
   // (and its focus) — clicking the same help button twice is a
@@ -68,6 +69,12 @@ function showModal(build, opts) {
         prevFocus.focus();
       }
     } catch (_) { /* ignore */ }
+    // Fire the post-close hook (if any) AFTER focus restoration so
+    // a hook that opens another modal (e.g. the next popup in the
+    // startup chain) sees the original focus, not the restored one.
+    if (onClose) {
+      try { onClose(); } catch (_) { /* ignore hook errors */ }
+    }
   };
   stackEntry.close = close;
   _modalStack.push(stackEntry);

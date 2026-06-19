@@ -125,6 +125,29 @@ function buildParamRow(label, def, id) {
     if (current) sel.value = String(current.value);
     if (id) sel.id = id;
     input = sel;
+  } else if (def.kind === 'textarea') {
+    // Multi-line textarea for prompt-style fields. Defaults to a
+    // generous 8 rows + 2000-char cap (matches the spec the user
+    // asked for: "prompts can have up to 2000 characters and we
+    // want them to be shown completely"). The textarea uses
+    // wrap="soft" so long single lines wrap visually rather than
+    // forcing a horizontal scroll inside the field; combined with
+    // the .prompt-textarea CSS rule the field grows with its
+    // content up to a sensible max-height before falling back to
+    // internal scrolling.
+    const taMax = (typeof def.maxLength === 'number') ? def.maxLength : 2000;
+    const taRows = (typeof def.rows === 'number') ? def.rows : 8;
+    const ta = el('textarea', {
+      class: 'prompt-textarea',
+      rows: String(taRows),
+      maxLength: String(taMax),
+      spellcheck: 'false',
+      placeholder: def.placeholder || '',
+      style: 'resize: vertical; min-height: 96px; max-height: 360px; width: 100%; box-sizing: border-box; font-family: inherit; font-size: 13px; line-height: 1.45; padding: 8px 10px;',
+    });
+    ta.value = String(value);
+    if (id) ta.id = id;
+    input = ta;
   } else if (def.kind === 'text') {
     input = el('input', { type: 'text', value: String(value), placeholder: def.placeholder || '' });
     if (id) input.id = id;

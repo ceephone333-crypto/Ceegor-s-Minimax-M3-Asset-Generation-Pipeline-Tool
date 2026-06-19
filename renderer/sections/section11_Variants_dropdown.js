@@ -72,6 +72,15 @@ function showTab(name) {
   // can flip "never" in ⚙ Settings → Popups to silence every
   // intro popup in one go. The popup id is `tab-intro:<name>` so
   // each tab's intro is independently dismissable.
-  maybeShowTabIntro(name);
+  //
+  // Bug-fix: if the welcome / first-time-setup / optional-addons
+  // popup chain is still running on launch, do NOT show the intro
+  // popup on top of it — defer until the chain drains. The chain
+  // counter is maintained by section18 / section17 / section15.
+  if (typeof _introStartupChainOpen !== 'undefined' && _introStartupChainOpen > 0) {
+    _pendingTabIntro = name;
+  } else {
+    maybeShowTabIntro(name);
+  }
 }
 

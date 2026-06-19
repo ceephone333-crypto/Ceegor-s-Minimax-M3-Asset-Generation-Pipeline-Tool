@@ -10,6 +10,43 @@
 // full Esc/click-outside/stack behaviour. The default text is short
 // on purpose: the detailed field-level help is still available via
 // the `?` icons on every input.
+
+// _pendingTabIntro / _introStartupChainOpen coordinate the
+// "defer intro while the startup popup chain is running" behaviour
+// (Bug: the intro used to pop up on top of the welcome / first-time
+// setup / optional-addons popups). The chain includes welcome
+// (section18), first-time setup (section17), and the optional add-ons
+// auto-open (section15). While ANY of these is open we stash the
+// requested intro tab in _pendingTabIntro instead of showing it. As
+// soon as the chain drains, we fire the pending intro IF the
+// requested tab is still the active one — switching tabs while the
+// chain is open cancels the pending intro.
+var _pendingTabIntro = null;
+var _introStartupChainOpen = 0;
+function _enterIntroStartupChain() {
+  _introStartupChainOpen++;
+}
+function _maybeFirePendingTabIntro() {
+  if (_introStartupChainOpen > 0) return; // chain still running
+  const tabName = _pendingTabIntro;
+  _pendingTabIntro = null;
+  if (!tabName) return;
+  // Only fire if the user is still on the same tab. If they
+  // switched to another tab while the welcome popup was open,
+  // they don't want a popup for the tab they navigated AWAY from.
+  if (typeof state !== 'undefined' && state.currentTab === tabName) {
+    // Defer one tick so the modal stack settles (the chain popup's
+    // own focus-restore runs before this fires).
+    setTimeout(() => {
+      try { maybeShowTabIntro(tabName); } catch (_) { /* ignore */ }
+    }, 0);
+  }
+}
+function _exitIntroStartupChain() {
+  if (_introStartupChainOpen > 0) _introStartupChainOpen--;
+  _maybeFirePendingTabIntro();
+}
+
 function maybeShowTabIntro(tabName) {
   const intros = {
     image:  '🖼 Image tab — describe what you want to generate in the prompt, tweak the model + aspect + variants, then click Generate. Enable the Upscale / Optimize toggle to run a local pipeline after the API returns.',

@@ -41,7 +41,7 @@ function resetPopupSeen() {
   _popupSeenThisSession.clear();
   scheduleStateSave();
 }
-function openGatedPopup(id, build) {
+function openGatedPopup(id, build, opts) {
   // Centralised dispatcher: gates a popup behind the user's chosen
   // popup policy, then opens it via the standard showModal() so it
   // gets all the same Esc/click-outside/stack behaviour as every
@@ -49,13 +49,26 @@ function openGatedPopup(id, build) {
   // markSeen)` and MUST call `markSeen()` exactly once (typically
   // from every close path) so the 'once-fresh' / 'per-session'
   // policies don't re-fire it.
+  //
+  // `opts` is forwarded to showModal so callers can attach an
+  // `onClose` hook (e.g. the startup-popup chain uses it to
+  // decrement a counter and fire the pending tab-intro popup).
   if (!shouldShowPopup(id)) return null;
   const markSeen = () => markPopupSeen(id);
   return showModal((m, close) => {
     build(m, close, markSeen);
-  });
+  }, opts || null);
 }
 function showStartupPopup() {
+  // Enter the startup-popup chain so showTab() defers any
+  // tab-intro popup until the user has dismissed welcome +
+  // (optional) first-time-setup + (optional) optional-addons.
+  if (typeof _enterIntroStartupChain === 'function') _enterIntroStartupChain();
+  // Exit the chain whenever this popup closes (any path: OK, Esc,
+  // click-outside). If a follow-up popup (setup / addons) is about
+  // to open, it will re-enter the chain itself, so the counter
+  // stays balanced.
+  const _exit = () => { if (typeof _exitIntroStartupChain === 'function') _exitIntroStartupChain(); };
   openGatedPopup('startup', (m, close, markSeen) => {
     m.classList.add('startup-modal');
     m.appendChild(el('h2', {}, TOOL_NAME));
@@ -102,6 +115,5 @@ function showStartupPopup() {
     ]));
     // OK on Enter for convenience
     setTimeout(() => { m.querySelector('button.primary')?.focus(); }, 0);
-  });
+  }, { onClose: _exit });
 }
-

@@ -1017,12 +1017,19 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
    the bg-4 was almost identical to bg-3, so the active row
    was hard to find when scanning the list. The 3px accent
    bar is the standard pattern (Explorer, Finder, macOS Finder,
-   VS Code). */
+   VS Code).
+   v1.1.3 polish: the previous bg-4 background dominated and
+   the row read as a thick grey line — the user reported "I
+   can't see the active line highlighting". Use accent-3
+   (a clearly-blue tinted background) for the selected row
+   instead, with white text and a 3px accent bar. The row
+   now reads as "this row IS the active highlight" rather
+   than "an unmarked grey bar". */
 .fb-item.selected {
-  background: var(--bg-4);
+  background: var(--accent-3);
   border-left-color: var(--accent);
   border-left-width: 3px;
-  color: var(--fg);
+  color: #fff;
 }
 .fb-item.fb-drop-target { background: var(--accent-3); border-left-color: var(--accent); color: #fff; }
 /* v1.1.1 polish: focus ring on folder-browser rows for

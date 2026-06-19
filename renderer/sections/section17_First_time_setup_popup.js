@@ -11,6 +11,10 @@
 // without saving — the user can fill the values in later from ⚙
 // Settings.
 function openFirstTimeSetup() {
+  // Enter the startup-popup chain so the pending tab-intro
+  // popup stays deferred while the first-time setup form is open.
+  if (typeof _enterIntroStartupChain === 'function') _enterIntroStartupChain();
+  const _exit = () => { if (typeof _exitIntroStartupChain === 'function') _exitIntroStartupChain(); };
   openGatedPopup('first-time-setup', (m, close, markSeen) => {
     m.classList.add('first-time-setup-modal');
     m.appendChild(el('h2', {}, 'First-time setup'));
@@ -101,7 +105,7 @@ function openFirstTimeSetup() {
       else if (!cfg.output_dir) outInput.focus();
       else apiInput.focus();
     }, 0);
-  });
+  }, { onClose: _exit });
 
   // After the first-time setup popup (Save or Skip), walk the user
   // through the optional Real-ESRGAN install. Without this, a user

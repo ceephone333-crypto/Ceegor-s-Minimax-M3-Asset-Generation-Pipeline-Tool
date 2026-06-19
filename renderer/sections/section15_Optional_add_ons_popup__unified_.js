@@ -37,6 +37,14 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
   // files in ./bin/ before building the portable .exe), skip the
   // popup entirely on first run — the same "don't nag" logic the
   // previous Real-ESRGAN-only popup had.
+  //
+  // Enter the startup-popup chain ONLY when this is the first-run
+  // auto-open from the welcome / first-time-setup chain. Manual
+  // re-opens from ⚙ Settings are not part of that chain, so they
+  // must not block the pending tab-intro popup (which was deferred
+  // by showTab() on launch). The enter + exit is bracketed around
+  // showModal() below so early-return paths (already-installed,
+  // popup-policy-never) stay out of the chain.
   const probeAll = async () => {
     let reSt = null, isSt = null;
     try { reSt = await window.api.realesrganAvailable(); } catch (_) {}
@@ -61,6 +69,12 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
     // auto-open from the startup flow doesn't nag.
     if (!force && !shouldShowPopup('optional-addons')) return;
   }
+
+  // We're committed to opening the modal — bracket the chain
+  // counter around it so the pending tab-intro popup stays
+  // deferred until the user dismisses this dialog.
+  if (autoOpened && typeof _enterIntroStartupChain === 'function') _enterIntroStartupChain();
+  const _exit = () => { if (typeof _exitIntroStartupChain === 'function') _exitIntroStartupChain(); };
 
   showModal((m, close) => {
     m.classList.add('optional-addons-modal');
@@ -282,6 +296,6 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
       // that may go stale.
       window.api.installOpenUrl('https://github.com/xuebinqin/DIS');
     });
-  });
+  }, autoOpened ? { onClose: _exit } : null);
 }
 

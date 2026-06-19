@@ -284,7 +284,12 @@ function renderFbList(items) {
   // Show ".. (up)" whenever we're inside a real subdir of the output root.
   const outRoot = state.config.output_dir || '';
   if (state.fbDir && outRoot && state.fbDir.toLowerCase() !== outRoot.toLowerCase()) {
-    const parent = el('li', { class: 'fb-item' }, [
+    const parent = el('li', {
+      class: 'fb-item',
+      // Same grid-template-columns as the regular rows below so
+      // the .. (up) row's icon + name cells line up with the rest.
+      style: 'grid-template-columns: ' + buildFbGridTemplate() + ';',
+    }, [
       el('span', { class: 'icon fb-icon' }, '↩'),
       el('span', { class: 'name' }, '.. (up)'),
       // .. gets a "size" column so the row stays aligned with
@@ -333,6 +338,17 @@ function renderFbList(items) {
       'data-isdir': it.isDir ? '1' : '0',
       'data-name': it.name,
       draggable: it.isDir ? 'false' : 'true',
+      // CSS grid does NOT inherit grid-template-columns from the
+      // parent (the .fb-list ul). Without this explicit copy, the
+      // row's children (icon / name / col-size / ...) are auto-placed
+      // inside the .fb-item, ignoring the parent's column widths.
+      // Result: the name column collapsed to its text width, the
+      // row read as a thick grey bar instead of an active line of
+      // content, and clicks on the right side of the row landed on
+      // dead space. Re-applying the template here makes every cell
+      // line up with the parent grid and the row reads as one
+      // continuous strip of clickable content.
+      style: 'grid-template-columns: ' + buildFbGridTemplate() + ';',
     }, cellEls);
     li.addEventListener('click', (e) => {
       $$('.fb-item', ul).forEach((n) => n.classList.remove('selected'));
