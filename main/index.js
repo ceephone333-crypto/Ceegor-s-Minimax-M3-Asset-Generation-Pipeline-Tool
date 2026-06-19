@@ -22,6 +22,24 @@ ipcMain.on('renderer:log', (event, line) => {
 // Truncate log on app start
 try { fs.writeFileSync(RENDERER_LOG, '=== renderer-error.log @ ' + new Date().toISOString() + ' ===\n'); } catch (_) {}
 
+process.on('uncaughtException', (err) => {
+  try {
+    const ts = new Date().toISOString().slice(11, 23);
+    const msg = `[main] uncaughtException: ${err && err.stack ? err.stack : err}`;
+    fs.appendFileSync(RENDERER_LOG, ts + ' ' + msg + '\n');
+    console.error(msg);
+  } catch (_) {}
+});
+
+process.on('unhandledRejection', (reason) => {
+  try {
+    const ts = new Date().toISOString().slice(11, 23);
+    const msg = `[main] unhandledRejection: ${reason && reason.stack ? reason.stack : reason}`;
+    fs.appendFileSync(RENDERER_LOG, ts + ' ' + msg + '\n');
+    console.error(msg);
+  } catch (_) {}
+});
+
 // Side-Effect: setzt globale Electron-Switches (DPI, Occlusion).
 require('./window/windowSecurity');
 

@@ -109,10 +109,12 @@ async function startBatchGen(tabKey) {
   // Save current state
   const savedPrompt = promptTa.value;
   const savedStyle = styleSel ? styleSel.value : '';
-  // Variants dropdown (if present) — batch honors the same value
   const variantsSel = tabRoot.querySelector('.variants-select');
   const savedVariants = variantsSel ? variantsSel.value : '1';
   const variantsCount = Math.max(1, Math.min(5, parseInt(savedVariants, 10) || 1));
+
+  const savedUpscaleEnabled = state.upscaleEnabled;
+  const savedUpscaleSettings = state.upscaleSettings ? { ...state.upscaleSettings } : null;
 
   // Show progress overlay
   const overlay = el('div', { class: 'batch-overlay' });
@@ -140,17 +142,75 @@ async function startBatchGen(tabKey) {
   let batchError = null;
   try {
     for (let i = 0; i < items.length && !_batchAbort; i++) {
+      const item = items[i];
+      const isObj = typeof item === 'object';
+      const itemPrompt = isObj ? (item.prompt || item.text || '') : item;
+
       counter.textContent = `${i + 1} / ${items.length}`;
-      currentPrompt.textContent = items[i].slice(0, 200) + (items[i].length > 200 ? '…' : '');
+      currentPrompt.textContent = itemPrompt.slice(0, 200) + (itemPrompt.length > 200 ? '…' : '');
+
+      let currentVariantsCount = variantsCount;
+      if (isObj) {
+        const vVal = item.variants || item['--variants'];
+        if (vVal !== undefined) {
+          currentVariantsCount = Math.max(1, Math.min(5, parseInt(vVal, 10) || 1));
+        }
+      }
+
+      // Temporarily apply parameters for this item
+      const modifiedFields = {};
+      if (isObj) {
+        const tabFields = getTabInputs(tabKey);
+        for (const [key, val] of Object.entries(item)) {
+          if (key === 'prompt' || key === 'text') continue;
+          const cleanKey = key.replace(/^--/, '').toLowerCase();
+          
+          if (cleanKey === 'upscale' || cleanKey === 'upscale-enabled') {
+            modifiedFields['upscale'] = state.upscaleEnabled;
+            const isTrue = String(val).toLowerCase() === 'true' || String(val).toLowerCase() === 'on' || val === true;
+            state.upscaleEnabled = isTrue;
+            const upscaleCb = tabRoot.querySelector('.upscale-checkbox input');
+            if (upscaleCb) upscaleCb.checked = isTrue;
+            continue;
+          }
+          if (cleanKey === 'upscale-multiplier' || cleanKey === 'scale') {
+            modifiedFields['upscale-settings'] = state.upscaleSettings ? { ...state.upscaleSettings } : null;
+            const num = parseInt(val, 10);
+            if (num === 2 || num === 4) {
+              state.upscaleSettings = state.upscaleSettings || {};
+              state.upscaleSettings.multiplier = num;
+              const multSpan = tabRoot.querySelector('.upscale-mult');
+              if (multSpan) multSpan.textContent = `(${num}x)`;
+            }
+            continue;
+          }
+          if (cleanKey === 'style') {
+            if (styleSel) {
+              modifiedFields['style'] = styleSel.value;
+              styleSel.value = String(val);
+              styleSel.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            continue;
+          }
+
+          const input = tabFields[cleanKey];
+          if (input) {
+            modifiedFields[cleanKey] = getTabInputValue(input);
+            setTabInputValue(input, val);
+          }
+        }
+      }
+
       // Set the prompt + fire input event so the style preview updates.
       // We suppress the global state-save (scheduled by the input event)
       // so a batch item doesn't overwrite the user's saved prompt.
       suppressStateSave(() => {
-        promptTa.value = items[i];
+        promptTa.value = itemPrompt;
         promptTa.dispatchEvent(new Event('input', { bubbles: true }));
       });
+
       // Run N variants for this batch item
-      for (let vi = 0; vi < variantsCount; vi++) {
+      for (let vi = 0; vi < currentVariantsCount; vi++) {
         if (_batchAbort) break;
         // Wait until no other generation is in progress (state.generating is
         // null). armGenBtnWithCancel sets it to the tab key on entry and clears
@@ -178,10 +238,37 @@ async function startBatchGen(tabKey) {
         }
         // Inspect the preview for success/failure (best-effort: check if it has an image/video)
         const looksOk = preview.querySelector('img, video, audio');
-        const variantTag = variantsCount > 1 ? ` v${vi + 1}/${variantsCount}` : '';
+        const variantTag = currentVariantsCount > 1 ? ` v${vi + 1}/${currentVariantsCount}` : '';
         if (looksOk) { ok++; logLine(`✓ ${i + 1}/${items.length}${variantTag} OK`, 'ok'); }
         else { fail++; logLine(`✗ ${i + 1}/${items.length}${variantTag} FAILED`, 'err'); }
       }
+
+      // Restore modified fields for this item
+      if (isObj) {
+        const tabFields = getTabInputs(tabKey);
+        for (const [cleanKey, origVal] of Object.entries(modifiedFields)) {
+          if (cleanKey === 'upscale') {
+            state.upscaleEnabled = origVal;
+            const upscaleCb = tabRoot.querySelector('.upscale-checkbox input');
+            if (upscaleCb) upscaleCb.checked = !!origVal;
+          } else if (cleanKey === 'upscale-settings') {
+            state.upscaleSettings = origVal;
+            const multSpan = tabRoot.querySelector('.upscale-mult');
+            if (multSpan) multSpan.textContent = origVal ? `(${origVal.multiplier}x)` : '';
+          } else if (cleanKey === 'style') {
+            if (styleSel) {
+              styleSel.value = origVal;
+              styleSel.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          } else {
+            const input = tabFields[cleanKey];
+            if (input) {
+              setTabInputValue(input, origVal);
+            }
+          }
+        }
+      }
+
       if (_batchAbort) { logLine(`Aborted at item ${i + 1}.`, 'warn'); break; }
     }
   } catch (e) {
@@ -195,6 +282,18 @@ async function startBatchGen(tabKey) {
     stopBtn.textContent = 'Close';
     stopBtn.disabled = false;
     stopBtn.onclick = () => overlay.remove();
+
+    // Restore global upscale state
+    state.upscaleEnabled = savedUpscaleEnabled;
+    state.upscaleSettings = savedUpscaleSettings;
+    const upscaleCb = tabRoot.querySelector('.upscale-checkbox input');
+    if (upscaleCb) {
+      upscaleCb.checked = !!state.upscaleEnabled;
+      const multSpan = tabRoot.querySelector('.upscale-mult');
+      if (multSpan) {
+        multSpan.textContent = state.upscaleEnabled && state.upscaleSettings ? `(${state.upscaleSettings.multiplier}x)` : '';
+      }
+    }
   }
 
   // Restore original state. Suppress the input-event-driven state save for
@@ -249,4 +348,8 @@ function buildAddToBatchBtn(tabKey) {
   return btn;
 }
 
-window.BatchManager = { openBatchManager, startBatchGen, buildAddToBatchBtn };
+// Bind to window
+window.BatchManager = window.BatchManager || {};
+window.BatchManager.openBatchManager = openBatchManager;
+window.BatchManager.startBatchGen = startBatchGen;
+window.BatchManager.buildAddToBatchBtn = buildAddToBatchBtn;

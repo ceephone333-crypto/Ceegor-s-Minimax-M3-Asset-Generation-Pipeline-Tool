@@ -12,22 +12,30 @@ const pathSecurity = require('../services/PathSecurityService');
  * @param {{ getMainWindow: () => (Electron.BrowserWindow|null) }} deps
  */
 function register({ getMainWindow }) {
-  ipcMain.handle('config:get', () => cfgMod.read());
-  ipcMain.handle('config:set', (_e, cfg) => {
-    const safe = sanitize(cfg);
-    cfgMod.write(safe);
-    return cfgMod.read();
+  ipcMain.handle('config:get', () => {
+    try { return cfgMod.read(); } catch (e) { return null; }
   });
-  ipcMain.handle('config:path', () => cfgMod.configPath());
+  ipcMain.handle('config:set', (_e, cfg) => {
+    try {
+      const safe = sanitize(cfg);
+      cfgMod.write(safe);
+      return cfgMod.read();
+    } catch (e) { return null; }
+  });
+  ipcMain.handle('config:path', () => {
+    try { return cfgMod.configPath(); } catch (e) { return null; }
+  });
   ipcMain.handle('config:pickFolder', async () => {
-    const win = getMainWindow();
-    const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] });
-    if (r.canceled || !r.filePaths.length) return null;
-    // Remember the picked path so the file browser can write / move into
-    // it later (it's the only way the main process learns about a folder
-    // the user authorised outside `output_dir`).
-    pathSecurity.addTrusted(r.filePaths[0]);
-    return r.filePaths[0];
+    try {
+      const win = getMainWindow();
+      const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] });
+      if (r.canceled || !r.filePaths.length) return null;
+      // Remember the picked path so the file browser can write / move into
+      // it later (it's the only way the main process learns about a folder
+      // the user authorised outside `output_dir`).
+      pathSecurity.addTrusted(r.filePaths[0]);
+      return r.filePaths[0];
+    } catch (e) { return null; }
   });
 }
 

@@ -32,7 +32,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
-const DIST = path.join(ROOT, 'dist');
+const DIST = path.join(ROOT, 'dist-out');
 const UNPACKED = path.join(DIST, 'win-unpacked');
 const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const VERSION = PKG.version;
@@ -208,12 +208,15 @@ function printPrivilegeFix() {
       }
       copied++;
       total += (function walk(p) {
+        if (!fs.statSync(p).isDirectory()) return fs.statSync(p).size;
         let s = 0;
         function w(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const pp = path.join(d, e.name); if (e.isDirectory()) w(pp); else s += fs.statSync(pp).size; } }
         w(p);
         return s;
       })(dst);
-      log('  + ' + entry + '  (' + (function (p) { let s = 0; function w(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const pp = path.join(d, e.name); if (e.isDirectory()) w(pp); else s += fs.statSync(pp).size; } } w(p); return (s / 1024 / 1024).toFixed(1) + ' MB'; })(dst) + ')');
+      log('  + ' + entry + '  (' + (function (p) {
+        if (!fs.statSync(p).isDirectory()) return (fs.statSync(p).size / 1024 / 1024).toFixed(1) + ' MB';
+        let s = 0; function w(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const pp = path.join(d, e.name); if (e.isDirectory()) w(pp); else s += fs.statSync(pp).size; } } w(p); return (s / 1024 / 1024).toFixed(1) + ' MB'; })(dst) + ')');
     }
     log('  copied ' + copied + ' entries (' + (total / 1024 / 1024).toFixed(1) + ' MB total)');
     if (copied === 0) {

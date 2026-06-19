@@ -1,7 +1,7 @@
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = __dirname;
 const html = fs.readFileSync(path.join(ROOT, 'renderer/index.html'), 'utf8');
 const errs = [];
 function makeEl(tag) {

@@ -1,4 +1,4 @@
-﻿/* renderer/app.js — UI logic, no build step. */
+/* renderer/app.js — UI logic, no build step. */
 // We use globals (window.api from preload) to stay build-free.
 
 // Tool version: bump / refresh this whenever you ship a build. The
@@ -321,6 +321,31 @@ function _refreshBatchButtons() {
       }, '✎');
       wrap.append(start, edit);
     }
+
+    // Append helper actions
+    const importBtn = el('button', {
+      class: 'btn-mini batch-import',
+      title: 'Import batch queue from .txt or .md file',
+      onclick: (e) => { e.preventDefault(); window.BatchManager.importBatchFileDialog(); },
+    }, 'Import Batch File…');
+
+    const examplesBtn = el('button', {
+      class: 'btn-mini batch-examples',
+      title: 'Generate example .txt & .md instructions for AI',
+      onclick: (e) => { e.preventDefault(); window.BatchManager.generateExampleFiles(); },
+    }, 'Gen Examples');
+
+    const totalAllTabs = ['image', 'speech', 'music', 'video'].reduce((sum, k) => sum + (state.batches[k] || []).length, 0);
+    const startAllBtn = el('button', {
+      class: 'batch-start-all',
+      style: totalAllTabs > 0 ? 'background: var(--primary-2, #d9a300); color: var(--bg-1); font-weight: bold; margin-left: 4px;' : 'display: none;',
+      title: 'Start batch generation on all tabs sequentially',
+      onclick: (e) => { e.preventDefault(); window.BatchManager.startAllBatchGen(); },
+    }, `▶ BatGen All Types (${totalAllTabs})`);
+
+    // Divider line
+    wrap.append(el('span', { style: 'margin: 0 6px; border-left: 1px solid var(--border); height: 14px; display: inline-block; vertical-align: middle;' }));
+    wrap.append(importBtn, examplesBtn, startAllBtn);
   }
 }
 

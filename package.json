@@ -45,7 +45,7 @@
     "appId": "com.ceegor.minimax-asset-tool",
     "productName": "MiniMaxAssetTool",
     "directories": {
-      "output": "dist-build"
+      "output": "dist-out"
     },
     "files": [
       "main.js",

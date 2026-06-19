@@ -9,7 +9,10 @@ const stateMod = require('../../src/state');
  * @param {{ appRoot: string }} deps
  */
 function register(_deps) {
-  ipcMain.handle('state:get', () => stateMod.read());
+  ipcMain.handle('state:get', () => {
+    try { return stateMod.read(); }
+    catch (e) { return {}; }
+  });
   ipcMain.handle('state:set', (_e, s) => {
     try { stateMod.write(s); return { ok: true }; }
     catch (e) { return { ok: false, error: String(e.message || e) }; }

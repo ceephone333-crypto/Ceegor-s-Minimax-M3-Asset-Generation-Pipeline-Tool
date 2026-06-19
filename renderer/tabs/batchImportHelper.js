@@ -1,0 +1,357 @@
+// renderer/tabs/batchImportHelper.js
+// Helper functions for BatchGen unstructured file import, example template generation,
+// and multi-tab batch generation.
+
+// ---- Helper Functions for Custom Option Extraction & Mapping ----
+
+function getTabInputs(tabKey) {
+  const root = document.getElementById(`tab-${tabKey}`);
+  if (!root) return {};
+  const inputs = {};
+  
+  const rows = root.querySelectorAll('.row');
+  for (const row of rows) {
+    const labelEl = row.querySelector('label');
+    if (!labelEl) continue;
+    
+    let label = labelEl.textContent.trim().toLowerCase();
+    
+    // Clean label text:
+    label = label.replace(/^[^\w-]+/, ''); // remove leading symbols/emojis
+    label = label.replace(/^--/, ''); // remove CLI dashes
+    label = label.replace(/\s*\(.*?\)/, ''); // remove parenthesized details
+    label = label.split('\n')[0].trim();
+    
+    const inputContainer = row.children[1];
+    if (inputContainer) {
+      inputs[label] = inputContainer;
+    }
+  }
+  return inputs;
+}
+
+function getTabInputValue(container) {
+  if (container.tagName === 'SELECT' || container.tagName === 'TEXTAREA' || container.tagName === 'INPUT') {
+    return container.value;
+  }
+  if (container.classList && container.classList.contains('combo-select-number')) {
+    const sel = container.querySelector('select');
+    const num = container.querySelector('input');
+    if (sel.value === '__custom__') return num.value;
+    return sel.value;
+  }
+  if (container.classList && container.classList.contains('enum-text-row')) {
+    const sel = container.querySelector('select');
+    const txt = container.querySelector('input');
+    return txt.value || sel.value;
+  }
+  if (container.classList && container.classList.contains('text-browse-row')) {
+    const txt = container.querySelector('input');
+    return txt ? txt.value : '';
+  }
+  const firstInput = container.querySelector('input, select, textarea');
+  return firstInput ? firstInput.value : '';
+}
+
+function setTabInputValue(container, val) {
+  const sel = container.querySelector ? container.querySelector('select') : null;
+  
+  // Boolean normalization
+  if (sel && sel.options && sel.options.length === 2 && sel.options[0].value === 'off' && sel.options[1].value === 'on') {
+    const isTrue = String(val).toLowerCase() === 'true' || String(val).toLowerCase() === 'on' || val === true;
+    val = isTrue ? 'on' : 'off';
+  }
+
+  if (container.tagName === 'SELECT') {
+    container.value = String(val);
+    container.dispatchEvent(new Event('change', { bubbles: true }));
+  } else if (container.tagName === 'TEXTAREA' || container.tagName === 'INPUT') {
+    container.value = String(val);
+    container.dispatchEvent(new Event('input', { bubbles: true }));
+  } else if (container.classList && container.classList.contains('combo-select-number')) {
+    const num = container.querySelector('input');
+    if (sel && num) {
+      const optionExists = Array.from(sel.options).some(o => o.value === String(val));
+      if (optionExists) {
+        sel.value = String(val);
+        num.value = '';
+        num.style.display = 'none';
+      } else {
+        sel.value = '__custom__';
+        num.value = String(val);
+        num.style.display = '';
+      }
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      num.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  } else if (container.classList && container.classList.contains('enum-text-row')) {
+    const txt = container.querySelector('input');
+    if (sel && txt) {
+      const optionExists = Array.from(sel.options).some(o => o.value === String(val));
+      if (optionExists) {
+        sel.value = String(val);
+        txt.value = '';
+      } else {
+        sel.value = '';
+        txt.value = String(val);
+      }
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      txt.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  } else if (container.classList && container.classList.contains('text-browse-row')) {
+    const txt = container.querySelector('input');
+    if (txt) {
+      txt.value = String(val);
+      txt.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  } else {
+    const firstInput = container.querySelector('input, select, textarea');
+    if (firstInput) {
+      firstInput.value = String(val);
+      firstInput.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+}
+
+// Tokenizes parameters, respecting double-dashes, colons, equal signs, and quotes
+function parseParams(paramStr) {
+  const params = {};
+  if (!paramStr) return params;
+  
+  const tokens = [];
+  let current = '';
+  let inQuote = false;
+  let quoteChar = '';
+  for (let i = 0; i < paramStr.length; i++) {
+    const c = paramStr[i];
+    if ((c === '"' || c === "'") && (i === 0 || paramStr[i-1] !== '\\')) {
+      if (inQuote && c === quoteChar) {
+        inQuote = false;
+      } else if (!inQuote) {
+        inQuote = true;
+        quoteChar = c;
+      } else {
+        current += c;
+      }
+    } else if (c === ' ' && !inQuote) {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+    } else {
+      current += c;
+    }
+  }
+  if (current) tokens.push(current);
+
+  let i = 0;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (token.includes('=')) {
+      const parts = token.split('=');
+      const key = parts[0].replace(/^--/, '').replace(/:$/, '').trim().toLowerCase();
+      const val = parts.slice(1).join('=').trim();
+      params[key] = val;
+      i++;
+    } else if (token.endsWith(':') && i + 1 < tokens.length) {
+      const key = token.slice(0, -1).replace(/^--/, '').trim().toLowerCase();
+      const val = tokens[i+1].trim();
+      params[key] = val;
+      i += 2;
+    } else if (token.startsWith('--') && i + 1 < tokens.length && !tokens[i+1].startsWith('--')) {
+      const key = token.slice(2).trim().toLowerCase();
+      const val = tokens[i+1].trim();
+      params[key] = val;
+      i += 2;
+    } else if (token.startsWith('--')) {
+      const key = token.slice(2).trim().toLowerCase();
+      params[key] = 'true';
+      i++;
+    } else {
+      i++;
+    }
+  }
+  return params;
+}
+
+async function importBatchFileDialog() {
+  try {
+    const pickResult = await window.api.pickFile({
+      title: 'Import Batch File',
+      filters: [{ name: 'Text and Markdown files', extensions: ['txt', 'md'] }]
+    });
+    if (!pickResult.ok || pickResult.canceled) return;
+
+    const readResult = await window.api.fbRead(pickResult.path);
+    if (!readResult.ok) {
+      toast('Failed to read file: ' + readResult.error, 'err');
+      return;
+    }
+
+    const base64 = readResult.base64;
+    const content = decodeURIComponent(escape(atob(base64)));
+
+    const lines = content.split(/\r?\n/);
+    const importedBatches = { image: [], speech: [], music: [], video: [] };
+    let importCount = 0;
+
+    for (let line of lines) {
+      line = line.trim();
+      if (!line) continue;
+
+      if (line.startsWith('|') && line.endsWith('|')) {
+        const parts = line.split('|').map(s => s.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length - 1);
+        if (parts.every(p => p.startsWith('-') || p === '')) continue;
+        if (parts[0].toLowerCase() === 'type' || parts[1]?.toLowerCase().includes('prompt')) continue;
+
+        if (parts.length >= 2) {
+          const type = parts[0].toLowerCase();
+          const prompt = parts[1];
+          const paramStr = parts[2] || '';
+
+          if (['image', 'speech', 'music', 'video'].includes(type) && prompt) {
+            const params = parseParams(paramStr);
+            importedBatches[type].push({ prompt, ...params });
+            importCount++;
+          }
+        }
+      } else if (line.includes('|')) {
+        const parts = line.split('|').map(s => s.trim());
+        if (parts.length >= 2) {
+          const type = parts[0].toLowerCase();
+          const prompt = parts[1];
+          const paramStr = parts[2] || '';
+
+          if (['image', 'speech', 'music', 'video'].includes(type) && prompt) {
+            const params = parseParams(paramStr);
+            importedBatches[type].push({ prompt, ...params });
+            importCount++;
+          }
+        }
+      }
+    }
+
+    if (importCount === 0) {
+      toast('No valid asset requests found in the file. Check formatting.', 'warn');
+      return;
+    }
+
+    showModal((m, close) => {
+      m.appendChild(el('h2', {}, 'Import Batch Requests'));
+      m.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 13px;' },
+        `Found ${importCount} asset requests in the file:`));
+      
+      const countsList = el('ul', { style: 'margin: 8px 0 16px 20px; font-size: 12px; color: var(--fg-2);' });
+      for (const [type, list] of Object.entries(importedBatches)) {
+        if (list.length > 0) {
+          countsList.appendChild(el('li', {}, `${type.toUpperCase()}: ${list.length} item(s)`));
+        }
+      }
+      m.appendChild(countsList);
+
+      m.appendChild(el('p', { style: 'font-size: 12px; font-weight: bold;' }, 'Choose how to import these items:'));
+
+      const overwriteBtn = el('button', { class: 'primary' }, 'Overwrite existing queues');
+      const appendBtn = el('button', {}, 'Append to existing queues');
+      const cancelBtn = el('button', { class: 'btn-mini' }, 'Cancel');
+
+      overwriteBtn.addEventListener('click', async () => {
+        const next = { ...state.batches };
+        for (const type of ['image', 'speech', 'music', 'video']) {
+          next[type] = importedBatches[type].slice(0, 100);
+        }
+        await saveImported(next);
+        close();
+      });
+
+      appendBtn.addEventListener('click', async () => {
+        const next = { ...state.batches };
+        for (const type of ['image', 'speech', 'music', 'video']) {
+          next[type] = [...(state.batches[type] || []), ...importedBatches[type]].slice(0, 100);
+        }
+        await saveImported(next);
+        close();
+      });
+
+      cancelBtn.addEventListener('click', () => close());
+
+      const footer = el('div', { class: 'footer', style: 'display: flex; gap: 8px; justify-content: flex-end;' }, [cancelBtn, appendBtn, overwriteBtn]);
+      m.appendChild(footer);
+    });
+
+    async function saveImported(nextBatches) {
+      const r = await window.api.batchesSet(nextBatches);
+      if (!r.ok) {
+        toast('Failed to save imported batches: ' + r.error, 'err');
+        return;
+      }
+      state.batches = nextBatches;
+      _refreshBatchButtons();
+      toast(`Successfully imported batch requests!`, 'ok');
+    }
+
+  } catch (err) {
+    toast('Error parsing file: ' + err.message, 'err');
+    console.error(err);
+  }
+}
+
+async function generateExampleFiles() {
+  try {
+    const r = await window.api.batchesGenerateExamples();
+    if (r.ok) {
+      toast('Examples generated in installation root: example_batch_import.md & .txt', 'ok', 5000);
+    } else {
+      toast('Failed to generate examples: ' + r.error, 'err');
+    }
+  } catch (err) {
+    toast('Error: ' + err.message, 'err');
+  }
+}
+
+async function startAllBatchGen() {
+  const tabsToRun = [];
+  for (const type of ['image', 'speech', 'music', 'video']) {
+    const n = (state.batches[type] || []).length;
+    if (n > 0) {
+      tabsToRun.push(type);
+    }
+  }
+
+  if (tabsToRun.length === 0) {
+    toast('All batch queues are empty.', 'warn');
+    return;
+  }
+
+  if (!state.config.api_key) {
+    toast('No API key configured. Click ⚙ to open Settings.', 'err');
+    return;
+  }
+
+  const confirmMsg = `This will generate batch items across all tabs sequentially:\n` +
+    tabsToRun.map(t => `- ${t.toUpperCase()}: ${(state.batches[t] || []).length} items`).join('\n') +
+    `\n\nStart processing now?`;
+  if (!confirm(confirmMsg)) return;
+
+  _batchAbort = false;
+  
+  for (const type of tabsToRun) {
+    if (_batchAbort) {
+      toast('Global batch generation aborted.', 'warn');
+      break;
+    }
+    
+    // Switch to the active generating tab so the user sees progress
+    showTab(type);
+    
+    // Start batchgen and wait for completion
+    await startBatchGen(type);
+  }
+}
+
+// Bind to window
+window.BatchManager = window.BatchManager || {};
+window.BatchManager.importBatchFileDialog = importBatchFileDialog;
+window.BatchManager.generateExampleFiles = generateExampleFiles;
+window.BatchManager.startAllBatchGen = startAllBatchGen;
+window.BatchManager.parseParams = parseParams;

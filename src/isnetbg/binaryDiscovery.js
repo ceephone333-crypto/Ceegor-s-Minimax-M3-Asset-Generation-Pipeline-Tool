@@ -26,9 +26,9 @@ function findModelPath() {
     // 1) Packaged-app layout: <resourcesPath>/bin/models/<MODEL_NAME>
     process.resourcesPath ? path.join(process.resourcesPath, 'bin', MODELS_DIR_NAME, MODEL_NAME) : null,
     // 2) Local dev: <project>/bin/models/<MODEL_NAME>
-    path.join(__dirname, '..', 'bin', MODELS_DIR_NAME, MODEL_NAME),
+    path.join(__dirname, '..', '..', 'bin', MODELS_DIR_NAME, MODEL_NAME),
     // 3) App-root layout: <project>/bin/<MODEL_NAME> (rare, no models/ subdir)
-    path.join(__dirname, '..', 'bin', MODEL_NAME),
+    path.join(__dirname, '..', '..', 'bin', MODEL_NAME),
   ].filter(Boolean);
   for (const c of candidates) {
     try { if (fs.existsSync(c)) return c; } catch (_) { /* ignore */ }
@@ -53,7 +53,7 @@ function findBinary() {
   // 2) ./bin/isnetbg[.exe] next to package root
   try {
     const candidates = [
-      path.join(__dirname, '..', 'bin', BINARY_NAME),
+      path.join(__dirname, '..', '..', 'bin', BINARY_NAME),
       process.resourcesPath ? path.join(process.resourcesPath, 'bin', BINARY_NAME) : null,
     ].filter(Boolean);
     for (const p of candidates) {
@@ -69,7 +69,7 @@ function checkNodeBackendAvailable() {
   // the module here (that would be expensive) — we just check
   // whether the file can be resolved.
   try {
-    require.resolve('onnxruntime-node', { paths: [path.join(__dirname, '..')] });
+    require.resolve('onnxruntime-node', { paths: [path.join(__dirname, '..', '..')] });
     return true;
   } catch (_) { return false; }
 }

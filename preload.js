@@ -144,6 +144,7 @@ contextBridge.exposeInMainWorld('api', {
   // ---- state autosave (tab settings) ----
   stateGet: () => ipcRenderer.invoke('state:get'),
   stateSet: (s) => ipcRenderer.invoke('state:set', s),
+  batchesGenerateExamples: () => ipcRenderer.invoke('batches:generateExamples'),
 
   // ---- events ----
   onLog: (cb) => {
