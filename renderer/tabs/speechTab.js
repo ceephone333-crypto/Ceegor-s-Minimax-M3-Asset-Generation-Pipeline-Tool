@@ -81,8 +81,13 @@ window.TABS.speech = {
     });
     const bitrate = buildParamRow('--bitrate', {
       kind: 'number', default: 128000, step: 1000,
-      options: [32000, 64000, 96000, 128000, 192000, 256000, 320000].map((v) => ({ value: v, label: String(v) })),
-      help: 'Bitrate in bits/second.',
+      // Bug-fix (2026-06-20): the MiniMax audio API rejects bitrates
+      // outside this set with "audio bitrate: N is not allowed" (the same
+      // class of failure the user hit on the music tab with 192000).
+      // Restrict to the four accepted values so a non-default pick can't
+      // silently break generation.
+      options: [32000, 64000, 128000, 256000].map((v) => ({ value: v, label: String(v) })),
+      help: 'Bitrate in bits/second. The API accepts 32000, 64000, 128000, or 256000.',
     });
     const channels = buildParamRow('--channels', {
       kind: 'enum', default: 1,

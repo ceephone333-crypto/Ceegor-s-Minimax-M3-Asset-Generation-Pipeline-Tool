@@ -59,7 +59,15 @@ function registerFakeMmx() {
     args = Array.isArray(args) ? args : [];
     if (DELAY) await new Promise((r) => setTimeout(r, DELAY));
     const outFile = findOutPath(args);
-    if (outFile) { try { fs.mkdirSync(path.dirname(outFile), { recursive: true }); fs.writeFileSync(outFile, Buffer.from([0, 1, 2, 3])); } catch (_) {} }
+    if (outFile) {
+      // IMPORTANT: do NOT create the parent directory — the real mmx
+      // does not. This makes the test actually verify that ensureSubDir
+      // created the per-tab output folder. If it didn't, the write fails
+      // with ENOENT and we return a failure, exactly like the real mmx
+      // (this is the regression guard for the drive-root mkdir bug).
+      try { fs.writeFileSync(outFile, Buffer.from([0, 1, 2, 3])); }
+      catch (e) { return { ok: false, code: 1, stdout: '', stderr: 'ENOENT (smoke): ' + e.message, parsed: null, command: 'mmx', argv: args }; }
+    }
     return { ok: true, code: 0, stdout: 'smoke ok', stderr: '', parsed: { smoke: true }, command: 'mmx', argv: args };
   });
   ipcMain.handle('mmx:voices', async () => []);

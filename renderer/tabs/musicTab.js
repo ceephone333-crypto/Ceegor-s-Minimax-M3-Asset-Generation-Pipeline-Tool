@@ -320,9 +320,15 @@ window.TABS.music = {
       help: 'Sample rate in Hz.',
     });
     const bitrate = buildParamRow('--bitrate', {
-      kind: 'number', default: 256000, step: 1000,
-      options: [128000, 192000, 256000, 320000].map((v) => ({ value: v, label: String(v) })),
-      help: 'Bitrate in bits/second.',
+      kind: 'number', default: 128000, step: 1000,
+      // Bug-fix (2026-06-20, reported by user): the MiniMax music API only
+      // accepts these four bitrates — sending 192000 / 320000 (which were
+      // in the list, and 192000 was even the previous default) returned
+      // "API error: invalid params, audio bitrate: 192000 is not allowed"
+      // and NO music could be generated. Restrict the dropdown to the
+      // allowed set and default to 128000 (a value confirmed accepted).
+      options: [32000, 64000, 128000, 256000].map((v) => ({ value: v, label: String(v) })),
+      help: 'Bitrate in bits/second. The music API accepts 32000, 64000, 128000, or 256000.',
     });
     const watermark = buildParamRow('--aigc-watermark', {
       kind: 'boolean', default: false, help: 'Embed an AI-generated content watermark in the audio.',

@@ -31,7 +31,12 @@ ipcMain.handle('mmx:run', async (_e, args) => {
     let outFile = null;
     for (let i = 0; i < args.length - 1; i++) if (args[i] === '--out' || args[i] === '--download') outFile = args[i + 1];
     if (!outFile) for (const a of args) if (typeof a === 'string' && a.toLowerCase().startsWith(OUT.toLowerCase())) outFile = a;
-    if (outFile) { try { fs.mkdirSync(path.dirname(outFile), { recursive: true }); fs.writeFileSync(outFile, Buffer.from([0, 1, 2, 3])); } catch (_) {} }
+    if (outFile) {
+      // Do NOT create the parent dir (the real mmx doesn't) so the probe
+      // reflects whether ensureSubDir actually made the folder.
+      try { fs.writeFileSync(outFile, Buffer.from([0, 1, 2, 3])); }
+      catch (e) { return { ok: false, code: 1, stdout: '', stderr: 'ENOENT (eval): ' + e.message, parsed: null }; }
+    }
     return { ok: true, code: 0, stdout: 'ok', stderr: '', parsed: { smoke: true } };
   }
   return ({ ok: false, code: 1, stdout: '', stderr: 'eval-stub', parsed: null });

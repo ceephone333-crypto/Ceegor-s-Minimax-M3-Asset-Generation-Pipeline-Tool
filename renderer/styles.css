@@ -944,6 +944,12 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
 }
+/* Bug-fix (2026-06-20, reported by user): the toolbar packs a filter
+   input + 2 selects + 4 buttons onto one row with no wrap, so a narrow
+   sidebar pushed the rightmost buttons (↗ Open, ⚙ Options) off-screen —
+   "we don't see the folder option button anymore". Allow the row to wrap
+   so every control stays reachable at any sidebar width. */
+.sidebar-toolbar { flex-wrap: wrap; }
 .sidebar-toolbar input[type="text"] {
   padding: 3px 7px; font-size: 12px;
 }

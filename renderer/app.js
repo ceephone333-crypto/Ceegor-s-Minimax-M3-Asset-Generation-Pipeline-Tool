@@ -476,15 +476,22 @@ async function ensureSubDir(name) {
     // would land files at the output_dir root in this case.
     targetDir = join(base, name, baseSep);
   }
+  // fbMkdir resolves with { ok, error } — it does NOT reject on failure.
+  // The previous code just `await`ed it, so a { ok:false } result (e.g.
+  // the drive-root mkdir bug, or an allow-list rejection) was silently
+  // ignored: ensureSubDir returned a targetDir that was never created and
+  // mmx then failed with a confusing ENOENT. Check .ok and throw the real
+  // reason so the caller shows "Cannot resolve output folder: …".
+  const mkdirOrThrow = async (d, n) => {
+    const r = await window.api.fbMkdir(d, n);
+    if (!r || !r.ok) throw new Error((r && r.error) || `Could not create folder "${n}" in ${d}.`);
+    return r;
+  };
   if (targetDir === join(base, name, baseSep)) {
     // Default path (case 3): a single fbMkdir call. fbMkdir is
     // idempotent (returns ok even if the dir already exists), so
-    // a benign retry is fine. The v1.1.12 fix: throw on failure
-    // instead of silently swallowing it — the user's previous
-    // "ENOENT" / "no folder selected" toast was caused by this
-    // .catch(() => null) hiding the real error and then
-    // returning a targetDir that didn't exist on disk.
-    await window.api.fbMkdir(base, name);
+    // a benign retry is fine.
+    await mkdirOrThrow(base, name);
   } else if (externalPicked) {
     // External picked folder (case 4): the picked path itself
     // is already an allowed root (the picker added it via
@@ -494,7 +501,7 @@ async function ensureSubDir(name) {
     // picked folder doesn't need to pre-exist; only the parent
     // (the picked folder itself) needs to be writable.
     const picked = (state.fbDir || '').replace(/[\\/]+$/, '');
-    await window.api.fbMkdir(picked, name);
+    await mkdirOrThrow(picked, name);
   } else {
     // Subfolder of output_dir (case 2): walk the path
     // segment-by-segment so each mkdir is individually
@@ -508,7 +515,7 @@ async function ensureSubDir(name) {
     }
     let cur = base;
     for (const p of relParts) {
-      await window.api.fbMkdir(cur, p);
+      await mkdirOrThrow(cur, p);
       cur = join(cur, p, baseSep);
     }
   }

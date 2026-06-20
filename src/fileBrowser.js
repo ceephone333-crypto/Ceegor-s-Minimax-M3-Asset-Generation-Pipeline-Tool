@@ -77,7 +77,17 @@ async function mkdir(dir, name) {
   // Defense in depth: ensure the resolved target is still inside `dir`.
   const dirResolved = path.resolve(dir);
   const targetResolved = path.resolve(target);
-  if (targetResolved !== dirResolved && !targetResolved.startsWith(dirResolved + path.sep)) {
+  // Bug-fix (2026-06-20, reported by user): when `dir` is a DRIVE ROOT
+  // (e.g. `D:\`, a common output_dir), path.resolve already returns it
+  // WITH a trailing separator ("D:\"), so `dirResolved + path.sep` became
+  // "D:\\" (double sep) and a legitimate child like "D:\speech" failed
+  // the startsWith() check → fb.mkdir threw "escapes the parent
+  // directory" → fb:mkdir returned {ok:false} → ensureSubDir created no
+  // folder → mmx wrote to a missing dir → ENOENT, and NO asset could be
+  // generated. Normalise so a root that already ends in a separator
+  // isn't doubled.
+  const dirWithSep = dirResolved.endsWith(path.sep) ? dirResolved : dirResolved + path.sep;
+  if (targetResolved !== dirResolved && !targetResolved.startsWith(dirWithSep)) {
     throw new Error('Resolved path escapes the parent directory.');
   }
   // recursive + force-ok-on-EEXIST: lets us call this to "ensure" a dir exists.
