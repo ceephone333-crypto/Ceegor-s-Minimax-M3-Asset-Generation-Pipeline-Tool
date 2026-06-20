@@ -369,6 +369,15 @@ window.TABS.music = {
     root.appendChild(tabFooter);
 
     genBtn.addEventListener('click', async () => {
+      // Bug-fix (2026-06-20): wrap the WHOLE click handler in a
+      // try/catch. The previous layout only caught errors inside the
+      // variant for-loop, so a ReferenceError thrown during pre-flight
+      // (e.g. a missing helper or undefined state key) would reject
+      // the async handler silently and the user saw no progress.
+      // With this outer guard any unexpected throw surfaces as a
+      // toast (and the button is reset by the re-entrancy guard
+      // because we never set state.generating on a pre-flight failure).
+      try {
       // Re-entrancy guard: another generation is in progress.
       if (state.generating) return;
       if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
@@ -376,7 +385,17 @@ window.TABS.music = {
       if (!promptText) { toast('Prompt is required (style or manual input).', 'warn'); return; }
       // Validate lyrics-mode input once, before looping variants
       if (mode.input.value === 'lyrics') {
-        if (!lyricsFile.input.value.trim() && !lyrics.input.value.trim()) {
+        // Bug-fix (2026-06-20, reported by user): `lyricsFile` is a
+        // `text` row with a Browse button, so `lyricsFile.input` is
+        // a div wrapper, not the inner <input>. Reading `.value` on
+        // the div returns `undefined`, and `.trim()` on `undefined`
+        // throws a TypeError that the previous try/catch (around
+        // the for-loop only) didn't catch — so the click handler
+        // rejected silently and the user saw no progress. Use
+        // .getValue() which ParamRow attaches to the wrapper.
+        const lyricsFileVal = lyricsFile.input.getValue().trim();
+        const lyricsVal = lyrics.input.value.trim();
+        if (!lyricsFileVal && !lyricsVal) {
           toast('Custom lyrics mode selected but no lyrics provided.', 'warn');
           return;
         }
@@ -444,8 +463,15 @@ window.TABS.music = {
           if (mode.input.value === 'lyrics-optimizer') args.push('--lyrics-optimizer');
           else if (mode.input.value === 'instrumental') args.push('--instrumental');
           else if (mode.input.value === 'lyrics') {
-            if (lyricsFile.input.value.trim()) args.push('--lyrics-file', lyricsFile.input.value.trim());
-            else if (lyrics.input.value.trim()) args.push('--lyrics', lyrics.input.value.trim());
+            // Same .value-vs-.getValue() fix as the pre-flight check
+            // above — lyricsFile is a `text` row with a Browse
+            // button, so its input is a div wrapper.
+            const lyricsFileVal = lyricsFile.input.getValue().trim();
+            if (lyricsFileVal) args.push('--lyrics-file', lyricsFileVal);
+            else {
+              const lyricsVal = lyrics.input.value.trim();
+              if (lyricsVal) args.push('--lyrics', lyricsVal);
+            }
           }
           appendFlag(args, model.input);
           appendFlag(args, genre.input);
@@ -524,6 +550,16 @@ window.TABS.music = {
         toast(variantsCount > 1
           ? `Music generated. ${variantsCount} variants saved.`
           : 'Music generated.', 'ok');
+      }
+      } catch (e) {
+        // Outer guard: any error thrown by pre-flight (state lookups,
+        // helpers that weren't loaded yet, etc.) lands here as a
+        // visible toast instead of a silent async-reject. The
+        // re-entrancy guard above is unaffected because state.generating
+        // is only set inside armGenBtnWithCancel (which we may not
+        // have reached).
+        console.error('Music generation pre-flight failed:', e);
+        toast('Generation failed before starting: ' + (e && e.message || String(e)), 'err', 6000);
       }
     });
   },

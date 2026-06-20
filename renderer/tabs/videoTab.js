@@ -123,6 +123,15 @@ window.TABS.video = {
     root.appendChild(tabFooter);
 
     genBtn.addEventListener('click', async () => {
+      // Bug-fix (2026-06-20): wrap the WHOLE click handler in a
+      // try/catch. The previous layout only caught errors inside the
+      // variant for-loop, so a ReferenceError thrown during pre-flight
+      // (e.g. the missing `emotion` row in the speech tab) would
+      // reject the async handler silently and the user saw no
+      // progress. With this outer guard any unexpected throw surfaces
+      // as a toast (and the button is reset by the re-entrancy guard
+      // because we never set state.generating on a pre-flight failure).
+      try {
       // Re-entrancy guard: another generation is in progress.
       if (state.generating) return;
       if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
@@ -148,9 +157,23 @@ window.TABS.video = {
           const args = ['video', 'generate'];
           args.push('--prompt', promptText);
           appendFlag(args, model.input);
-          if (firstFrame.input.value && firstFrame.input.value.trim()) args.push('--first-frame', firstFrame.input.value.trim());
-          if (lastFrame.input.value && lastFrame.input.value.trim()) args.push('--last-frame', lastFrame.input.value.trim());
-          if (subjectImage.input.value && subjectImage.input.value.trim()) args.push('--subject-image', subjectImage.input.value.trim());
+          // Bug-fix (2026-06-20, reported by user): firstFrame / lastFrame
+          // / subjectImage are `text` rows with a Browse button, so
+          // `firstFrame.input` is a div wrapper, not the inner <input>.
+          // Reading `.value` on the div returns `undefined`, so the
+          // previous `if (firstFrame.input.value && ...)` always
+          // short-circuited to false — meaning --first-frame was
+          // NEVER sent even when the user typed a path. This broke
+          // Hailuo-2.3-Fast / Hailuo-02 (which REQUIRE a first-frame
+          // image) and silently downgraded every other model to T2V
+          // mode. Use .getValue() which ParamRow attaches to the
+          // wrapper for exactly this case.
+          const firstFrameVal = firstFrame.input.getValue().trim();
+          if (firstFrameVal) args.push('--first-frame', firstFrameVal);
+          const lastFrameVal = lastFrame.input.getValue().trim();
+          if (lastFrameVal) args.push('--last-frame', lastFrameVal);
+          const subjectImageVal = subjectImage.input.getValue().trim();
+          if (subjectImageVal) args.push('--subject-image', subjectImageVal);
           appendFlag(args, duration.input);
           appendFlag(args, resolution.input);
           appendBoolFlag(args, promptOpt.input, '--prompt-optimizer');
@@ -210,6 +233,16 @@ window.TABS.video = {
         toast(variantsCount > 1
           ? `Video generated. ${variantsCount} variants saved.`
           : 'Video generated.', 'ok');
+      }
+      } catch (e) {
+        // Outer guard: any error thrown by pre-flight (state lookups,
+        // helpers that weren't loaded yet, etc.) lands here as a
+        // visible toast instead of a silent async-reject. The
+        // re-entrancy guard above is unaffected because state.generating
+        // is only set inside armGenBtnWithCancel (which we may not
+        // have reached).
+        console.error('Video generation pre-flight failed:', e);
+        toast('Generation failed before starting: ' + (e && e.message || String(e)), 'err', 6000);
       }
     });
   },

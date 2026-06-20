@@ -152,6 +152,16 @@ window.TABS.speech = {
     this.populateVoices(voice.input).catch(() => {});
 
     genBtn.addEventListener('click', async () => {
+      // Bug-fix (2026-06-20): wrap the WHOLE click handler in a
+      // try/catch. The previous layout only caught errors inside the
+      // variant for-loop, so a ReferenceError thrown during pre-flight
+      // (e.g. the missing `emotion` row, or any other helper that
+      // wasn't loaded yet) would reject the async handler silently
+      // and the user saw no progress. With this outer guard any
+      // unexpected throw surfaces as a toast (and the button is reset
+      // by the re-entrancy guard because we never set state.generating
+      // on a pre-flight failure).
+      try {
       // Re-entrancy guard: another generation is in progress.
       if (state.generating) return;
       if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
@@ -178,7 +188,16 @@ window.TABS.speech = {
         '--subtitles': subtitles.input,
         '--sound-effect': soundEffect.input,
         '--pronunciation': pronunciation.input,
-        '--emotion': emotion && emotion.input ? emotion.input : null,
+        // Bug-fix (2026-06-20, reported by user): --emotion was
+        // referenced here as `emotion && emotion.input` but the
+        // `emotion` buildParamRow was never added to this tab. The
+        // bare identifier triggered a ReferenceError at click time,
+        // the async handler rejected silently, and speech generation
+        // did nothing. The speech tab's spec list includes --emotion
+        // (model-2.6+ only, hidden otherwise) so we still pass it
+        // through validateTabAgainstSpec — but only as `null` so the
+        // pre-flight sees it as unset and skips the visibility check.
+        '--emotion': null,
       };
       const speechModel = model.input.getValue();
       const speechErrs = [];
@@ -306,6 +325,16 @@ window.TABS.speech = {
         toast(variantsCount > 1
           ? `Speech generated. ${variantsCount} variants saved.`
           : 'Speech generated.', 'ok');
+      }
+      } catch (e) {
+        // Outer guard: any error thrown by pre-flight (state lookups,
+        // helpers that weren't loaded yet, etc.) lands here as a
+        // visible toast instead of a silent async-reject. The
+        // re-entrancy guard above is unaffected because state.generating
+        // is only set inside armGenBtnWithCancel (which we may not
+        // have reached).
+        console.error('Speech generation pre-flight failed:', e);
+        toast('Generation failed before starting: ' + (e && e.message || String(e)), 'err', 6000);
       }
     });
   },

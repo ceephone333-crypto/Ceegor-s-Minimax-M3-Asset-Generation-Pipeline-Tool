@@ -314,8 +314,17 @@ window.TABS.image = {
         if (String(seedVal) !== '') args.push('--seed', String(seedVal));
         appendBoolFlag(args, promptOpt.input, '--prompt-optimizer');
         appendBoolFlag(args, watermark.input, '--aigc-watermark');
-        if (subjRef.input.value && subjRef.input.value.trim()) {
-          args.push('--subject-ref', `type=character,image=${subjRef.input.value.trim()}`);
+        // Bug-fix (2026-06-20): subjRef is a `text` row with a Browse
+        // button, so `subjRef.input` is a div wrapper, not the inner
+        // <input>. Reading `.value` on the div returns `undefined`,
+        // which the `&&` short-circuit hid — but that meant
+        // `--subject-ref` was silently NEVER sent even when the user
+        // typed a path (or picked a file via Browse). Use .getValue()
+        // which ParamRow attaches to the wrapper for exactly this
+        // case.
+        const subjRefVal = subjRef.input.getValue().trim();
+        if (subjRefVal) {
+          args.push('--subject-ref', `type=character,image=${subjRefVal}`);
         }
         appendFlag(args, respFmt.input);
         if (useOutDir) {
