@@ -102,25 +102,37 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
     reCard.appendChild(reActions);
     m.appendChild(reCard);
 
-    // ---- Section 2: IS-Net background-removal binary ----
+    // ---- Section 2: IS-Net background-removal engine ----
+    // v1.1.10: the section used to claim "build the C# binary
+    // yourself" — but the tool ships the Node.js wrapper
+    // (onnxruntime-node) and the IS-Net ONNX model out of the
+    // box, so the user should see "Detected: …" on a fresh
+    // install without doing anything. The Pick-binary path is
+    // now reserved for power users who want to swap in a
+    // hand-built isnetbg.exe (faster than the Node wrapper on
+    // CPU-only hardware).
     const isBinCard = el('div', { class: 'addon-card' });
-    isBinCard.appendChild(el('h3', {}, '✨ IS-Net background removal — binary (MIT)'));
+    isBinCard.appendChild(el('h3', {}, '✨ IS-Net background removal — Node.js wrapper (MIT)'));
     isBinCard.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
-      'The local ONNX-driven background-removal engine. Build the binary from the C# reference in the project README (Microsoft.ML.OnnxRuntime + SixLabors.ImageSharp), then point this popup at the resulting .exe.'));
+      'Bundled by default — the tool ships the onnxruntime-node wrapper and the IS-Net ONNX model. The Re-detect button below should show "Detected" on a fresh install. Pick-binary is only needed if you want to swap in your own C# isnetbg.exe (faster on CPU-only hardware).'));
     const isBinStatus = el('div', { class: 'addon-status' }, 'Detecting…');
     isBinCard.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Status'), isBinStatus]));
     const isBinActions = el('div', { class: 'addon-actions' });
-    const isBinPick = el('button', { class: 'primary' }, 'Pick binary…');
+    const isBinPick = el('button', {}, 'Pick binary… (optional)');
     const isBinOpenReadme = el('button', { class: 'btn-mini' }, 'Open README');
     isBinActions.append(isBinOpenReadme, isBinPick);
     isBinCard.appendChild(isBinActions);
     m.appendChild(isBinCard);
 
     // ---- Section 3: IS-Net model file ----
+    // v1.1.10: same story — the model is bundled. If the
+    // Re-detect says "Not found" for the model specifically,
+    // only then does the user need to pick one (rare — happens
+    // if the bundled model got corrupted or replaced).
     const isModelCard = el('div', { class: 'addon-card' });
     isModelCard.appendChild(el('h3', {}, '✨ IS-Net model — isnet-general-use.onnx (MIT, ~170 MB)'));
     isModelCard.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
-      'The ONNX model the isnetbg binary loads at startup. Download from a HuggingFace mirror of your choice, or any of the official IS-Net model repos, then point this popup at the file.'));
+      'Bundled by default — the IS-Net general-use model ships at ./bin/models/. Re-detect should report "Detected". Pick a different .onnx only if you want a custom model (e.g. a fine-tune for a specific domain).'));
     const isModelStatus = el('div', { class: 'addon-status' }, 'Detecting…');
     isModelCard.appendChild(el('div', { class: 'row' }, [el('label', {}, 'Status'), isModelStatus]));
     const isModelActions = el('div', { class: 'addon-actions' });

@@ -57,9 +57,22 @@ function getModelPath() {
 function run(srcPath, dstPath, opts = {}) {
   const backend = pickBackend();
   if (!backend) {
+    // v1.1.10: the previous wording pushed users to either
+    // run `npm install` (which they'd already done — the bug
+    // was that the npm-installed package wasn't reaching the
+    // packaged app's asar) or build the C# binary themselves.
+    // Neither helped. Now: surface the actual diagnosis so
+    // the user can fix it (or report a useful bug). The
+    // bundled Node.js wrapper IS supposed to work — when it
+    // doesn't, the cause is almost always the asar sync
+    // (see scripts/sync-stable-asar.js).
+    const reasons = [];
+    try { if (!findBinary()) reasons.push('no isnetbg.exe in ./bin/'); } catch (_) {}
+    try { if (!checkNodeBackendAvailable()) reasons.push('onnxruntime-node not bundled in the app'); } catch (_) {}
+    const why = reasons.length ? ' (' + reasons.join('; ') + ')' : '';
     return Promise.resolve({
       ok: false, code: -1,
-      stderr: 'isnetbg backend not available: no ./bin/isnetbg.exe and onnxruntime-node is not installed. Run `npm install` to pick it up, or drop a C# isnetbg.exe into ./bin/.',
+      stderr: 'isnetbg backend not available' + why + '. The tool ships the Node.js wrapper + the IS-Net ONNX model out of the box; if Re-detect says "not found", re-run `node scripts/sync-stable-asar.js` to repack node_modules/ into the asar, or drop a C# isnetbg.exe into ./bin/ as an optional fast-path.',
       outputPath: null,
     });
   }

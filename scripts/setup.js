@@ -7,11 +7,13 @@
 //      v0.2.5.0 GitHub release and extracts them into ./bin/.
 //   2. Downloads the isnet-general-use.onnx model from the
 //      verified HuggingFace mirror into ./bin/models/.
-//   3. (Does NOT build the isnetbg binary — see README for the
-//      one `dotnet publish` command. The C# binary can't be
-//      auto-built from this script because the C# source isn't
-//      shipped in the Electron repo; the README points the
-//      developer at the reference implementation.)
+//
+// Background-removal uses the BUNDLED Node.js wrapper
+// (onnxruntime-node + the IS-Net ONNX model) — no separate
+// download or build step is required to use it out of the
+// box. The C# isnetbg.exe is an optional fast-path for power
+// users who want to swap it in; the script just notes whether
+// one is present at ./bin/isnetbg.exe, it doesn't try to build it.
 //
 // The downloads go directly to the same paths the runtime
 // wrappers probe for, so once the script finishes, the
@@ -176,19 +178,16 @@ async function checkIsnetBinary() {
   const dest = path.join(BIN, exe);
   try {
     await fsp.access(dest);
-    log(`isnetbg binary: present at ./bin/${exe}`);
+    log(`isnetbg binary: present at ./bin/${exe} (custom fast-path)`);
   } catch (_) {
-    warn('isnetbg binary: MISSING (must be built from the C# reference in the README)');
-    warn('  Build it with:');
-    warn('    git clone https://github.com/xuebinqin/DIS');
-    warn('    # write a tiny C# console program that matches the');
-    warn('    # --input/--output/[--use-gpu] contract (see README),');
-    warn('    # then publish it:');
-    warn('    dotnet publish -c Release -r win-x64 --self-contained \\');
-    warn('      -p:PublishSingleFile=true -o ./bin/');
-    warn('  After publish, rename the resulting .exe to isnetbg.exe');
-    warn('  and copy it into ./bin/ (re-running "npm run setup"');
-    warn('  will pick it up automatically).');
+    // v1.1.10: the previous version of this function printed a
+    // long "build from C# source" warning that scared users into
+    // thinking the tool didn't ship a working background-removal
+    // engine. The truth is the BUNDLED Node.js wrapper (see the
+    // top-of-file comment) is the working default — the C#
+    // binary is an optional fast-path for CPU-only boxes that
+    // need every millisecond.
+    log('isnetbg binary: optional — not present (not needed, the bundled Node.js wrapper works)');
   }
 }
 
