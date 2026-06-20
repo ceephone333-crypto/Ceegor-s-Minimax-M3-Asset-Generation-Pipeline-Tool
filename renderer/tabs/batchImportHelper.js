@@ -332,15 +332,27 @@ async function importBatchFileDialog() {
 
 async function generateExampleFiles() {
   try {
-    const r = await window.api.batchesGenerateExamples();
+    // v1.1.13 (reported by user): the user's picked format
+    // (⚙ Settings → BatchGen → "Example export format") is
+    // passed to the IPC. The IPC writes BOTH files first (so
+    // the other one is always fresh if the user switches
+    // formats later), then deletes the one the user did NOT
+    // pick. So the user only ever sees a single file in their
+    // output folder.
+    const fmt = state.batchesExportFormat || 'md';
+    const r = await window.api.batchesGenerateExamples(fmt);
     if (r.ok) {
       // Bug-fix (2026-06-19): examples now land in the user's
       // output folder (the same one the file browser shows), not
       // next to the .exe. The old message was misleading because
       // the examples were actually written inside the asar
       // archive (read-only) and the user got an ENOENT error.
-      const dir = (r.mdPath || '').replace(/[\\/]example_batch_import\.[a-z]+$/i, '') || 'your output folder';
-      toast(`Examples generated in ${dir}: example_batch_import.md & .txt`, 'ok', 5000);
+      const finalPath = r.path || '';
+      const dir = finalPath
+        ? finalPath.replace(/[\\/]example_batch_import\.[a-z]+$/i, '')
+        : (r.mdPath || '').replace(/[\\/]example_batch_import\.[a-z]+$/i, '') || 'your output folder';
+      const finalName = finalPath ? finalPath.split(/[\\/]/).pop() : (fmt === 'txt' ? 'example_batch_import.txt' : 'example_batch_import.md');
+      toast(`Examples generated in ${dir}: ${finalName}`, 'ok', 5000);
     } else {
       toast('Failed to generate examples: ' + r.error, 'err');
     }

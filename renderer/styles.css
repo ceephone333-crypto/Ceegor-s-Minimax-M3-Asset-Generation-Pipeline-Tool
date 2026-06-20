@@ -644,6 +644,43 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   font-size: 11px;
   letter-spacing: 0.04em;
 }
+
+/* v1.1.13 (reported by user): "Don't save" row under the
+   API-key input. Indented to match the input row, with a
+   small bold "Don't save" + an explanatory caption. When
+   the checkbox is checked we add `.api-key-no-save-active`
+   to the input itself so the user gets a subtle visual cue
+   that the key will be discarded on the next launch. */
+.row.api-key-no-save-row {
+  margin-top: -2px;  /* hug the API-key row above */
+  margin-bottom: 10px;
+  padding-left: 0;
+}
+.row.api-key-no-save-row label.api-key-no-save-label {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-weight: 500;  /* override the generic .row > label font-weight */
+}
+.row.api-key-no-save-row label.api-key-no-save-label input[type="checkbox"] {
+  margin: 1px 0 0 0;
+  cursor: pointer;
+  accent-color: var(--warn, #d9a300);
+}
+.row.api-key-no-save-row label.api-key-no-save-label span strong {
+  color: var(--fg);
+}
+.combo > input.api-key-no-save-active {
+  /* Subtle "will be discarded" tint. Not a disable — the
+     user may still want to keep typing or test the
+     connection before deciding. */
+  background: rgba(217, 163, 0, 0.10);
+  border-color: var(--warn, #d9a300);
+}
+
 .row > label {
   font-size: 11px; color: var(--fg);
   display: flex; align-items: center; gap: 5px;

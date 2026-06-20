@@ -21,7 +21,7 @@ function register(deps) {
     catch (e) { return { ok: false, error: String(e.message || e) }; }
   });
 
-  ipcMain.handle('batches:generateExamples', async () => {
+  ipcMain.handle('batches:generateExamples', async (_e, format) => {
     try {
       // Bug-fix (2026-06-19, reported by user): the example files
       // used to be written to `deps.appRoot/example_batch_import.{md,txt}`,
@@ -218,10 +218,30 @@ video | A drone shot flying through a forest valley | --model video-01-live --du
 
       fs.writeFileSync(path.join(targetDir, 'example_batch_import.md'), mdContent, 'utf8');
       fs.writeFileSync(path.join(targetDir, 'example_batch_import.txt'), txtContent, 'utf8');
+      // v1.1.13 (reported by user): the previous version hard-
+      // wrote BOTH files even when the user only wanted one.
+      // The renderer now passes the format the user picked in
+      // ⚙ Settings → BatchGen ('md' or 'txt'); we delete the
+      // other one so the user only sees the format they
+      // chose. Unknown / missing → fall back to 'md'.
+      const chosenFormat = (format === 'txt') ? 'txt' : 'md';
+      let finalPath;
+      if (chosenFormat === 'md') {
+        try { fs.unlinkSync(path.join(targetDir, 'example_batch_import.txt')); } catch (_) { /* may not exist — fine */ }
+        finalPath = path.join(targetDir, 'example_batch_import.md');
+      } else {
+        try { fs.unlinkSync(path.join(targetDir, 'example_batch_import.md')); } catch (_) { /* may not exist — fine */ }
+        finalPath = path.join(targetDir, 'example_batch_import.txt');
+      }
       return {
         ok: true,
+        format: chosenFormat,
+        path: finalPath,
+        // Legacy keys (kept for renderer backwards-compat; the
+        // toast code uses path now, mdPath/txtPath still
+        // present in case any older code reads them).
         mdPath: path.join(targetDir, 'example_batch_import.md'),
-        txtPath: path.join(targetDir, 'example_batch_import.txt')
+        txtPath: path.join(targetDir, 'example_batch_import.txt'),
       };
     } catch (e) {
       return { ok: false, error: String(e.message || e) };

@@ -23,6 +23,48 @@ function buildSettingsGeneralPane() {
     const lbl = apiKeyRow.row.querySelector('label');
     if (lbl) lbl.appendChild(helpButton('settings.apiKey'));
   } catch (_) {}
+  // v1.1.13 (reported by user): "Don't save" checkbox on the
+  // API-key row. When checked, the entered key is kept in
+  // memory (so the current session works) but is NOT written
+  // to config.txt on Save, and the next launch starts with an
+  // empty key (the user re-enters it). When unchecked,
+  // behaviour is unchanged — the key persists across
+  // restarts.
+  const noSaveCb = el('input', {
+    type: 'checkbox',
+    class: 'api-key-no-save',
+    id: 'api-key-no-save',
+  });
+  noSaveCb.checked = !!state.apiKeyNoSave;
+  // The checkbox sits in its own row directly below the
+  // API-key row, with the same indent so it visually attaches
+  // to the API key. The label clarifies the implication:
+  // "session-only" (in memory) vs. "saved to disk".
+  const noSaveRow = el('div', { class: 'row api-key-no-save-row' }, [
+    el('label', { for: 'api-key-no-save', class: 'api-key-no-save-label' }, [
+      noSaveCb,
+      el('span', {}, [
+        el('strong', {}, "Don't save"),
+        '  — key is used this session only, never written to config.txt. Re-enter on next start.',
+      ]),
+    ]),
+  ]);
+  // A subtle visual hint: when checked, dim the input so the
+  // user notices the key won't survive a restart. Not a hard
+  // disable — they may want to keep typing / test the
+  // connection before deciding.
+  function syncNoSaveStyle() {
+    apiKeyRow.input.classList.toggle('api-key-no-save-active', noSaveCb.checked);
+  }
+  noSaveCb.addEventListener('change', () => {
+    state.apiKeyNoSave = noSaveCb.checked;
+    syncNoSaveStyle();
+    // Don't auto-save the toggle alone — wait for the main
+    // Save button so the change is atomic with the rest of
+    // the settings. scheduleStateSave() is called from the
+    // Save handler below.
+  });
+  syncNoSaveStyle();
   const outInput = el('input', { type: 'text', value: state.config.output_dir || '', placeholder: '(default: ./generated/)' });
   const regInput = el('select', {});
   for (const r of ['global', 'cn']) regInput.appendChild(el('option', { value: r }, r));
@@ -32,6 +74,7 @@ function buildSettingsGeneralPane() {
   themeSel.value = state.theme || state.config.theme || 'dark';
 
   root.appendChild(apiKeyRow.row);
+  root.appendChild(noSaveRow);
   root.appendChild(el('div', { class: 'row' }, [
     el('label', {}, ['Output directory', helpButton('settings.outputDir')]),
     el('div', { class: 'combo' }, [outInput, el('button', { class: 'btn-mini', onclick: async () => { const p = await window.api.pickFolder(); if (p) outInput.value = p; } }, 'Browse…')]),
@@ -67,8 +110,21 @@ function buildSettingsGeneralPane() {
     root,
     instance: {
       collect() {
+        // v1.1.13: include the apiKeyNoSave flag so the Save
+        // handler in openSettings() knows whether to strip
+        // the api_key field from the merged config before
+        // setConfig. We don't include api_key itself here
+        // when noSaveCb is checked — the Save handler reads
+        // apiKeyRow.getValue() and ONLY includes it in
+        // merged if !noSaveCb.checked.
         return {
-          api_key: apiKeyRow.getValue().trim(),
+          api_key: noSaveCb.checked ? '' : apiKeyRow.getValue().trim(),
+          _apiKeyNoSave: noSaveCb.checked,
+          // v1.1.13: pass the entered value to the save
+          // handler so it can keep it in memory even when
+          // not persisting (the Save handler reads this
+          // and assigns state.config.api_key).
+          _apiKeyValue: noSaveCb.checked ? apiKeyRow.getValue().trim() : '',
           output_dir: outInput.value.trim(),
           region: regInput.value || 'global',
           theme: themeSel.value || 'dark',
@@ -337,6 +393,55 @@ function buildSettingsPopupsPane() {
   ]));
 
   return { root, instance: { collect: () => ({}) /* popupPolicy lives in state.json */ } };
+}
+
+function buildSettingsBatchgenPane() {
+  // v1.1.13 (reported by user): settings for the BatchGen
+  // feature. The previous version hard-wrote BOTH a .md and a
+  // .txt example file every time the user clicked the "Gen
+  // Examples" button on the BatchGen controls. The user
+  // wanted to choose the format so they don't get a folder
+  // with two files when they only need one. The format is
+  // chosen here and used by batchesGenerateExamples (both
+  // the renderer + the main-process IPC).
+  const root = el('div', {});
+  root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+    'Settings for the BatchGen "Gen Examples" button (creates a template you can hand to an AI to generate a batch import file). The chosen format is the ONLY one the button writes — pick whichever one you actually use.'));
+
+  // ---- Export format dropdown ----
+  const fmtSel = el('select', { class: 'batches-export-format-select' });
+  for (const [val, lbl] of [
+    ['md',  '📝 Markdown (.md) — AI-friendly table with header rows (recommended)'],
+    ['txt', '📄 Plain text (.txt) — pipe-separated rows, no formatting'],
+  ]) fmtSel.appendChild(el('option', { value: val }, lbl));
+  fmtSel.value = state.batchesExportFormat || 'md';
+  // Apply immediately on change so the next click on "Gen
+  // Examples" uses the new format even if the user doesn't
+  // hit Save in the meantime. scheduleStateSave persists the
+  // pick to state.json so a restart uses the same format.
+  fmtSel.addEventListener('change', () => {
+    state.batchesExportFormat = fmtSel.value;
+    scheduleStateSave();
+  });
+  root.appendChild(el('div', { class: 'row' }, [
+    el('label', {}, ['Example export format', helpButton('settings.batchesExportFormat')]),
+    fmtSel,
+  ]));
+
+  // Caption below the dropdown that explains the choice in
+  // one short line, so the user doesn't have to remember
+  // which format they picked last time.
+  root.appendChild(el('p', { class: 'batches-export-format-hint', style: 'color: var(--fg-3); font-size: 11.5px; margin: 4px 0 14px;' },
+    'Only the chosen type is generated. The example file lands in your output folder as "example_batch_import.{ext}".'));
+
+  return {
+    root,
+    instance: {
+      collect() {
+        return { /* batchesExportFormat lives in state.json, not config.txt */ };
+      },
+    },
+  };
 }
 
 function buildSettingsShortcutsPane() {

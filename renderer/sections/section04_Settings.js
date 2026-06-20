@@ -58,6 +58,7 @@ function openSettings() {
     const tabDefs = [
       { id: 'general',  label: '🔑 General',     build: () => buildSettingsGeneralPane() },
       { id: 'image',    label: '🖼 Image',        build: () => buildSettingsImagePane() },
+      { id: 'batchgen', label: '📦 BatchGen',     build: () => buildSettingsBatchgenPane() },
       { id: 'styles',   label: '🎨 Style presets', build: () => buildSettingsStylesPane() },
       { id: 'popups',   label: '💬 Popups',        build: () => buildSettingsPopupsPane() },
       { id: 'shortcuts',label: '⌨ Shortcuts',      build: () => buildSettingsShortcutsPane() },
@@ -87,18 +88,55 @@ function openSettings() {
     const cancelBtn = el('button', { onclick: close }, 'Cancel');
     saveBtn.addEventListener('click', async () => {
       const merged = { ...state.config };
+      let apiKeyNoSave = false;
+      let apiKeyInMemory = '';
       for (const tdef of tabDefs) {
         const inst = panes[tdef.id].instance;
         if (inst && typeof inst.collect === 'function') {
-          Object.assign(merged, inst.collect());
+          const partial = inst.collect();
+          // v1.1.13: General pane carries three transient
+          // keys (_apiKeyNoSave, _apiKeyValue) that are NOT
+          // part of the saved config schema — they're just a
+          // channel between the pane and the Save handler. Strip
+          // them before setConfig so config.txt stays clean.
+          if (partial && typeof partial === 'object') {
+            if (typeof partial._apiKeyNoSave === 'boolean') {
+              apiKeyNoSave = partial._apiKeyNoSave;
+              delete partial._apiKeyNoSave;
+            }
+            if (typeof partial._apiKeyValue === 'string') {
+              apiKeyInMemory = partial._apiKeyValue;
+              delete partial._apiKeyValue;
+            }
+          }
+          Object.assign(merged, partial);
         }
+      }
+      // v1.1.13: when the user checked "Don't save" on the
+      // API-key row, strip api_key from `merged` so it never
+      // reaches config.txt. The entered value (in
+      // apiKeyInMemory) IS assigned to state.config.api_key
+      // below so the current session keeps working — only the
+      // persisted form is suppressed.
+      if (apiKeyNoSave) {
+        merged.api_key = '';
       }
       // CRITICAL: merge with the current config — do NOT replace it.
       // The previous version of this code built a fresh
       // {api_key,output_dir,region} object which silently dropped
       // `theme` and `styles` on every save. We preserve every
       // unknown key so future config fields aren't wiped.
-      state.config = await window.api.setConfig(merged);
+      const saved = await window.api.setConfig(merged);
+      // If the user enabled "Don't save" but entered a key,
+      // assign it in-memory (state.config.api_key) so the
+      // session works, then CLEAR it from the saved config so
+      // a subsequent restart starts with an empty key.
+      if (apiKeyNoSave && apiKeyInMemory) {
+        saved.api_key = apiKeyInMemory;
+      }
+      state.config = saved;
+      state.apiKeyNoSave = !!apiKeyNoSave;
+      scheduleStateSave();
       toast('Saved.', 'ok');
       close();
       refreshQuota();

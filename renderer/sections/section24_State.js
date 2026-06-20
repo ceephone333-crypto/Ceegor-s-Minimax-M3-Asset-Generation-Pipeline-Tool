@@ -27,6 +27,16 @@ window.STATE_PERSIST_KEYS = [
 ];
 window.state = {
   config: { api_key: '', output_dir: '', region: 'global', theme: 'dark', styles: [] },
+  // v1.1.13 (reported by user): when the user enables "Don't
+  // save" on the API-key row in ⚙ Settings, the entered key
+  // is NOT written to config.txt and is NOT loaded from
+  // config.txt on the next launch (the user has to re-enter
+  // it). The in-memory `state.config.api_key` IS set to the
+  // entered value so the current session works as normal —
+  // only the persisted-to-disk form is suppressed. Persisted
+  // to state.json so the checkbox state survives a restart
+  // (no surprise un-checks).
+  apiKeyNoSave: false,
   voices: [],
   voicesLoaded: false,
   fbDir: '',
@@ -190,6 +200,13 @@ window.state = {
   // prefers to browse only generated images (or only audio)
   // sees the same filter on the next launch.
   fbTypeFilter: '',
+  // v1.1.13 (reported by user): the BatchGen "example export"
+  // format the user picked in ⚙ Settings → BatchGen. One
+  // of 'md' | 'txt'. The button used to write BOTH .md and
+  // .txt at once; the user can now pick whichever they
+  // actually want (default: 'md', which is the AI-readable
+  // format most users use). Persisted to state.json.
+  batchesExportFormat: 'md',
   // Which file-browser columns are visible. An object keyed by
   // column id (see FB_COLUMNS) with boolean values. The "name"
   // column is mandatory and is always rendered, regardless of
