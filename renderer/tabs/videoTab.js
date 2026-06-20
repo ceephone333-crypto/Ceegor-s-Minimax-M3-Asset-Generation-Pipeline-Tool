@@ -205,6 +205,27 @@ window.TABS.video = {
             allOk = false;
             break;
           }
+          // v1.1.12 (reported by user): verify the file actually
+          // landed on disk. mmx returns success (exit 0) even
+          // when something downstream (e.g. the download step)
+          // fails silently, leaving the user staring at an
+          // empty folder with the tool claiming the video was
+          // generated. The fix: after a "successful" mmxRun,
+          // probe the output path via fbExists. If the file
+          // is missing, surface a clear "file not on disk"
+          // error instead of "Video generated." (which was the
+          // previous behaviour).
+          const fileExists = await window.api.fbExists(outFile);
+          if (!fileExists) {
+            const msg = `mmx reported success but the expected output file is missing on disk.\n\n` +
+              `Expected: ${outFile}\n\n` +
+              `This usually means the API call succeeded but the download step failed silently (quota / network / etc.). ` +
+              `Try Generate again, or check ⚙ Settings → Output folder.`;
+            preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}).</div><div class="meta">${escapeHtml(msg)}</div>`;
+            toast('Video generation failed: output file missing on disk.', 'err', 6000);
+            allOk = false;
+            break;
+          }
           lastPreview = r.parsed;
           lastOutFile = outFile;
         }

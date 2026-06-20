@@ -25,7 +25,7 @@ function register(_deps) {
 
   ipcMain.handle('fb:mkdir', async (_e, dir, name) => {
     if (!pathUtils.isPathUnderAny(dir, pathSecurity.getAllowedRoots())) {
-      return { ok: false, error: 'Parent path is outside the allowed directories.' };
+      return { ok: false, error: `Parent path "${dir}" is outside the allowed directories. Pick this folder via the file browser (which auto-trusts it) or via ⚙ Settings → Output folder, then re-run.` };
     }
     try { return { ok: true, path: await fb.mkdir(dir, name) }; }
     catch (e) { return { ok: false, error: String(e.message || e) }; }

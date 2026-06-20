@@ -458,8 +458,12 @@ async function ensureSubDir(name) {
   if (targetDir === join(base, name, baseSep)) {
     // Default path (case 3): a single fbMkdir call. fbMkdir is
     // idempotent (returns ok even if the dir already exists), so
-    // a benign retry is fine.
-    await window.api.fbMkdir(base, name).catch(() => null);
+    // a benign retry is fine. The v1.1.12 fix: throw on failure
+    // instead of silently swallowing it — the user's previous
+    // "ENOENT" / "no folder selected" toast was caused by this
+    // .catch(() => null) hiding the real error and then
+    // returning a targetDir that didn't exist on disk.
+    await window.api.fbMkdir(base, name);
   } else if (externalPicked) {
     // External picked folder (case 4): the picked path itself
     // is already an allowed root (the picker added it via
@@ -469,7 +473,7 @@ async function ensureSubDir(name) {
     // picked folder doesn't need to pre-exist; only the parent
     // (the picked folder itself) needs to be writable.
     const picked = (state.fbDir || '').replace(/[\\/]+$/, '');
-    await window.api.fbMkdir(picked, name).catch(() => null);
+    await window.api.fbMkdir(picked, name);
   } else {
     // Subfolder of output_dir (case 2): walk the path
     // segment-by-segment so each mkdir is individually
@@ -483,7 +487,7 @@ async function ensureSubDir(name) {
     }
     let cur = base;
     for (const p of relParts) {
-      await window.api.fbMkdir(cur, p).catch(() => null);
+      await window.api.fbMkdir(cur, p);
       cur = join(cur, p, baseSep);
     }
   }

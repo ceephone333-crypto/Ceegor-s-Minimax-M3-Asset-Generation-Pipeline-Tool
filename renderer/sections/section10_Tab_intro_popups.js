@@ -152,11 +152,27 @@ function _formatTabEta(tabKey) {
   // (runElapsed / itemsLeft) approximation because it doesn't
   // smudge the previous items' cost into the current item.
   const runElapsed = Math.max(0, (Date.now() - start) / 1000);
-  const currentItemElapsed = Math.max(0, Math.min(avg, runElapsed - (queueDone * avg)));
-  const currentItemRemaining = Math.max(0, avg - currentItemElapsed);
-  // Future items in the CURRENT run.
+  // v1.1.12 (reported by user): never let the predicted per-item
+  // avg dip BELOW the actual run-elapsed. When a generation
+  // runs longer than the running avg (common for video: the
+  // default is 90s, but actual can be 60-300s), the previous
+  // formula clamped currentItemRemaining to 0 and the ETA
+  // displayed 0:00 even though the generation was still
+  // running — the user reasonably interpreted this as "the
+  // generation got terminated". The fix: bump the effective
+  // avg up to whatever we've actually spent, with a small
+  // buffer, so the ETA keeps ticking instead of stalling at
+  // 0:00.
+  const effectiveAvg = Math.max(avg, runElapsed + 5);
+  const currentItemElapsed = Math.max(0, Math.min(effectiveAvg, runElapsed - (queueDone * avg)));
+  const currentItemRemaining = Math.max(0, effectiveAvg - currentItemElapsed);
+  // Future items in the CURRENT run. Use the EFFECTIVE avg for
+  // them too, so the predicted wall-clock future time also
+  // adapts to reality. (If the first item took longer than the
+  // historic avg, the future ones probably will too — there's
+  // no reason to predict them based on the old avg alone.)
   const futureItems = Math.max(0, itemsLeft - 1);
-  const futureTime = futureItems * avg;
+  const futureTime = futureItems * effectiveAvg;
   // v1.1.9: also include the BatchGen queue (if the user kicked
   // off a batch from the same tab AFTER this single Generate
   // click). state.batchQueueLeft[tabKey] is the number of items
@@ -164,7 +180,7 @@ function _formatTabEta(tabKey) {
   // item. If it's not set (user isn't running a batch), default
   // to 0 — no contribution.
   const batchLeft = Math.max(0, (state.batchQueueLeft && state.batchQueueLeft[tabKey]) || 0);
-  const batchTime = batchLeft * avg;
+  const batchTime = batchLeft * effectiveAvg;
   const totalRemaining = currentItemRemaining + futureTime + batchTime;
   const remaining = Math.max(0, Math.round(totalRemaining));
   const m = Math.floor(remaining / 60);

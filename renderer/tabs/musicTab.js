@@ -414,7 +414,18 @@ window.TABS.music = {
         '--instrumental': instrumental.input,
         '--lyrics-optimizer': mode.input, // mode maps to --lyrics-optimizer
         '--sample-rate': sampleRate.input,
-        '--bitrate': audioBitrate.input,
+        // v1.1.12 (reported by user): the variable is `bitrate`
+        // (declared by the buildParamRow('--bitrate', …) call
+        // a few lines above). The previous code referenced
+        // `audioBitrate.input` which was a bare identifier that
+        // was never declared anywhere, so the click handler
+        // threw a ReferenceError on the first click. The
+        // outer try/catch surfaced it as a toast ("Generation
+        // failed before starting: audioBitrate is not
+        // defined") but the user had to read the toast to
+        // discover the typo. The pre-flight spec check + the
+        // arg builder now both use the actual local name.
+        '--bitrate': bitrate.input,
         '--format': audioFormat.input,
       };
       const preErrs = validateTabAgainstSpec('music', musicParams, musicModel, null, isFlagVisibleForCurrentModel);
