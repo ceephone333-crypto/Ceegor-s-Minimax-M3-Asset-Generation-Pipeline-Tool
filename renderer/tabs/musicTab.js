@@ -542,6 +542,11 @@ window.TABS.music = {
         console.error('Music generation threw:', e);
         toast('Generation error: ' + (e && e.message || String(e)), 'err', 6000);
       } finally {
+        // Record outcome BEFORE cleanup() clears state.generating so the
+        // BatchGen runner (which polls state.generating) always reads the
+        // final result, never a stale value left over from a prior item.
+        state.genLastResult = state.genLastResult || { image: null, speech: null, music: null, video: null };
+        state.genLastResult.music = (allOk && !threw && !cancel.wasCancelled()) ? 'ok' : 'err';
         cancel.cleanup();
         setStatus('Ready', false);
         try { await refreshBrowser(); } catch {}

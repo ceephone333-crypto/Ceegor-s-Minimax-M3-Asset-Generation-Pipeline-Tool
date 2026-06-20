@@ -233,7 +233,12 @@ function applyFileSearch() {
     // isn't in the selected set. Directories always pass
     // (their type is "folder", shown via the icon column).
     if (typeSet) {
-      const ext = (item.dataset.ext || '').toLowerCase();
+      // Bug-fix (2026-06-20): item.dataset.ext is stored WITH a leading
+      // dot (e.g. ".png"), but the dropdown's type set holds bare
+      // extensions ("png"). The mismatch meant typeSet.has(".png") was
+      // always false, so picking ANY asset type hid EVERY file. Strip
+      // the dot before comparing.
+      const ext = (item.dataset.ext || '').toLowerCase().replace(/^\./, '');
       const isDir = item.dataset.isdir === '1';
       if (!isDir && ext && !typeSet.has(ext)) { item.style.display = 'none'; continue; }
     }

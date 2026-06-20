@@ -11,6 +11,7 @@
     "check": "node scripts/check.js",
     "lint": "node scripts/lint.js",
     "test": "node --test",
+    "test:smoke": "node scripts/run-smoke.js",
     "prebuild": "node scripts/check.js",
     "build": "node scripts/zip-portable.js",
     "build:asar": "node scripts/update-zip.js",

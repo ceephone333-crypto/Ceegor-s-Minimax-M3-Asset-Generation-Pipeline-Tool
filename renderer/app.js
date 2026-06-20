@@ -96,6 +96,14 @@ async function init() {
   $('#fb-refresh').addEventListener('click', () => refreshBrowser());
   $('#fb-new').addEventListener('click', () => promptNewFolder());
   $('#fb-open').addEventListener('click', () => window.api.fbReveal(state.fbDir || state.config.output_dir || ''));
+  // Bug-fix (2026-06-20): the "⚙ Options" button (folder columns /
+  // thumbnails) had its handler defined (openFolderOptions in
+  // fileBrowser1.js) but it was never wired to the button, so clicking
+  // it did nothing. The matching modal opens via showModal.
+  const fbOptionsBtn = $('#fb-options');
+  if (fbOptionsBtn) fbOptionsBtn.addEventListener('click', () => {
+    if (typeof openFolderOptions === 'function') openFolderOptions();
+  });
   // Bug-fix (2026-06-20, reported by user): the 📂 button was added to
   // index.html but its click handler was never wired up — the previous
   // "Up" button only climbs inside `output_dir`, so a user whose
@@ -225,6 +233,19 @@ async function init() {
   const logCopyBtn = $('#log-copy');
   const logClearBtn = $('#log-clear');
   const logToggleBtn = $('#log-toggle');
+  // Bug-fix (2026-06-20): the log "?" help button was never wired (the
+  // generic [data-help-topic] click delegation is not installed), so it
+  // did nothing. Wire it directly to the centralized help system. It
+  // lives inside the <summary>, so we must stop the click from toggling
+  // the <details> collapse (same pattern as the other log buttons).
+  const logHelpBtn = $('#log-help');
+  if (logHelpBtn) {
+    logHelpBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof showHelp === 'function') showHelp('log.structured');
+    });
+  }
   function _syncLogToggleLabel() {
     if (!logToggleBtn || !logDetails) return;
     logToggleBtn.textContent = logDetails.open ? '▼ Collapse' : '▲ Expand';

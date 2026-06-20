@@ -189,6 +189,12 @@ async function startBatchGen(tabKey) {
   // ETA span (in app.js) reads the sum across tabs.
   if (!state.batchQueueLeft) state.batchQueueLeft = { image: 0, speech: 0, music: 0, video: 0 };
   state.batchQueueLeft[tabKey] = items.length;
+  // Track which (original-snapshot) indices completed successfully so
+  // auto-remove can rebuild the queue from the immutable `items`
+  // snapshot. Removing by live index while iterating (the previous
+  // splice(i,1) approach) shifts every later index by one, so only the
+  // FIRST successful item was ever removed.
+  const removedIdx = new Set();
   try {
     for (let i = 0; i < items.length && !_batchAbort; i++) {
       const item = items[i];
@@ -272,6 +278,13 @@ async function startBatchGen(tabKey) {
           await new Promise((r) => setTimeout(r, 50));
         }
         if (_batchAbort) break;
+        // Reset the per-tab run-outcome signal so we read THIS item's
+        // result (not a stale 'ok' from the previous item). The gen
+        // handlers set state.genLastResult[tabKey] = 'ok' | 'err' at the
+        // end of the run; see the looksOk check below for why we can't
+        // just scrape the preview DOM.
+        state.genLastResult = state.genLastResult || { image: null, speech: null, music: null, video: null };
+        state.genLastResult[tabKey] = null;
         // Trigger generation. The click handler is async — we poll state.generating
         // to detect when it has set the busy flag (i.e. the handler started).
         genBtn.click();
@@ -288,8 +301,18 @@ async function startBatchGen(tabKey) {
           if (_batchAbort) break;
           await new Promise((r) => setTimeout(r, 100));
         }
-        // Inspect the preview for success/failure (best-effort: check if it has an image/video)
-        const looksOk = preview.querySelector('img, video, audio');
+        // Determine success. PRIMARY signal: the per-tab run outcome the
+        // gen handler records on state.genLastResult[tabKey]. This is
+        // authoritative and decoupled from how each tab renders its
+        // preview. FALLBACK (older tabs / unset): scrape the preview for
+        // a media element. The image tab no longer puts an <img> in
+        // .preview (it shows "see preview pane on the right" + renders
+        // the image in the folder-explorer pane), so the DOM-only check
+        // reported EVERY image batch item as failed and auto-remove never
+        // fired — this is the fix for that bug.
+        const outcome = state.genLastResult && state.genLastResult[tabKey];
+        const looksOk = outcome === 'ok'
+          || (outcome == null && preview.querySelector('img, video, audio'));
         const variantTag = currentVariantsCount > 1 ? ` v${vi + 1}/${currentVariantsCount}` : '';
         if (looksOk) { ok++; logLine(`✓ ${i + 1}/${items.length}${variantTag} OK`, 'ok'); }
         else { fail++; logLine(`✗ ${i + 1}/${items.length}${variantTag} FAILED`, 'err'); }
@@ -300,14 +323,14 @@ async function startBatchGen(tabKey) {
         // every variant of the prompt before the entry is
         // dropped. Failed items stay so the user can retry.
         if (looksOk && autoRemove && vi === currentVariantsCount - 1) {
-          // Splice out the just-finished item by index `i`.
-          // We mutate state.batches[tabKey] in place so any
-          // subscriber reading the array sees the new state.
-          // Persist the new batches array to batches.json so
-          // a restart doesn't bring the entry back.
-          const next = (state.batches[tabKey] || []).slice();
-          if (i < next.length) next.splice(i, 1);
-          state.batches[tabKey] = next;
+          // Mark this snapshot index as done and rebuild the live queue
+          // from the immutable `items` snapshot, dropping every
+          // completed index. Rebuilding (instead of an in-place splice)
+          // keeps indices stable across the rest of the loop and works
+          // correctly even with duplicate prompts. Persist so a restart
+          // doesn't bring the entry back.
+          removedIdx.add(i);
+          state.batches[tabKey] = items.filter((_, idx) => !removedIdx.has(idx));
           try { await window.api.batchesSet(state.batches); } catch (_) { /* best-effort persist */ }
           logLine(`✓ ${i + 1}/${items.length} removed from queue (auto-remove on)`, 'ok');
         }
@@ -382,6 +405,10 @@ async function startBatchGen(tabKey) {
   if (lastCmd) lastCmd.textContent = `BatchGen finished: ${ok} ok, ${fail} failed. (variants ×${variantsCount})`;
 
   toast(`BatchGen done: ${ok} ok, ${fail} failed.`, batchError ? 'err' : (fail === 0 ? 'ok' : 'warn'), 6000);
+  // Refresh the per-tab batch buttons so the "Start BatchGen (N)" count
+  // reflects any items auto-removed during this run (otherwise the count
+  // stays stale until the next manual refresh / tab rebuild).
+  if (typeof _refreshBatchButtons === 'function') _refreshBatchButtons();
   await refreshBrowser();
   await refreshQuota();
 }

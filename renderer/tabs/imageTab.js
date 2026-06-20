@@ -253,8 +253,16 @@ window.TABS.image = {
       // (truncated) as the headline; the full prompt stays
       // available in the expand-on-click details.
       const promptShort = (promptText || '').replace(/\s+/g, ' ').slice(0, 120);
+      // v1.1.9: pin all log events for this run to the same group
+      // id so the renderer tints "started" / "completed" /
+      // "failed" with the same colour and the user can visually
+      // trace which lines belong to which generation. The id is
+      // the run's start timestamp (ms) — unique per click,
+      // stable across all events of that one run.
+      const runGroupId = 'img-' + Date.now();
       const genStartEvId = addLogEvent({
         category: 'gen',
+        groupId: runGroupId,
         headline: `Image generation started: ${promptShort}${promptText && promptText.length > 120 ? '…' : ''}`,
         details: [
           `Variants: ${variantsCount}`,
@@ -596,6 +604,7 @@ window.TABS.image = {
         // ticket.
         addLogEvent({
           category: 'gen',
+          groupId: runGroupId,
           result: 'ok',
           headline: `Generated ${displayFiles.length} image${displayFiles.length === 1 ? '' : 's'}`,
           details: displayFiles.map((p) => '• ' + p),
@@ -612,6 +621,7 @@ window.TABS.image = {
           const failedClass = classifyMmxError(lastFailedR || {}, failedMsg);
           addLogEvent({
             category: 'error',
+            groupId: runGroupId,
             result: 'err',
             headline: `Image generation failed: ${failedMsg}`,
             details: [
@@ -729,6 +739,16 @@ window.TABS.image = {
         console.error('Image generation threw:', e);
         toast('Generation error: ' + (e && e.message || String(e)), 'err', 6000);
       } finally {
+        // Record the run outcome on state BEFORE cleanup() clears
+        // state.generating. The BatchGen runner detects the end of a run
+        // by polling state.generating, so the outcome must be set first
+        // or the runner reads a stale value. We can't scrape the preview
+        // DOM instead: the image tab deliberately no longer renders an
+        // <img> in .preview (the picture lives in the right-hand preview
+        // pane), which made the old preview.querySelector check report
+        // every image batch item as "failed".
+        state.genLastResult = state.genLastResult || { image: null, speech: null, music: null, video: null };
+        state.genLastResult.image = (allOk && !threw && !cancel.wasCancelled()) ? 'ok' : 'err';
         cancel.cleanup();
         setStatus('Ready', false);
         // Always refresh — even on cancel/failure, partial files may exist

@@ -174,6 +174,11 @@
        persists the size to state.layoutSettings (loaded back
        on the next launch by SplitterDrag.applyLayoutSettings). -->
   <script src="components/SplitterDrag.js"></script>
+  <!-- Audio-cutter modal (window.showAudioCutter). The right-click
+       "✂ Audio cut…" menu + the bulk "✂ Trim" button call this; the
+       module was missing (only the backend IPC + CSS shipped), so those
+       actions failed with "Audio cutter module not loaded." -->
+  <script src="audioCutter.js"></script>
   <!-- Phase 3 Block 29: 24 sections extracted from app.js -->
   <script src="sections/section24_State.js"></script>
   <script src="sections/section23_Centralized_help_system.js"></script>
