@@ -137,6 +137,15 @@ window.TABS.video = {
       if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
       const promptText = buildFinalPrompt(styleRow.sel, prompt.input);
       if (!promptText) { toast('Prompt is required (style or manual input).', 'warn'); return; }
+      // Authoritative combination check (warn + proceed). Catches e.g.
+      // the Fast model without a first-frame, or a last-frame without a
+      // first-frame — both of which the API rejects.
+      if (typeof mmxPreflightConfirm === 'function' && !mmxPreflightConfirm('video', {
+        model: model.input.getValue(), prompt: promptText,
+        'first-frame': firstFrame.input.getValue(),
+        'last-frame': lastFrame.input.getValue(),
+        'subject-image': subjectImage.input.getValue(),
+      })) return;
       const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
       let outDir;
       try { outDir = await ensureSubDir('video'); }

@@ -105,7 +105,10 @@ async function run() {
   await win.loadFile(path.join(APP_ROOT, 'renderer', 'index.html'));
   await exec(`window.__smoke = { errors: [] };
     addEventListener('error', (e) => window.__smoke.errors.push('error: ' + ((e.error && e.error.stack) || e.message)));
-    addEventListener('unhandledrejection', (e) => window.__smoke.errors.push('rejection: ' + ((e.reason && e.reason.stack) || e.reason))); true;`);
+    addEventListener('unhandledrejection', (e) => window.__smoke.errors.push('rejection: ' + ((e.reason && e.reason.stack) || e.reason)));
+    // Auto-confirm so a pre-generation warning dialog can never block the
+    // headless run (the validator's correctness is covered by unit tests).
+    window.confirm = () => true; true;`);
 
   // 1) init completes
   let inited = false;

@@ -242,4 +242,160 @@ function validateTabAgainstSpec(tabKey, params, currentModel, currentResolution,
   return errs;
 }
 
-window.ModelSpecs = { MODEL_SPECS, getRowSpec, validateTabAgainstSpec };
+// ---------------------------------------------------------------------------
+// Authoritative allowed-value tables + a single pure validator.
+//
+// Sourced from the official MiniMax API docs + the mmx CLI schema
+// (verified June 2026): platform.minimax.io/docs/api-reference/{image,
+// speech-t2a-http,music-generation,video-generation}. These are the
+// values the API actually accepts — sending anything else returns
+// "invalid params … is not allowed" and burns a request for nothing.
+//
+// validateValues(tabKey, values) is the ONE checker used by:
+//   • each tab's Generate handler (pre-flight warning before spending a
+//     request), and
+//   • the BatchGen importer / runner (entries that fail are imported but
+//     marked defective and skipped until the user repairs them).
+// It takes a plain { flag: value } object (keys with or without leading
+// dashes, any case) so it works for both the live form and parsed batch
+// rows, and returns { errors: string[] } — empty means valid.
+// ---------------------------------------------------------------------------
+const MMX_ALLOWED = {
+  image: {
+    model: ['image-01', 'image-01-live'],
+    'aspect-ratio': ['1:1', '16:9', '9:16', '4:3', '3:4', '2:3', '3:2', '21:9'],
+    'response-format': ['url', 'base64'],
+    n: { min: 1, max: 9, integer: true },
+    width: { min: 512, max: 2048, step: 8, integer: true },
+    height: { min: 512, max: 2048, step: 8, integer: true },
+    promptMax: 1500,
+  },
+  speech: {
+    model: ['speech-2.8-hd', 'speech-2.8-turbo', 'speech-2.6-hd', 'speech-2.6-turbo', 'speech-02-hd', 'speech-02-turbo', 'speech-01-hd', 'speech-01-turbo'],
+    format: ['mp3', 'pcm', 'flac', 'wav', 'pcmu_raw', 'pcmu_wav', 'opus'],
+    'sample-rate': [8000, 16000, 22050, 24000, 32000, 44100],
+    bitrate: [32000, 64000, 128000, 256000],
+    channels: [1, 2],
+    speed: { min: 0.5, max: 2.0 },
+    volume: { min: 0, max: 10, exclusiveMin: true }, // (0, 10]
+    pitch: { min: -12, max: 12, integer: true },
+    textMax: 10000,
+  },
+  music: {
+    model: ['music-2.6', 'music-2.5+', 'music-2.5'],
+    format: ['mp3', 'wav', 'pcm'],
+    'sample-rate': [16000, 24000, 32000, 44100],
+    bitrate: [32000, 64000, 128000, 256000],
+    'output-format': ['hex', 'url'],
+    promptMax: 2000,
+    lyricsMax: 3500,
+  },
+  video: {
+    model: ['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3-Fast', 'MiniMax-Hailuo-02', 'S2V-01'],
+    promptMax: 2000,
+  },
+};
+
+function _mmxNorm(values) {
+  const o = {};
+  for (const [k, val] of Object.entries(values || {})) {
+    if (val === undefined) continue;
+    o[String(k).replace(/^--+/, '').toLowerCase()] = val;
+  }
+  return o;
+}
+function _mmxNum(v) { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : NaN; }
+function _mmxTruthy(v) { return v === true || v === 1 || v === '1' || v === 'true' || v === 'on' || v === 'yes'; }
+
+// opts.partial = true → only validate the values that ARE present (skip
+// "required-but-missing" rules). Used for BatchGen entries, which omit
+// any param they inherit from the tab's current (already-valid) form
+// settings; only the explicit overrides are checked.
+function validateValues(tabKey, values, opts) {
+  const partial = !!(opts && opts.partial);
+  const errors = [];
+  const A = MMX_ALLOWED[tabKey];
+  if (!A) return { errors };
+  const v = _mmxNorm(values);
+  const enumCheck = (key, allowed) => {
+    if (allowed && v[key] != null && v[key] !== '' && !allowed.map(String).includes(String(v[key]))) {
+      errors.push(`${key} "${v[key]}" is not allowed — use one of: ${allowed.join(', ')}.`);
+    }
+  };
+  const rangeCheck = (key, spec) => {
+    const n = _mmxNum(v[key]);
+    if (n == null) return;
+    if (Number.isNaN(n)) { errors.push(`${key} must be a number.`); return; }
+    if (spec.min != null && (spec.exclusiveMin ? n <= spec.min : n < spec.min)) errors.push(`${key} ${n} is below the minimum ${spec.exclusiveMin ? '(must be > ' + spec.min + ')' : spec.min}.`);
+    if (spec.max != null && n > spec.max) errors.push(`${key} ${n} exceeds the maximum ${spec.max}.`);
+    if (spec.integer && !Number.isInteger(n)) errors.push(`${key} must be a whole number.`);
+    if (spec.step && Number.isFinite(n) && Math.abs(n % spec.step) > 1e-9) errors.push(`${key} ${n} must be a multiple of ${spec.step}.`);
+  };
+  enumCheck('model', A.model);
+
+  if (tabKey === 'image') {
+    enumCheck('aspect-ratio', A['aspect-ratio']);
+    enumCheck('response-format', A['response-format']);
+    rangeCheck('n', A.n); rangeCheck('width', A.width); rangeCheck('height', A.height);
+    const hasW = v.width != null && v.width !== '';
+    const hasH = v.height != null && v.height !== '';
+    if (hasW !== hasH) errors.push('Width and height must be set together (or both left blank).');
+    if ((hasW || hasH) && String(v.model) === 'image-01-live') errors.push('Custom width/height is only supported on image-01 (not image-01-live).');
+    if (v.prompt && String(v.prompt).length > A.promptMax) errors.push(`Prompt is ${String(v.prompt).length} chars; max for image is ${A.promptMax}.`);
+  } else if (tabKey === 'speech') {
+    enumCheck('format', A.format); enumCheck('sample-rate', A['sample-rate']); enumCheck('channels', A.channels);
+    rangeCheck('speed', A.speed); rangeCheck('volume', A.volume); rangeCheck('pitch', A.pitch);
+    const fmt = String(v.format || 'mp3');
+    if (v.bitrate != null && v.bitrate !== '' && ['mp3', 'opus'].includes(fmt) && !A.bitrate.includes(Number(v.bitrate))) {
+      errors.push(`bitrate ${v.bitrate} is not allowed — use one of: ${A.bitrate.join(', ')}.`);
+    }
+    const text = v.text != null ? v.text : v.prompt;
+    if (text && String(text).length > A.textMax) errors.push(`Text is ${String(text).length} chars; max for speech is ${A.textMax}.`);
+  } else if (tabKey === 'music') {
+    enumCheck('format', A.format); enumCheck('sample-rate', A['sample-rate']); enumCheck('output-format', A['output-format']);
+    if (v.bitrate != null && v.bitrate !== '' && !A.bitrate.includes(Number(v.bitrate))) {
+      errors.push(`bitrate ${v.bitrate} is not allowed — use one of: ${A.bitrate.join(', ')}.`);
+    }
+    const instrumental = _mmxTruthy(v.instrumental);
+    const optimizer = _mmxTruthy(v['lyrics-optimizer']);
+    const hasLyrics = !!(v.lyrics && String(v.lyrics).trim()) || !!(v['lyrics-file'] && String(v['lyrics-file']).trim());
+    if (instrumental && hasLyrics) errors.push('Instrumental mode cannot be combined with custom lyrics.');
+    if (optimizer && hasLyrics) errors.push('Auto-lyrics (lyrics-optimizer) cannot be combined with custom lyrics.');
+    if (optimizer && instrumental) errors.push('Auto-lyrics (lyrics-optimizer) cannot be combined with instrumental mode.');
+    if (optimizer && v.model && String(v.model) !== 'music-2.6') errors.push('Auto-lyrics (lyrics-optimizer) requires the music-2.6 model.');
+    if (instrumental && String(v.model) === 'music-2.5') errors.push('Instrumental mode requires music-2.5+ or music-2.6.');
+    if (v.prompt && String(v.prompt).length > A.promptMax) errors.push(`Prompt is ${String(v.prompt).length} chars; max for music is ${A.promptMax}.`);
+    if (v.lyrics && String(v.lyrics).length > A.lyricsMax) errors.push(`Lyrics is ${String(v.lyrics).length} chars; max is ${A.lyricsMax}.`);
+    // Required-but-missing: only meaningful for the live form. A batch
+    // entry that omits the mode inherits the tab's (valid) mode, so skip.
+    if (!partial && !instrumental && !optimizer && !hasLyrics) errors.push('Music needs lyrics — provide lyrics, or enable instrumental / auto-lyrics.');
+  } else if (tabKey === 'video') {
+    const hasFirst = !!(v['first-frame'] || v['first-frame-image']);
+    const hasLast = !!(v['last-frame'] || v['last-frame-image']);
+    if (String(v.model) === 'MiniMax-Hailuo-2.3-Fast' && !hasFirst) errors.push('MiniMax-Hailuo-2.3-Fast requires a first-frame image.');
+    if (hasLast && !hasFirst) errors.push('A last-frame image also requires a first-frame image.');
+    if (v.prompt && String(v.prompt).length > A.promptMax) errors.push(`Prompt is ${String(v.prompt).length} chars; max for video is ${A.promptMax}.`);
+  }
+  return { errors };
+}
+
+// Live pre-generation guard. Runs validateValues and, if anything looks
+// invalid, warns the user with the specific reasons and lets them decide
+// (OK = generate anyway, Cancel = stop). We deliberately do NOT hard-block
+// — a false positive must never lock the user out of generating. Returns
+// true when generation should proceed.
+function mmxPreflightConfirm(tabKey, values) {
+  try {
+    const { errors } = validateValues(tabKey, values);
+    if (errors && errors.length) {
+      return window.confirm(
+        'These settings will likely be rejected by the MiniMax API:\n\n• ' +
+        errors.join('\n• ') +
+        '\n\nGenerate anyway?'
+      );
+    }
+  } catch (_) { /* never block generation on a validator bug */ }
+  return true;
+}
+
+window.ModelSpecs = { MODEL_SPECS, MMX_ALLOWED, getRowSpec, validateTabAgainstSpec, validateValues, mmxPreflightConfirm };

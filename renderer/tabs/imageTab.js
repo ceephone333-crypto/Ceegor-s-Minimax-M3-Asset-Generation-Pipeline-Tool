@@ -226,6 +226,13 @@ window.TABS.image = {
         for (const e of preErrs) toast(e, 'err', 6000);
         return;
       }
+      // Authoritative allowed-value / combination check (warn + proceed).
+      if (typeof mmxPreflightConfirm === 'function' && !mmxPreflightConfirm('image', {
+        model: model.input.getValue(), 'aspect-ratio': aspect.input.getValue(),
+        n: n.input.getValue(), width: width.input.getValue(), height: height.input.getValue(),
+        'response-format': respFmt.input.getValue ? respFmt.input.getValue() : respFmt.input.value,
+        prompt: promptText,
+      })) return;
       const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
       const seedVal = seed.input.getValue();
       const seedLocked = String(seedVal) !== '' && variantsCount > 1;

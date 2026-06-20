@@ -2353,6 +2353,23 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   font-weight: 600;
 }
 .batch-empty { color: var(--fg-2); font-style: italic; padding: 16px; text-align: center; }
+/* Per-entry wrapper: the prompt row + an optional params editor +
+   defective-reason line, stacked. */
+.batch-entry { display: flex; flex-direction: column; gap: 3px; padding: 4px; border-radius: var(--radius-sm); }
+.batch-entry .batch-params-input {
+  font-family: var(--font-mono); font-size: 11px;
+  padding: 3px 6px; margin-left: 34px; /* align under the textarea, past the number cell */
+}
+.batch-defective-reasons {
+  margin-left: 34px; color: var(--danger); font-size: 11.5px; line-height: 1.35;
+}
+.batch-defective-reasons:empty { display: none; }
+/* A defective entry is tinted + edged red so it stands out in the list. */
+.batch-entry-defective {
+  background: rgba(255, 138, 138, 0.07);
+  outline: 1px solid var(--danger);
+}
+.batch-entry-defective .batch-num { background: var(--danger); color: #fff; }
 
 /* ========== BatchGen overlay ========== */
 /* v1.1.11 (reported by user): BatchGen "All Types" dashboard

@@ -36,8 +36,8 @@ window.TABS.speech = {
         { value: 'speech-2.6-turbo', label: 'speech-2.6-turbo' },
         { value: 'speech-02-hd', label: 'speech-02-hd' },
         { value: 'speech-02-turbo', label: 'speech-02-turbo' },
-        { value: 'speech-2.6', label: 'speech-2.6 (legacy)' },
-        { value: 'speech-02', label: 'speech-02 (legacy)' },
+        { value: 'speech-01-hd', label: 'speech-01-hd (legacy)' },
+        { value: 'speech-01-turbo', label: 'speech-01-turbo (legacy)' },
       ],
       help: 'Text-to-speech model.\n\nspeech-2.8-hd (default): Newest, best audio quality, supports sound tags.\nspeech-2.8-turbo: Same quality tier but lower latency.\nspeech-2.6-hd / 2.6-turbo: Previous generation, still high quality.\nspeech-02-hd / 02-turbo: Older generation, 24 languages.\nLegacy 2.6 / 02: Use only if you hit issues with 2.8.\n\nAll models: up to 10 000 chars input, --speed / --volume / --pitch supported.',
     });
@@ -52,9 +52,11 @@ window.TABS.speech = {
       help: 'Playback speed multiplier. 1.0 = normal.',
     });
     const volume = buildParamRow('--volume', {
-      kind: 'number', default: 1, min: 0, max: 10, step: 1,
-      options: [0, 1, 2, 3, 5, 7, 10].map((v) => ({ value: v, label: String(v) })),
-      help: 'Volume level 0 (silent) – 10 (loudest).',
+      // API range is (0, 10] — 0 is NOT accepted (the request errors), so
+      // the dropdown starts at 1.
+      kind: 'number', default: 1, min: 1, max: 10, step: 1,
+      options: [1, 2, 3, 5, 7, 10].map((v) => ({ value: v, label: String(v) })),
+      help: 'Volume level 1–10 (must be greater than 0).',
     });
     const pitch = buildParamRow('--pitch', {
       kind: 'number', default: 0, min: -12, max: 12, step: 1,
@@ -75,9 +77,11 @@ window.TABS.speech = {
       help: 'Output audio container.',
     });
     const sampleRate = buildParamRow('--sample-rate', {
+      // Allowed by the T2A API: 8000/16000/22050/24000/32000/44100.
+      // 48000 is NOT accepted (was previously offered and would error).
       kind: 'number', default: 32000, step: 1000,
-      options: [8000, 16000, 22050, 24000, 32000, 44100, 48000].map((v) => ({ value: v, label: String(v) })),
-      help: 'Sample rate in Hz.',
+      options: [8000, 16000, 22050, 24000, 32000, 44100].map((v) => ({ value: v, label: String(v) })),
+      help: 'Sample rate in Hz. Allowed: 8000, 16000, 22050, 24000, 32000, 44100.',
     });
     const bitrate = buildParamRow('--bitrate', {
       kind: 'number', default: 128000, step: 1000,
@@ -214,6 +218,14 @@ window.TABS.speech = {
         for (const e of preErrs) toast(e, 'err', 6000);
         return;
       }
+      // Authoritative allowed-value / range check (warns + lets the user
+      // proceed) so an out-of-range value can't silently waste a request.
+      if (typeof mmxPreflightConfirm === 'function' && !mmxPreflightConfirm('speech', {
+        model: model.input.getValue(), format: format.input.value,
+        'sample-rate': sampleRate.input.getValue(), bitrate: bitrate.input.getValue(),
+        channels: channels.input.getValue(), speed: speed.input.getValue(),
+        volume: volume.input.getValue(), pitch: pitch.input.getValue(), text: txt,
+      })) return;
       // Speech-specific gate: --bitrate only matters when the
       // output format is a lossy codec (mp3 / opus). The spec
       // table's perRowOverrides flags this so we suppress a

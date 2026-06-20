@@ -208,6 +208,45 @@ function parseParams(paramStr) {
   return params;
 }
 
+// Build a batch entry from an imported row, running the authoritative
+// parameter check. Invalid rows are STILL imported (so the user keeps
+// their prompt) but tagged with `_defective: [reasons]` — the BatchGen
+// runner skips defective rows, and the queue editor shows the reasons +
+// lets the user repair them. This is the "validate on import, mark
+// defective, repair in the editor" behaviour the user asked for.
+function buildImportedEntry(type, prompt, params) {
+  const entry = { prompt, ...params };
+  try {
+    const vv = window.ModelSpecs && window.ModelSpecs.validateValues;
+    if (vv) {
+      const { errors } = vv(type, Object.assign({}, params, { prompt }), { partial: true });
+      if (errors && errors.length) entry._defective = errors;
+      else if (entry._defective) delete entry._defective;
+    }
+  } catch (_) { /* validation must never block import */ }
+  return entry;
+}
+// Reconstruct a CLI-style flag string from a batch entry's params so the
+// queue editor can display + re-edit them. Skips the prompt and internal
+// bookkeeping keys.
+function reconstructParamStr(entry) {
+  if (!entry || typeof entry !== 'object') return '';
+  const skip = new Set(['prompt', 'text', '_defective', 'ts', 'label', 'settings']);
+  const parts = [];
+  for (const [k, val] of Object.entries(entry)) {
+    if (skip.has(k)) continue;
+    if (val === true || val === 'true') { parts.push('--' + k); continue; }
+    if (val == null || val === '') continue;
+    const s = String(val);
+    parts.push('--' + k + ' ' + (/\s/.test(s) ? '"' + s + '"' : s));
+  }
+  return parts.join(' ');
+}
+
+window.BatchManager = window.BatchManager || {};
+window.BatchManager.buildImportedEntry = buildImportedEntry;
+window.BatchManager.reconstructParamStr = reconstructParamStr;
+
 async function importBatchFileDialog() {
   try {
     const pickResult = await window.api.pickFile({
@@ -228,6 +267,7 @@ async function importBatchFileDialog() {
     const lines = content.split(/\r?\n/);
     const importedBatches = { image: [], speech: [], music: [], video: [] };
     let importCount = 0;
+    let defectiveCount = 0;
 
     for (let line of lines) {
       line = line.trim();
@@ -245,7 +285,9 @@ async function importBatchFileDialog() {
 
           if (['image', 'speech', 'music', 'video'].includes(type) && prompt) {
             const params = parseParams(paramStr);
-            importedBatches[type].push({ prompt, ...params });
+            const entry = buildImportedEntry(type, prompt, params);
+            if (entry._defective) defectiveCount++;
+            importedBatches[type].push(entry);
             importCount++;
           }
         }
@@ -258,7 +300,9 @@ async function importBatchFileDialog() {
 
           if (['image', 'speech', 'music', 'video'].includes(type) && prompt) {
             const params = parseParams(paramStr);
-            importedBatches[type].push({ prompt, ...params });
+            const entry = buildImportedEntry(type, prompt, params);
+            if (entry._defective) defectiveCount++;
+            importedBatches[type].push(entry);
             importCount++;
           }
         }
@@ -282,6 +326,15 @@ async function importBatchFileDialog() {
         }
       }
       m.appendChild(countsList);
+
+      // Warn about entries that failed the parameter check. They are
+      // imported but marked defective: the BatchGen runner skips them and
+      // the queue editor (✎) lets the user fix the flagged settings.
+      if (defectiveCount > 0) {
+        m.appendChild(el('div', {
+          style: 'margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--danger); border-radius: var(--radius-sm); background: rgba(255,138,138,0.08); color: var(--danger); font-size: 12.5px;',
+        }, `⚠ ${defectiveCount} item${defectiveCount === 1 ? '' : 's'} ha${defectiveCount === 1 ? 's' : 've'} invalid settings and ${defectiveCount === 1 ? 'is' : 'are'} marked defective. They will be imported and kept in the queue but skipped during generation until you repair them in the queue editor (✎).`));
+      }
 
       m.appendChild(el('p', { style: 'font-size: 12px; font-weight: bold;' }, 'Choose how to import these items:'));
 

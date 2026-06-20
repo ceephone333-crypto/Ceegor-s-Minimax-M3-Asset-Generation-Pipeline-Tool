@@ -168,7 +168,6 @@ window.TABS.music = {
         { value: 'music-2.6', label: 'music-2.6 (newest — cover, instrumental, lyrics-optimizer, default)' },
         { value: 'music-2.5+', label: 'music-2.5+ (instrumental unlocked, richer arrangements)' },
         { value: 'music-2.5', label: 'music-2.5 (paragraph-level precision, 14+ structure tags)' },
-        { value: 'music-2.0', label: 'music-2.0 (legacy)' },
       ],
       help: 'Music generation model.\n\nmusic-2.6 (default): Newest. Supports --lyrics-optimizer, --instrumental,\n  --lyrics, --cover. Best for full-length songs with vocals.\n\nmusic-2.5+: Instrumental mode unlocked natively, richer multi-instrument\n  arrangements. Use when music-2.6 instrumental sounds too thin.\n\nmusic-2.5: 14+ structure tags with paragraph-level precision. Good\n  when you need fine-grained control over song structure.\n\nmusic-2.0: Legacy. May not support --lyrics or --instrumental.',
     });
@@ -315,9 +314,11 @@ window.TABS.music = {
       help: 'Output audio container.',
     });
     const sampleRate = buildParamRow('--sample-rate', {
+      // Allowed by the music API: 16000/24000/32000/44100. 22050 and 48000
+      // (previously offered) are rejected with "sample rate ... not allowed".
       kind: 'number', default: 44100, step: 1000,
-      options: [22050, 32000, 44100, 48000].map((v) => ({ value: v, label: String(v) })),
-      help: 'Sample rate in Hz.',
+      options: [16000, 24000, 32000, 44100].map((v) => ({ value: v, label: String(v) })),
+      help: 'Sample rate in Hz. Allowed: 16000, 24000, 32000, 44100.',
     });
     const bitrate = buildParamRow('--bitrate', {
       kind: 'number', default: 128000, step: 1000,
@@ -438,6 +439,20 @@ window.TABS.music = {
       if (preErrs.length) {
         for (const e of preErrs) toast(e, 'err', 6000);
         return;
+      }
+      // Authoritative allowed-value / combination check (warn + proceed).
+      // Map the single "Vocal mode" selector onto the API's mutually
+      // exclusive instrumental / lyrics-optimizer / lyrics flags.
+      if (typeof mmxPreflightConfirm === 'function') {
+        const _modeVal = mode.input.value;
+        if (!mmxPreflightConfirm('music', {
+          model: musicModel, format: audioFormat.input.value,
+          'sample-rate': sampleRate.input.getValue(), bitrate: bitrate.input.getValue(),
+          'output-format': outputFormat.input.value, prompt: promptText,
+          instrumental: _modeVal === 'instrumental',
+          'lyrics-optimizer': _modeVal === 'lyrics-optimizer',
+          lyrics: _modeVal === 'lyrics' ? (lyricsFile.input.getValue() || lyrics.input.value) : '',
+        })) return;
       }
       // music-2.0 doesn't have --sample-rate 8000 in its accepted
       // set, so we already validate. But for safety: if the user

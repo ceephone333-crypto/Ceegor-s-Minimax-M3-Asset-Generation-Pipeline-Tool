@@ -7,6 +7,9 @@
 // toolbar Setup Batch Mode button) and the global keyboard
 // shortcut Ctrl+B (see installKeyboardShortcuts in app.js).
 
+// reconstructParamStr is defined in batchImportHelper.js (loaded first)
+// and read via window.BatchManager below — NOT re-declared here (a global
+// const of the same name would collide and break this script).
 function openBatchManager(tabKey) {
   const tabName = tabKey.charAt(0).toUpperCase() + tabKey.slice(1);
   const current = (state.batches[tabKey] || []).slice();
@@ -33,6 +36,8 @@ function openBatchManager(tabKey) {
         return;
       }
       current.forEach((entry, i) => {
+        const isObj = entry && typeof entry === 'object';
+        const entryWrap = el('div', { class: 'batch-entry' });
         const row = el('div', { class: 'batch-row' });
         const num = el('div', { class: 'batch-num' }, String(i + 1));
         // Bug-fix #5: extract text from either shape (string or
@@ -41,26 +46,51 @@ function openBatchManager(tabKey) {
         // "[object Object]".
         const ta = el('textarea', {}, getEntryText(entry));
         ta.placeholder = tabKey === 'speech' ? 'Text to read…' : 'Prompt for asset…';
-        ta.addEventListener('input', () => {
-          // Preserve params on object entries; collapse to string on
-          // string entries. The helper centralises this logic.
-          current[i] = setEntryText(current[i], ta.value);
-        });
-        // Bug-fix #5 (UX nicety): small badge on object entries so the
-        // user knows settings are attached to this row.
-        if (entry && typeof entry === 'object') {
-          const badge = el('span', {
-            class: 'batch-params-badge',
-            title: 'This entry has captured settings (style, upscale, etc.) that will be applied at run time.',
-            style: 'margin-left: 4px; padding: 1px 5px; border-radius: 8px; font-size: 10px; background: var(--accent, #d9a300); color: var(--bg-1, #1a1a1a); font-weight: bold;',
-          }, '+params');
-          row.appendChild(badge);
-        }
         const up = el('button', { class: 'btn-mini', title: 'Move up', onclick: () => { if (i > 0) { [current[i-1], current[i]] = [current[i], current[i-1]]; renderList(); } } }, '↑');
         const down = el('button', { class: 'btn-mini', title: 'Move down', onclick: () => { if (i < current.length-1) { [current[i+1], current[i]] = [current[i], current[i+1]]; renderList(); } } }, '↓');
         const del = el('button', { class: 'btn-mini danger', title: 'Remove', onclick: () => { current.splice(i, 1); renderList(); } }, '✕');
         row.append(num, ta, up, down, del);
-        list.appendChild(row);
+        entryWrap.appendChild(row);
+
+        // Per-entry parameters editor + live defective check. Object
+        // entries (imported rows, or "+ Add" snapshots) carry CLI-style
+        // flags; we surface them as an editable field so the user can
+        // REPAIR a defective entry right here (the user's explicit ask).
+        // Pure string entries have no params and stay simple.
+        let reasonsEl = null;
+        let paramsInp = null;
+        const refreshDefective = () => {
+          const cur = current[i];
+          const def = cur && typeof cur === 'object' && Array.isArray(cur._defective) ? cur._defective : null;
+          if (def && def.length) { entryWrap.classList.add('batch-entry-defective'); if (reasonsEl) reasonsEl.textContent = '⚠ ' + def.join('  •  '); }
+          else { entryWrap.classList.remove('batch-entry-defective'); if (reasonsEl) reasonsEl.textContent = ''; }
+        };
+        const revalidate = () => {
+          if (!paramsInp) return;
+          const parse = (window.BatchManager && window.BatchManager.parseParams) || (() => ({}));
+          const make = (window.BatchManager && window.BatchManager.buildImportedEntry) || ((t, p, pr) => ({ prompt: p, ...pr }));
+          const np = parse(paramsInp.value);
+          current[i] = make(tabKey, getEntryText(current[i]), np);
+          refreshDefective();
+        };
+        ta.addEventListener('input', () => {
+          current[i] = setEntryText(current[i], ta.value);
+          revalidate();
+        });
+        if (isObj) {
+          paramsInp = el('input', {
+            type: 'text', class: 'batch-params-input',
+            value: ((window.BatchManager && window.BatchManager.reconstructParamStr) || (() => ''))(entry),
+            placeholder: '--model … --bitrate … (CLI-style flags)',
+            title: 'Per-entry parameters. Edit these to repair a defective entry; valid values clear the ⚠ flag.',
+          });
+          paramsInp.addEventListener('input', revalidate);
+          reasonsEl = el('div', { class: 'batch-defective-reasons' });
+          entryWrap.appendChild(paramsInp);
+          entryWrap.appendChild(reasonsEl);
+        }
+        refreshDefective();
+        list.appendChild(entryWrap);
       });
     }
     renderList();
@@ -180,7 +210,7 @@ async function startBatchGen(tabKey) {
     log.scrollTop = log.scrollHeight;
   }
 
-  let ok = 0, fail = 0;
+  let ok = 0, fail = 0, skipped = 0;
   let batchError = null;
   // v1.1.9: seed the per-tab "batch queue left" counter so the
   // per-tab ETA timer (section10) can include the remaining
@@ -206,6 +236,17 @@ async function startBatchGen(tabKey) {
       // Update the "items left" counter for the per-tab ETA so the
       // user can see the queue draining in real time.
       if (state.batchQueueLeft) state.batchQueueLeft[tabKey] = Math.max(0, items.length - i - 1);
+
+      // Skip entries marked defective (failed the parameter check on
+      // import or in the editor). They stay in the queue — never
+      // auto-removed — so the user can repair them in the editor (✎) and
+      // re-run. Sending them would just burn a request on a guaranteed
+      // API rejection.
+      if (isObj && Array.isArray(item._defective) && item._defective.length) {
+        skipped++;
+        logLine(`⚠ ${i + 1}/${items.length} skipped — defective: ${item._defective[0]}`, 'warn');
+        continue;
+      }
 
       let currentVariantsCount = variantsCount;
       if (isObj) {
@@ -402,9 +443,10 @@ async function startBatchGen(tabKey) {
     if (styleSel) styleSel.value = savedStyle;
     if (variantsSel) variantsSel.value = savedVariants;
   });
-  if (lastCmd) lastCmd.textContent = `BatchGen finished: ${ok} ok, ${fail} failed. (variants ×${variantsCount})`;
+  const skipNote = skipped > 0 ? `, ${skipped} skipped (defective)` : '';
+  if (lastCmd) lastCmd.textContent = `BatchGen finished: ${ok} ok, ${fail} failed${skipNote}. (variants ×${variantsCount})`;
 
-  toast(`BatchGen done: ${ok} ok, ${fail} failed.`, batchError ? 'err' : (fail === 0 ? 'ok' : 'warn'), 6000);
+  toast(`BatchGen done: ${ok} ok, ${fail} failed${skipNote}.`, batchError ? 'err' : ((fail === 0 && skipped === 0) ? 'ok' : 'warn'), 6000);
   // Refresh the per-tab batch buttons so the "Start BatchGen (N)" count
   // reflects any items auto-removed during this run (otherwise the count
   // stays stale until the next manual refresh / tab rebuild).

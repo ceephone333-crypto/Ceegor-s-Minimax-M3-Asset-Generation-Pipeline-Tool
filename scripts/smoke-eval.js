@@ -66,7 +66,7 @@ app.whenReady().then(async () => {
     const logs = [];
     win.webContents.on('console-message', (_e, level, message) => { if (level >= 2) logs.push(message); });
     await win.loadFile(path.join(APP_ROOT, 'renderer', 'index.html'));
-    await win.webContents.executeJavaScript(`window.__err=[];addEventListener('error',e=>__err.push(''+(e.error&&e.error.stack||e.message)));addEventListener('unhandledrejection',e=>__err.push('rej:'+((e.reason&&e.reason.stack)||e.reason)));true`);
+    await win.webContents.executeJavaScript(`window.__err=[];addEventListener('error',e=>__err.push(''+(e.error&&e.error.stack||e.message)));addEventListener('unhandledrejection',e=>__err.push('rej:'+((e.reason&&e.reason.stack)||e.reason)));window.confirm=()=>true;true`);
     for (let i = 0; i < 40; i++) {
       const ok = await win.webContents.executeJavaScript(`!!(document.querySelector('#tab-image')&&document.querySelector('#tab-image').children.length>0)`).catch(() => false);
       if (ok) break; await sleep(250);
