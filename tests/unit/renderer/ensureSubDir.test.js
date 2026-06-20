@@ -67,13 +67,23 @@ async function ensureSubDir(base, fbDir, name, fbMkdir) {
   const baseSep = base.includes('\\') ? '\\' : '/';
   const join = (a, b, sep) => a.replace(/[\\/]+$/, '') + sep + b;
   let targetDir;
-  if (fbNorm && (fbNorm === baseNorm || fbNorm.startsWith(baseNorm + '/'))) {
+  let externalPicked = false;
+  if (fbNorm && fbNorm.startsWith(baseNorm + '/')) {
+    // Case 2: real subfolder of output_dir
     targetDir = (fbDir || '').replace(/[\\/]+$/, '');
+  } else if (fbNorm && fbNorm !== baseNorm && !fbNorm.startsWith(baseNorm + '/')) {
+    // Case 4: external folder (e.g. picked via the native dialog)
+    targetDir = (fbDir || '').replace(/[\\/]+$/, '');
+    externalPicked = true;
   } else {
+    // Case 3: empty / equal to output_dir root → per-tab default
     targetDir = join(base, name, baseSep);
   }
   if (targetDir === join(base, name, baseSep)) {
     await fbMkdir(base, name).catch(() => null);
+  } else if (externalPicked) {
+    const picked = (fbDir || '').replace(/[\\/]+$/, '');
+    await fbMkdir(picked, name).catch(() => null);
   } else {
     const stripped = targetDir.replace(/[\\/]+$/, '');
     const baseN = base.replace(/[\\/]+$/, '');
@@ -98,12 +108,21 @@ test('throws when output_dir is blank', async () => {
   );
 });
 
-test('uses <output>/<tabName> when fbDir is not under output_dir', async () => {
+test('respects external picked folder (outside output_dir) — used as the destination', async () => {
+  // Bug-fix v1.1.8: the previous behaviour fell back to
+  // <output>/<tabName> when fbDir was outside output_dir. The new
+  // contract treats an out-of-tree fbDir as a deliberate external
+  // pick (the user used the native dialog to drop a folder into
+  // the file browser), so the per-tab subdir is created UNDER
+  // the picked folder, not under output_dir. The picked folder is
+  // already in trustedPickPaths (pathSecurity.addTrusted ran when
+  // the picker resolved), so a single fbMkdir(picked, tabName) is
+  // the only call needed.
   const calls = [];
   const fakeMkdir = async (dir, name) => { calls.push([dir, name]); };
   const target = await ensureSubDir('C:/out', 'C:/somewhere/else', 'image', fakeMkdir);
-  assert.equal(target, pathJoin('C:/out', 'image'));
-  assert.deepEqual(calls, [['C:/out', 'image']]);
+  assert.equal(target, 'C:/somewhere/else');
+  assert.deepEqual(calls, [['C:/somewhere/else', 'image']]);
 });
 
 test('respects fbDir when it IS under output_dir', async () => {
@@ -120,12 +139,38 @@ test('respects fbDir when it IS under output_dir', async () => {
   ]);
 });
 
-test('respects fbDir when it IS the output_dir itself', async () => {
+test('respects fbDir when it IS the output_dir itself (uses per-tab default, NOT the root)', async () => {
+  // Bug-fix v1.1.8: the previous behaviour was to land files
+  // directly at the output_dir root when the user hadn't navigated
+  // into a subfolder. The new contract treats "fbDir === base" as
+  // "no subfolder was picked" and falls back to the per-tab default
+  // <output>/<tabName> — same as the empty-fbDir case. This avoids
+  // cluttering the user's drive root with stray assets.
   const calls = [];
   const fakeMkdir = async (dir, name) => { calls.push([dir, name]); };
   const target = await ensureSubDir('C:/out', 'C:/out', 'image', fakeMkdir);
-  assert.equal(target, 'C:/out');
-  assert.equal(calls.length, 0);
+  assert.equal(target, pathJoin('C:/out', 'image'));
+  assert.deepEqual(calls, [['C:/out', 'image']]);
+});
+
+test('uses per-tab default when fbDir is empty (same as fbDir === base)', async () => {
+  const calls = [];
+  const fakeMkdir = async (dir, name) => { calls.push([dir, name]); };
+  const target = await ensureSubDir('C:/out', '', 'image', fakeMkdir);
+  assert.equal(target, pathJoin('C:/out', 'image'));
+  assert.deepEqual(calls, [['C:/out', 'image']]);
+});
+
+test('respects external picked folder (outside output_dir)', async () => {
+  // User picked a folder on a different drive via the native dialog.
+  // The path is already in trustedPickPaths (the picker added it),
+  // so a single fbMkdir(picked, tabName) creates the per-tab
+  // subdir under the picked folder.
+  const calls = [];
+  const fakeMkdir = async (dir, name) => { calls.push([dir, name]); };
+  const target = await ensureSubDir('C:/out', 'E:/myproject/assets', 'image', fakeMkdir);
+  assert.equal(target, 'E:/myproject/assets');
+  assert.deepEqual(calls, [['E:/myproject/assets', 'image']]);
 });
 
 test('walks path segments when fbDir is a deeper subfolder', async () => {
@@ -144,12 +189,14 @@ test('walks path segments when fbDir is a deeper subfolder', async () => {
 test('handles Windows backslashes', async () => {
   const calls = [];
   const fakeMkdir = async (dir, name) => { calls.push([dir, name]); };
+  // fbDir === base on a drive root → per-tab default (NOT the root).
   const target = await ensureSubDir('C:\\out', 'C:\\out', 'image', fakeMkdir);
-  assert.equal(target, 'C:\\out');
-  // Trailing slash on output_dir → normalized away.
+  assert.equal(target, 'C:\\out\\image');
+  // Trailing slash on output_dir is normalised away before the
+  // call; fbDir is outside output_dir so it's case-4 (external pick).
   const target2 = await ensureSubDir('C:\\out\\', 'C:\\elsewhere', 'music', fakeMkdir);
-  assert.equal(target2, 'C:\\out\\music');
-  assert.deepEqual(calls, [['C:\\out\\', 'music']]);
+  assert.equal(target2, 'C:\\elsewhere');
+  assert.deepEqual(calls, [['C:\\out', 'image'], ['C:\\elsewhere', 'music']]);
 });
 
 test('case-insensitive subfolder match (Windows-friendly)', async () => {

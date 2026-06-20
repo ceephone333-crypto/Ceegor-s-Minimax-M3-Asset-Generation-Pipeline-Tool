@@ -264,15 +264,26 @@ function toggleTheme() {
 //   directory. This was the single biggest UX regression after the
 //   refactor.
 //
-// Behaviour:
+// Behaviour (v1.1.8 — bug-fix for "assets land in D:\ instead of the
+// selected subfolder"):
 //   1. If output_dir is blank → throw (caller shows the toast).
-//   2. If the file-browser's current folder (state.fbDir) is the
-//      output_dir or a subdir of it → use it (so a user who
-//      navigated into <output>/image sees their selection
-//      respected instead of having every image land in
-//      <output>/image regardless).
-//   3. Otherwise fall back to <output_dir>/<tabName> (the per-tab
-//      default) and create it.
+//   2. If the file-browser's current folder (state.fbDir) is a
+//      SUBFOLDER of output_dir (e.g. the user navigated into
+//      <output>/myproject) → use that subfolder directly. The
+//      per-tab default is NOT prepended (a user who explicitly
+//      navigated to a subfolder is telling us "drop it HERE").
+//   3. If the file-browser's current folder is the output_dir
+//      itself OR is empty → use <output_dir>/<tabName> as the
+//      per-tab default (NOT the output_dir root). The previous
+//      logic dropped files at the root, which clutters the
+//      user's D:\ with stray .png/.mp3 files and is almost
+//      never what the user wants when they didn't pick a
+//      subfolder.
+//   4. If the file-browser's current folder is OUTSIDE output_dir
+//      (user picked an arbitrary folder via the native dialog,
+//      e.g. E:\myproject\assets) → use that folder directly. The
+//      per-tab default is NOT prepended because the folder the
+//      user picked is already a clear "drop it here" signal.
 //
 // Folder creation goes through window.api.fbMkdir (NOT fs.write
 // or any direct write path) so the allow-list in main/services/
@@ -285,23 +296,50 @@ async function ensureSubDir(name) {
   const baseNorm = normForCompare(base);
   const fbNorm = normForCompare(state.fbDir || '');
   const baseSep = base.includes('\\') ? '\\' : '/';
-  const fbSep = (state.fbDir || '').includes('\\') ? '\\' : '/';
   const join = (a, b, sep) => a.replace(/[\\/]+$/, '') + sep + b;
+  // Decide which directory the generated files should land in.
+  // See the comment block above for the 4 cases.
   let targetDir = null;
-  if (fbNorm && (fbNorm === baseNorm || fbNorm.startsWith(baseNorm + '/'))) {
+  let externalPicked = false;
+  if (fbNorm && fbNorm.startsWith(baseNorm + '/')) {
+    // Case 2: user navigated into a real subfolder of output_dir.
     targetDir = (state.fbDir || '').replace(/[\\/]+$/, '');
+  } else if (fbNorm && fbNorm !== baseNorm && !fbNorm.startsWith(baseNorm + '/')) {
+    // Case 4: user picked a folder outside output_dir (e.g. on
+    // another drive via the 📂 button). The path is already
+    // trusted by the picker (pathSecurity.addTrusted was called
+    // by the pickFolder IPC), so a single fbMkdir(state.fbDir, name)
+    // call works — fb.mkdir does the allow-list check on the
+    // parent of the join, and the parent is the trusted pick
+    // itself, which IS under itself.
+    targetDir = (state.fbDir || '').replace(/[\\/]+$/, '');
+    externalPicked = true;
   } else {
+    // Case 3: fbDir is empty, equal to the output_dir root, or
+    // not a real subfolder — fall back to the per-tab default
+    // (NOT the root). This is the bug-fix: the previous logic
+    // would land files at the output_dir root in this case.
     targetDir = join(base, name, baseSep);
   }
   if (targetDir === join(base, name, baseSep)) {
-    // Default path: a single fbMkdir call. fbMkdir is idempotent
-    // (returns ok even if the dir already exists), so a benign
-    // retry is fine.
+    // Default path (case 3): a single fbMkdir call. fbMkdir is
+    // idempotent (returns ok even if the dir already exists), so
+    // a benign retry is fine.
     await window.api.fbMkdir(base, name).catch(() => null);
+  } else if (externalPicked) {
+    // External picked folder (case 4): the picked path itself
+    // is already an allowed root (the picker added it via
+    // pathSecurity.addTrusted). One fbMkdir call with
+    // (picked, tabName) creates the per-tab subdir under it.
+    // fb.mkdir does fs.mkdir(target, { recursive: true }), so the
+    // picked folder doesn't need to pre-exist; only the parent
+    // (the picked folder itself) needs to be writable.
+    const picked = (state.fbDir || '').replace(/[\\/]+$/, '');
+    await window.api.fbMkdir(picked, name).catch(() => null);
   } else {
-    // Deeper folder (user navigated into <output>/foo/bar/...):
-    // walk the path segment-by-segment so each mkdir is
-    // individually allow-list-checked.
+    // Subfolder of output_dir (case 2): walk the path
+    // segment-by-segment so each mkdir is individually
+    // allow-list-checked against the trusted base.
     const stripped = targetDir.replace(/[\\/]+$/, '');
     const baseN = base.replace(/[\\/]+$/, '');
     const relParts = [];
@@ -737,6 +775,18 @@ function scheduleStateSave() {
 // batch save state (used by scheduleStateSave)
 let _suppressStateSave = 0;
 let _stateSaveTimer = null;
+// Run `fn` while the auto-save debounce is suppressed. Used by the
+// BatchGen runner to overwrite the prompt / style / parameter inputs
+// per item without overwriting the user's last-saved prompt in
+// state.json. Increments _suppressStateSave before the call and
+// decrements it after, even if `fn` throws, so a buggy batch item
+// can't permanently lock the auto-save off.
+function suppressStateSave(fn) {
+  _suppressStateSave++;
+  try { return fn(); }
+  finally { _suppressStateSave--; }
+}
+window.suppressStateSave = suppressStateSave;
 function saveAllStates() {
   for (const tabKey of ['image', 'speech', 'music', 'video']) {
     const root = $('#tab-' + tabKey);
