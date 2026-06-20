@@ -88,9 +88,13 @@ async function refreshBrowser(opts = {}) {
 // cell. The 16px default matches the old behaviour for plain
 // icons — the change is invisible to the user unless they
 // enable thumbnails.
-function buildFbGridTemplate() {
+// v1.1.9: added the leftmost "select" column (a 18px checkbox
+// column). The ".." parent row skips it (checkboxes on the up
+// row would be confusing), so the caller passes
+// `withCheckbox = false` for the parent.
+function buildFbGridTemplate(withCheckbox = true) {
   const iconW = state.fbThumbnails ? '44px' : '16px';
-  const cols = [iconW, 'minmax(120px, 1fr)'];
+  const cols = withCheckbox ? ['18px', iconW, 'minmax(120px, 1fr)'] : [iconW, 'minmax(120px, 1fr)'];
   const fbCols = normalizeFbColumns(state.fbColumns);
   for (const c of FB_COLUMNS) {
     if (fbCols[c.id]) cols.push(c.gridTemplate);
@@ -228,6 +232,82 @@ window.refreshBrowser = refreshBrowser;
 var applyFileSearch = window.applyFileSearch;
 var refreshBrowser = window.refreshBrowser;
 
+// v1.1.9: multi-select via the new leftmost checkbox column.
+// state.fbSelected is a Set of fs-item paths. The Set lives on
+// window.state so the bulk-action toolbar (added in app.js) can
+// read it. We centralise the add/remove logic here so the
+// checkbox click + the bulk-action "select all" / "clear"
+// buttons stay in sync.
+function _toggleFbSelected(path, checked) {
+  if (!path) return;
+  if (!state.fbSelected || typeof state.fbSelected.has !== 'function') state.fbSelected = new Set();
+  if (checked) state.fbSelected.add(path);
+  else state.fbSelected.delete(path);
+  // Re-render the bulk-action toolbar so the count + buttons
+  // reflect the new selection. The toolbar is a sibling of
+  // the fb-list, NOT inside it, so a refresh of the fb-list
+  // wouldn't auto-update it. We dispatch a custom event the
+  // app.js toolbar listens for.
+  try {
+    window.dispatchEvent(new CustomEvent('fb-selection-changed', { detail: { size: state.fbSelected.size } }));
+  } catch (_) { /* no-op in tests */ }
+}
+// "Select all" / "clear" helpers. Used by the bulk-action
+// toolbar's master checkbox + the keyboard shortcut Ctrl+A.
+function fbSelectAll() {
+  if (!Array.isArray(state._fbItems) || !state._fbItems.length) return;
+  if (!state.fbSelected) state.fbSelected = new Set();
+  for (const it of state._fbItems) state.fbSelected.add(it.path);
+  // Re-render the list (so the checkboxes flip to checked) AND
+  // the toolbar (so the count + master checkbox update).
+  const sorted = sortFbItems(state._fbItems, state.fbSort);
+  renderFbList(sorted);
+  applyFileSearch();
+  try { window.dispatchEvent(new CustomEvent('fb-selection-changed', { detail: { size: state.fbSelected.size } })); } catch (_) {}
+}
+function fbClearSelection() {
+  if (!state.fbSelected || state.fbSelected.size === 0) return;
+  state.fbSelected = new Set();
+  const sorted = Array.isArray(state._fbItems) ? sortFbItems(state._fbItems, state.fbSort) : [];
+  renderFbList(sorted);
+  applyFileSearch();
+  try { window.dispatchEvent(new CustomEvent('fb-selection-changed', { detail: { size: 0 } })); } catch (_) {}
+}
+// Bulk-action worker. Iterates the selected paths and calls
+// `op(path, i, total)`. The op runs sequentially because some
+// ops (rename, delete) can race if fired in parallel via IPC.
+// On each success we remove the path from fbSelected + update
+// the toolbar; on failure we surface the error and KEEP the
+// path in fbSelected so the user can retry. We re-render the
+// list at the end so the deleted / moved rows disappear.
+async function fbBulkAction(label, op) {
+  const paths = state.fbSelected ? Array.from(state.fbSelected) : [];
+  if (!paths.length) { toast('Select at least one item first.', 'warn'); return; }
+  if (!confirm(`${label} ${paths.length} item${paths.length === 1 ? '' : 's'}?`)) return;
+  let ok = 0, fail = 0;
+  for (let i = 0; i < paths.length; i++) {
+    const p = paths[i];
+    try {
+      await op(p, i, paths.length);
+      if (state.fbSelected) state.fbSelected.delete(p);
+      ok++;
+    } catch (e) {
+      fail++;
+      console.error('fbBulkAction failed for', p, e);
+    }
+  }
+  if (fail) toast(`${label}: ${ok} ok, ${fail} failed (kept in selection).`, 'warn', 6000);
+  else toast(`${label}: ${ok} item${ok === 1 ? '' : 's'} ok.`, 'ok', 2000);
+  // Re-render so deleted / moved rows disappear + checkboxes
+  // for succeeded paths flip off. Bulk move/delete also needs
+  // the folder contents to refresh, so we re-fetch.
+  await refreshBrowser();
+  try { window.dispatchEvent(new CustomEvent('fb-selection-changed', { detail: { size: state.fbSelected ? state.fbSelected.size : 0 } })); } catch (_) {}
+}
+window.fbSelectAll = fbSelectAll;
+window.fbClearSelection = fbClearSelection;
+window.fbBulkAction = fbBulkAction;
+
 // Phase 3 Block 13: _attachDropTarget() extrahiert nach
 // renderer/utils/dropTarget.js. Shim-Alias unten.
 const { attachDropTarget: _attachDropTarget } = window.DropTarget;
@@ -288,7 +368,10 @@ function renderFbList(items) {
       class: 'fb-item',
       // Same grid-template-columns as the regular rows below so
       // the .. (up) row's icon + name cells line up with the rest.
-      style: 'grid-template-columns: ' + buildFbGridTemplate() + ';',
+      // v1.1.9: pass withCheckbox=false so the ".." row skips the
+      // leftmost select column (a checkbox on the up row would
+      // be confusing — the row isn't a real item to operate on).
+      style: 'grid-template-columns: ' + buildFbGridTemplate(false) + ';',
     }, [
       el('span', { class: 'icon fb-icon' }, '↩'),
       el('span', { class: 'name' }, '.. (up)'),
@@ -332,6 +415,22 @@ function renderFbList(items) {
       const cls = `col-${c.id}`;
       cellEls.push(el('span', { class: cls, title: title || '' }, text));
     }
+    // v1.1.9: leftmost checkbox for multi-select. Directories
+    // can also be selected (a bulk move of a folder tree is
+    // a valid use case). The checkbox is the FIRST cell in
+    // the row, so we wrap it in a div and prepend it to the
+    // cell list. The click handler is bound to the checkbox
+    // only (stopPropagation), so a click on the checkbox
+    // doesn't ALSO trigger the row's normal click handler
+    // (which would change state._selected and load a
+    // preview). The grid template has 1 extra column for
+    // the checkbox (see buildFbGridTemplate above).
+    const cb = el('input', { type: 'checkbox', class: 'fb-select-cb' });
+    if (state.fbSelected && state.fbSelected.has(it.path)) cb.checked = true;
+    cb.addEventListener('click', (ev) => { ev.stopPropagation(); _toggleFbSelected(it.path, cb.checked); });
+    cb.addEventListener('change', () => { _toggleFbSelected(it.path, cb.checked); });
+    const cbCell = el('div', { class: 'fb-cb-cell' }, cb);
+    cellEls.unshift(cbCell);
     const li = el('li', {
       class: 'fb-item',
       'data-path': it.path,

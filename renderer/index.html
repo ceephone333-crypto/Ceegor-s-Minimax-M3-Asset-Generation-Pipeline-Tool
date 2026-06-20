@@ -64,6 +64,23 @@
         <button id="fb-open" class="btn-mini" title="Open in Explorer" data-help-topic="sidebar.openExplorerBtn">↗</button>
         <button id="fb-options" class="btn-mini" title="Folder options (columns, sort)" data-help-topic="sidebar.options">⚙ Options</button>
       </div>
+      <!-- v1.1.9: bulk-action toolbar. Appears only when the
+           user has ticked at least one checkbox in the file
+           list. Shows a count + master checkbox + Move here /
+           Delete buttons. The toolbar lives in app.js (created
+           dynamically so it can be reused by other sections
+           and so the index.html stays lean). -->
+      <div id="fb-bulk-toolbar" class="fb-bulk-toolbar" style="display: none;">
+        <label class="fb-bulk-master" title="Select / deselect all visible items">
+          <input type="checkbox" id="fb-bulk-master-cb" />
+          <span id="fb-bulk-count">0 selected</span>
+        </label>
+        <button id="fb-bulk-move" class="btn-mini" title="Move the selected items into the current folder">⤵ Move here</button>
+        <button id="fb-bulk-copy" class="btn-mini" title="Copy the selected items into the current folder">⎘ Copy here</button>
+        <button id="fb-bulk-trim" class="btn-mini" title="Trim the audio head/tail on the selected audio files" data-help-topic="sidebar.bulkTrim">✂ Trim</button>
+        <button id="fb-bulk-delete" class="btn-mini danger" title="Delete the selected items (asks for confirmation)">🗑 Delete</button>
+        <button id="fb-bulk-clear" class="btn-mini" title="Clear the selection">✕</button>
+      </div>
       <ul id="fb-list" class="fb-list"></ul>
     </aside>
   </main>

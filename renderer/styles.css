@@ -938,8 +938,9 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   display: grid;
   /* The default (no optional columns visible) — icon + name.
    The renderer overrides this with buildFbGridTemplate() on
-   every render. */
-  grid-template-columns: 16px minmax(120px, 1fr) minmax(70px, auto);
+   every render. v1.1.9: 18px select column added at the
+   leftmost position for the multi-select checkboxes. */
+  grid-template-columns: 18px 16px minmax(120px, 1fr) minmax(70px, auto);
   /* Critical for horizontal scrolling: the grid's intrinsic
    width must be at least the sum of the column min-widths,
    even when that exceeds the parent's width. min-width:
@@ -975,6 +976,67 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   padding-bottom: 6px;
 }
 .fb-item:hover { background: var(--bg-3); }
+
+/* v1.1.9: leftmost checkbox cell. The .fb-cb-cell is the
+   container so the row's CSS-grid layout doesn't try to make
+   the checkbox span 2+ columns by accident. The checkbox
+   itself is small (14×14) and centred. Click is stopped at
+   the checkbox so it doesn't ALSO trigger the row's normal
+   click handler (which would change state._selected and
+   load a preview). */
+.fb-item .fb-cb-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  max-width: 18px;
+  cursor: default; /* the row's own cursor:pointer still applies; this just makes the checkbox area not advertise itself as a link */
+}
+.fb-item .fb-cb-cell .fb-select-cb {
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+/* v1.1.9: bulk-action toolbar. Hidden by default; app.js
+   shows it when at least one checkbox is ticked. Sits in
+   its own row between the regular toolbar (#fb-search etc.)
+   and the list, so the list height shrinks slightly while
+   the toolbar is visible. Background is the same as the
+   toolbar so the two rows read as one toolbar group. */
+.fb-bulk-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.fb-bulk-toolbar .fb-bulk-master {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-2);
+  margin-right: 4px;
+  user-select: none;
+}
+.fb-bulk-toolbar #fb-bulk-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+}
+.fb-bulk-toolbar .btn-mini { font-size: 11px; padding: 2px 8px; }
+.fb-bulk-toolbar .btn-mini.danger { color: var(--danger); }
+
+/* When at least one checkbox is ticked, give the matching
+   row a subtle left-bar accent so the user can scan the
+   selection at a glance. */
+.fb-item.fb-selected-row { border-left-color: var(--accent) !important; }
+.fb-item.fb-selected-row .name { font-weight: 600; }
 /* Zebra striping: every second row gets a subtle background
    so a long folder list scans as separate items even when no
    row is hovered. We use a slightly tinted bg-2 (a hair
@@ -1854,9 +1916,36 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
 }
 #log {
   margin: 0; padding: 6px 14px 12px;
-  max-height: 160px; overflow: auto;
+  /* Bug-fix v1.1.9 (reported by user): the 160px cap was way too
+     small for a busy session — a long batchGen run can produce
+     hundreds of events, and at 160px the user could only see ~10
+     rows. The pane is now allowed to grow to fill the available
+     logbar height (the .logbar-log #log override below sets
+     max-height: none), AND it gets an explicit scrollbar style so
+     it's obvious there's more content to scroll to. The thumb is
+     tinted in the accent color so it stands out against the dark
+     logbar background. */
+  max-height: 100%;
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) transparent;
   font-family: var(--font-mono); font-size: 12px;
   color: var(--fg-2); white-space: pre-wrap;
+}
+/* Webkit (Electron) scrollbar styling. The standard scrollbar-width
+   declaration above is for Firefox; Chromium needs the explicit
+   pseudo-elements. Match the thin + accent-tinted look. */
+#log::-webkit-scrollbar { width: 10px; }
+#log::-webkit-scrollbar-track { background: transparent; }
+#log::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: 5px;
+  border: 2px solid var(--bg-2);
+}
+#log::-webkit-scrollbar-thumb:hover { background: var(--accent-2); }
 }
 /* ========== Structured event log ==========
    Each event is a single row in the .log-pane. The row is a
@@ -1976,6 +2065,55 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
 .log-pane .log-event[data-log-cat="error"]    { border-left-color: var(--danger); }
 .log-pane .log-event[data-log-cat="cancel"]   { border-left-color: var(--fg-3); }
 .log-pane .log-event.selected { border-left-color: var(--accent) !important; }
+
+/* v1.1.9: per-group colour tints. Each generation run / picture
+   group gets one of 12 stable hues; events belonging to the same
+   group share a faint left-tint AND a faint row background so the
+   user can visually trace which log lines belong to which picture.
+   The hue cycle repeats every 12 group ids, so a long session
+   doesn't grow an unbounded stylesheet. HSL with relatively
+   low saturation + high lightness so the underlying category
+   border (set above) still reads on top. */
+.log-pane .log-event.log-group-0  { background: hsla(  0, 70%, 50%, 0.06); border-left-color: hsla(  0, 70%, 55%, 0.9); }
+.log-pane .log-event.log-group-1  { background: hsla( 30, 70%, 50%, 0.06); border-left-color: hsla( 30, 70%, 55%, 0.9); }
+.log-pane .log-event.log-group-2  { background: hsla( 60, 70%, 50%, 0.06); border-left-color: hsla( 60, 70%, 55%, 0.9); }
+.log-pane .log-event.log-group-3  { background: hsla( 90, 70%, 45%, 0.06); border-left-color: hsla( 90, 70%, 50%, 0.9); }
+.log-pane .log-event.log-group-4  { background: hsla(140, 60%, 45%, 0.06); border-left-color: hsla(140, 60%, 50%, 0.9); }
+.log-pane .log-event.log-group-5  { background: hsla(180, 60%, 45%, 0.06); border-left-color: hsla(180, 60%, 50%, 0.9); }
+.log-pane .log-event.log-group-6  { background: hsla(210, 70%, 55%, 0.06); border-left-color: hsla(210, 70%, 60%, 0.9); }
+.log-pane .log-event.log-group-7  { background: hsla(240, 60%, 60%, 0.06); border-left-color: hsla(240, 60%, 65%, 0.9); }
+.log-pane .log-event.log-group-8  { background: hsla(270, 60%, 60%, 0.06); border-left-color: hsla(270, 60%, 65%, 0.9); }
+.log-pane .log-event.log-group-9  { background: hsla(300, 60%, 55%, 0.06); border-left-color: hsla(300, 60%, 60%, 0.9); }
+.log-pane .log-event.log-group-10 { background: hsla(330, 70%, 55%, 0.06); border-left-color: hsla(330, 70%, 60%, 0.9); }
+.log-pane .log-event.log-group-11 { background: hsla(200, 40%, 60%, 0.06); border-left-color: hsla(200, 40%, 65%, 0.9); }
+/* On hover / selection, the bg colour darkens slightly so the
+   group tint is still visible. The accent "selected" border
+   always wins (set above) so the user can still see the
+   selection ring. */
+.log-pane .log-event.log-group-0:hover,
+.log-pane .log-event.log-group-0.selected  { background: hsla(  0, 70%, 50%, 0.12); }
+.log-pane .log-event.log-group-1:hover,
+.log-pane .log-event.log-group-1.selected  { background: hsla( 30, 70%, 50%, 0.12); }
+.log-pane .log-event.log-group-2:hover,
+.log-pane .log-event.log-group-2.selected  { background: hsla( 60, 70%, 50%, 0.12); }
+.log-pane .log-event.log-group-3:hover,
+.log-pane .log-event.log-group-3.selected  { background: hsla( 90, 70%, 45%, 0.12); }
+.log-pane .log-event.log-group-4:hover,
+.log-pane .log-event.log-group-4.selected  { background: hsla(140, 60%, 45%, 0.12); }
+.log-pane .log-event.log-group-5:hover,
+.log-pane .log-event.log-group-5.selected  { background: hsla(180, 60%, 45%, 0.12); }
+.log-pane .log-event.log-group-6:hover,
+.log-pane .log-event.log-group-6.selected  { background: hsla(210, 70%, 55%, 0.12); }
+.log-pane .log-event.log-group-7:hover,
+.log-pane .log-event.log-group-7.selected  { background: hsla(240, 60%, 60%, 0.12); }
+.log-pane .log-event.log-group-8:hover,
+.log-pane .log-event.log-group-8.selected  { background: hsla(270, 60%, 60%, 0.12); }
+.log-pane .log-event.log-group-9:hover,
+.log-pane .log-event.log-group-9.selected  { background: hsla(300, 60%, 55%, 0.12); }
+.log-pane .log-event.log-group-10:hover,
+.log-pane .log-event.log-group-10.selected { background: hsla(330, 70%, 55%, 0.12); }
+.log-pane .log-event.log-group-11:hover,
+.log-pane .log-event.log-group-11.selected { background: hsla(200, 40%, 60%, 0.12); }
 
 /* ========== Startup modal ========== */
 .startup-modal { width: min(560px, 92vw); }

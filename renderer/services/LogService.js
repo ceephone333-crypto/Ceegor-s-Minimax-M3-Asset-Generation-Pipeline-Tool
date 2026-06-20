@@ -33,10 +33,38 @@ var { maskLine } = window.securityUtils || (() => String);  // fallback
 //   opts.raw       : string | null. Free-form text (used by the
 //                    legacy log() wrapper). Included in the
 //                    copy output but not shown in the row.
+//   opts.groupId   : string | number | null. Free-form tag the
+//                    caller can use to group related events
+//                    (e.g. one generation run produces a
+//                    "started" + "completed" event that share
+//                    the same groupId). The renderer tints
+//                    all events with the same groupId the
+//                    same colour so the user can visually
+//                    trace which log lines belong to which
+//                    generated picture. The ID itself is
+//                    not shown — it's only used as a CSS
+//                    class hash (group-1, group-2, …) so a
+//                    long session doesn't grow an unbounded
+//                    stylesheet. We cap to 12 distinct hues
+//                    and cycle.
 //
 // Masking: the headline + details are passed through maskLine()
 // so a full API key never appears in a log event the user
 // might paste into a support ticket.
+const _LOG_GROUP_HUE_COUNT = 12;
+const _logGroupSeen = new Map();
+let _logGroupNextIdx = 0;
+function _groupClass(gid) {
+  if (gid == null || gid === '') return null;
+  const key = String(gid);
+  let idx = _logGroupSeen.get(key);
+  if (idx == null) {
+    idx = _logGroupNextIdx % _LOG_GROUP_HUE_COUNT;
+    _logGroupSeen.set(key, idx);
+    _logGroupNextIdx++;
+  }
+  return 'log-group-' + idx;
+}
 function addLogEvent(opts) {
   var { LOG_MAX_EVENTS, LOG_CATEGORIES } = window.LogCategories;
   opts = opts || {};
@@ -56,6 +84,11 @@ function addLogEvent(opts) {
     result: opts.result === 'ok' || opts.result === 'err' ? opts.result : null,
     expanded: !!opts.expanded,
     raw: opts.raw != null ? mask(String(opts.raw)) : null,
+    // v1.1.9: optional groupId the caller can use to colour-code
+    // related events. Stored on the event AND resolved into a
+    // log-group-N CSS class (capped to 12 distinct hues, cycled)
+    // when the row is rendered.
+    groupId: opts.groupId != null ? String(opts.groupId) : null,
   };
   window.state._logEvents.push(ev);
   // Cap the buffer. Drop the oldest events (FIFO) so the
@@ -89,10 +122,17 @@ function renderLogEvent(ev) {
   const root = document.querySelector('#log');
   if (!root) return;
   const cat = LOG_CATEGORIES[ev.category] || LOG_CATEGORIES.info;
+  // v1.1.9: tint the row with a group-N class if the event has
+  // a groupId, so the user can visually trace which log lines
+  // belong to which generated picture / generation run. The
+  // group class is resolved to one of 12 stable hues (see
+  // _groupClass above) and cycled for new IDs.
+  const groupCls = _groupClass(ev.groupId);
   const row = el('div', {
-    class: 'log-event',
+    class: 'log-event' + (groupCls ? ' ' + groupCls : ''),
     'data-log-id': ev.id,
     'data-log-cat': ev.category,
+    'data-log-group': ev.groupId || '',
   });
   // 1. Time stamp
   const tsText = ev.ts.toLocaleTimeString('en-GB', { hour12: false });
@@ -199,7 +239,12 @@ function formatLogEventForCopy(ev) {
   const ts = ev.ts.toLocaleString();
   const cat = (LOG_CATEGORIES[ev.category] || LOG_CATEGORIES.info).label;
   const res = ev.result === 'ok' ? ' [OK]' : ev.result === 'err' ? ' [ERR]' : '';
-  parts.push(`[${ts}] [${cat}]${res} ${ev.headline}`);
+  // v1.1.9: include the group tag in the copy so a help-desk
+  // helper can see which events came from the same run even
+  // when the colour-coding isn't visible (plain text email,
+  // monospaced log viewer, etc.).
+  const grp = ev.groupId ? ` [group=${ev.groupId}]` : '';
+  parts.push(`[${ts}] [${cat}]${res}${grp} ${ev.headline}`);
   for (const d of ev.details) parts.push('    ' + d);
   if (ev.raw) parts.push('    ' + ev.raw);
   return parts.join('\n');

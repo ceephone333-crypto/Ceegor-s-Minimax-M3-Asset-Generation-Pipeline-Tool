@@ -59,6 +59,28 @@ async function init() {
   // File browser live filter
   const fbSearch = $('#fb-search');
   if (fbSearch) fbSearch.addEventListener('input', window.applyFileSearch || applyFileSearch);
+  // Bug-fix v1.1.9 (reported by user): the sort dropdown had no change
+  // handler — picking "Newest" / "Oldest" / "Created ↑" had no effect
+  // because nothing re-rendered the list with the new mode. We sort
+  // the in-memory snapshot of fb items (state._fbItems) via the
+  // shared FbSort helper and re-render. The same handler also
+  // re-applies the live search filter so a sort + filter combo
+  // shows the right subset.
+  const fbSort = $('#fb-sort');
+  if (fbSort) {
+    fbSort.value = state.fbSort || 'name-asc';
+    fbSort.addEventListener('change', () => {
+      state.fbSort = fbSort.value;
+      scheduleStateSave();
+      if (Array.isArray(state._fbItems) && state._fbItems.length) {
+        const sorted = window.FbSort
+          ? window.FbSort.sortFbItems(state._fbItems, state.fbSort)
+          : sortFbItems(state._fbItems, state.fbSort);
+        renderFbList(sorted);
+        (window.applyFileSearch || applyFileSearch)();
+      }
+    });
+  }
   $('#fb-refresh').addEventListener('click', () => refreshBrowser());
   $('#fb-new').addEventListener('click', () => promptNewFolder());
   $('#fb-open').addEventListener('click', () => window.api.fbReveal(state.fbDir || state.config.output_dir || ''));
@@ -80,6 +102,106 @@ async function init() {
     if (state.currentTab) state.fbDirs[state.currentTab] = picked;
     scheduleStateSave();
     refreshBrowser();
+  });
+
+  // v1.1.9: bulk-action toolbar wiring. The toolbar is rendered
+  // statically in index.html (so the layout is predictable) and
+  // toggled visible/hidden by the 'fb-selection-changed' custom
+  // event fired from fileBrowser1.js. The master checkbox
+  // tri-state: checked when every visible item is in
+  // state.fbSelected, indeterminate when some are, unchecked
+  // when none are. Move / Copy / Trim / Delete all delegate to
+  // the shared `fbBulkAction(label, op)` worker in fileBrowser1.
+  const fbBulkToolbar = $('#fb-bulk-toolbar');
+  const fbBulkCount = $('#fb-bulk-count');
+  const fbBulkMasterCb = $('#fb-bulk-master-cb');
+  function _refreshBulkToolbar() {
+    const sel = state.fbSelected || new Set();
+    const n = sel.size;
+    if (fbBulkToolbar) fbBulkToolbar.style.display = n > 0 ? '' : 'none';
+    if (fbBulkCount) fbBulkCount.textContent = `${n} selected`;
+    // Tri-state the master checkbox.
+    if (fbBulkMasterCb) {
+      const total = Array.isArray(state._fbItems) ? state._fbItems.length : 0;
+      if (n === 0) { fbBulkMasterCb.checked = false; fbBulkMasterCb.indeterminate = false; }
+      else if (n >= total && total > 0) { fbBulkMasterCb.checked = true; fbBulkMasterCb.indeterminate = false; }
+      else { fbBulkMasterCb.checked = false; fbBulkMasterCb.indeterminate = true; }
+    }
+    // Highlight the matching rows so the user can scan the
+    // selection at a glance. We toggle the class instead of
+    // re-rendering so the scroll position / hover state isn't
+    // disturbed.
+    for (const li of $$('.fb-item[data-path]')) {
+      const p = li.getAttribute('data-path');
+      if (p && sel.has(p)) li.classList.add('fb-selected-row');
+      else li.classList.remove('fb-selected-row');
+    }
+  }
+  window.addEventListener('fb-selection-changed', _refreshBulkToolbar);
+  // Run once on init so the toolbar starts in the right state
+  // (hidden). Fires on every subsequent selection change.
+  _refreshBulkToolbar();
+  if (fbBulkMasterCb) {
+    fbBulkMasterCb.addEventListener('change', () => {
+      if (fbBulkMasterCb.checked) {
+        (window.fbSelectAll || (() => {}))();
+      } else {
+        (window.fbClearSelection || (() => {}))();
+      }
+    });
+  }
+  $('#fb-bulk-clear').addEventListener('click', () => {
+    (window.fbClearSelection || (() => {}))();
+  });
+  $('#fb-bulk-move').addEventListener('click', () => {
+    if (!state.fbSelected || state.fbSelected.size === 0) return;
+    const dest = state.fbDir || state.config.output_dir || '';
+    if (!dest) { toast('No destination folder.', 'err'); return; }
+    (window.fbBulkAction || (() => {}))('Move', async (path) => {
+      const r = await window.api.fbMove(path, dest);
+      if (!r || !r.ok) throw new Error((r && r.error) || 'move failed');
+    });
+  });
+  $('#fb-bulk-copy').addEventListener('click', () => {
+    if (!state.fbSelected || state.fbSelected.size === 0) return;
+    const dest = state.fbDir || state.config.output_dir || '';
+    if (!dest) { toast('No destination folder.', 'err'); return; }
+    (window.fbBulkAction || (() => {}))('Copy', async (path) => {
+      const r = await window.api.fbCopy(path, dest);
+      if (!r || !r.ok) throw new Error((r && r.error) || 'copy failed');
+    });
+  });
+  $('#fb-bulk-trim').addEventListener('click', () => {
+    if (!state.fbSelected || state.fbSelected.size === 0) return;
+    const paths = Array.from(state.fbSelected);
+    const audioExts = ['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.opus', '.pcm', '.aac', '.wma', '.aif', '.aiff'];
+    const audioPaths = paths.filter((p) => audioExts.includes('.' + (p.split('.').pop() || '').toLowerCase()));
+    if (!audioPaths.length) { toast('None of the selected files are audio. Trim only works on .mp3/.wav/.flac/etc.', 'warn', 5000); return; }
+    if (audioPaths.length !== paths.length) {
+      toast(`Trim will only process ${audioPaths.length} audio file${audioPaths.length === 1 ? '' : 's'} (skipped ${paths.length - audioPaths.length} non-audio).`, 'warn', 4000);
+    }
+    // Open the audio cutter on the FIRST audio file. The cutter
+    // is single-file; the user can repeat for the rest. (The
+    // user explicitly asked for bulk trim; this is the
+    // pragmatic first version that handles the common case of
+    // a few audio files. The advanced multi-file trim queue
+    // can come later.)
+    (window.fbBulkAction || (() => {}))('Trim', async (path) => {
+      if (audioPaths.indexOf(path) !== 0) return; // only the first audio triggers the cutter
+      if (typeof window.showAudioCutter === 'function') {
+        window.showAudioCutter(path);
+      } else {
+        toast('Audio cutter module not loaded.', 'err');
+        throw new Error('audio cutter missing');
+      }
+    });
+  });
+  $('#fb-bulk-delete').addEventListener('click', () => {
+    if (!state.fbSelected || state.fbSelected.size === 0) return;
+    (window.fbBulkAction || (() => {}))('Delete', async (path) => {
+      const r = await window.api.fbDelete(path);
+      if (!r || !r.ok) throw new Error((r && r.error) || 'delete failed');
+    });
   });
   $('#quota-refresh').addEventListener('click', () => refreshQuota());
   $('#btn-styles').addEventListener('click', () => openStyleSettings());
@@ -633,6 +755,21 @@ function _refreshBatchButtons() {
     }, 'Gen Examples');
 
     const totalAllTabs = ['image', 'speech', 'music', 'video'].reduce((sum, k) => sum + (state.batches[k] || []).length, 0);
+    // v1.1.9: ETA span next to the "BatGen All Types" button.
+    // Only shown when MORE than one type has items (the user's
+    // explicit request) — for a single tab the per-tab ETA is
+    // already visible. The span reads the per-tab ETA helper so
+    // it stays in sync with the per-tab running averages.
+    const typesWithBatch = ['image', 'speech', 'music', 'video'].filter((k) => (state.batches[k] || []).length > 0);
+    const showAllEta = typesWithBatch.length > 1;
+    const allEta = el('span', {
+      class: 'batch-all-eta',
+      // Hidden by default; refreshed by _refreshAllBatchEta() on
+      // a 1s tick while a batch is in flight, and on every
+      // _refreshBatchButtons() call.
+      style: showAllEta ? 'margin-left: 6px; font-variant-numeric: tabular-nums; color: var(--fg-2);' : 'display: none;',
+      title: 'Estimated time to finish all queued batches across the tabs that have items',
+    }, '');
     const startAllBtn = el('button', {
       class: 'batch-start-all',
       style: totalAllTabs > 0 ? 'background: var(--primary-2, #d9a300); color: var(--bg-1); font-weight: bold; margin-left: 4px;' : 'display: none;',
@@ -642,8 +779,53 @@ function _refreshBatchButtons() {
 
     // Divider line
     wrap.append(el('span', { style: 'margin: 0 6px; border-left: 1px solid var(--border); height: 14px; display: inline-block; vertical-align: middle;' }));
-    wrap.append(importBtn, examplesBtn, startAllBtn);
+    wrap.append(importBtn, examplesBtn, startAllBtn, allEta);
   }
+  // Always refresh the all-types ETA in case state.batchQueueLeft
+  // changed without _refreshBatchButtons being called.
+  _refreshAllBatchEta();
+}
+
+// v1.1.9: refresh the ETA span next to the "BatGen All Types"
+// button. Reads per-tab batchQueueLeft + the per-tab running
+// average (state.genAvgSec) and computes the total remaining
+// wall-clock time. The result is mm:ss (or h:mm:ss for runs over
+// an hour). The function is safe to call on every tick — it does
+// the math in a couple of µs and only touches the DOM if the
+// value actually changed.
+function _refreshAllBatchEta() {
+  const tabs = ['image', 'speech', 'music', 'video'];
+  const allEta = document.querySelector('.batch-all-eta');
+  if (!allEta) return;
+  // Hide the ETA if the user only has 1 type in the queue, or
+  // if the user isn't running a batch right now.
+  const typesWithQueue = tabs.filter((k) => (state.batches[k] || []).length > 0);
+  if (typesWithQueue.length < 2) { allEta.style.display = 'none'; return; }
+  const hasRunningBatch = tabs.some((k) => (state.batchQueueLeft && state.batchQueueLeft[k] > 0));
+  if (!hasRunningBatch) { allEta.textContent = ''; allEta.style.display = 'none'; return; }
+  // Weighted total: sum(remaining * avg) for each tab.
+  let totalSec = 0;
+  let anyRunning = false;
+  for (const k of tabs) {
+    const remaining = (state.batchQueueLeft && state.batchQueueLeft[k]) || 0;
+    if (remaining <= 0) continue;
+    let avg = (state.genAvgSec && state.genAvgSec[k]) || 0;
+    if (!avg) {
+      const defaults = { image: 35, speech: 12, music: 75, video: 90 };
+      avg = defaults[k] || 30;
+    }
+    totalSec += remaining * avg;
+    anyRunning = true;
+  }
+  if (!anyRunning) { allEta.textContent = ''; allEta.style.display = 'none'; return; }
+  allEta.style.display = '';
+  const sec = Math.max(0, Math.round(totalSec));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  allEta.textContent = h > 0
+    ? `⏱ ${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `⏱ ${m}:${String(s).padStart(2, '0')}`;
 }
 
 function openStyleSettings(returnToTab) {

@@ -97,6 +97,22 @@ function refreshTabStatusDots() {
 // running average is updated and the ETA is recomputed on the next
 // 1-second tick. The countdown is an estimate, not a guarantee — but it
 // gives the user a sense of how long the current call will still take.
+//
+// v1.1.9 (reported by user): the previous approximation was
+//   currentItemElapsed = runElapsed / itemsLeft
+//   currentItemRemaining = avg - currentItemElapsed
+// which divides the TOTAL run-elapsed by the items REMAINING — a
+// crude average that over-estimates the current item's progress
+// once the second item is in flight (it averages the previous
+// completed items' cost into the current item). The replacement
+// infers the current item's actual elapsed by subtracting the
+// expected cost of the already-completed items (queueDone × avg)
+// from the total run-elapsed. This is exact when the running
+// average matches reality, and self-corrects on the next item
+// finish. The formula also includes the remaining BatchGen queue
+// (state.batchQueueLeft[tabKey]) so the timer shows the total
+// "expected duration of all batched images" the user mentioned,
+// not just the current Generate run.
 function refreshTabEtas() {
   for (const tabKey of ['image', 'speech', 'music', 'video']) {
     const t = $(`.tab[data-tab="${tabKey}"]`);
@@ -126,29 +142,30 @@ function _formatTabEta(tabKey) {
   // Total queue size for the current run (variants × n, where n is the
   // --n count). When the gen handler kicks off, it sets
   // state.genQueueSize[tabKey] and increments state.genQueueDone[tabKey]
-  // after each completed item. -1 for "the item currently in flight".
+  // after each completed item.
   const queueSize = Math.max(1, (state.genQueueSize && state.genQueueSize[tabKey]) || 1);
   const queueDone = Math.max(0, (state.genQueueDone && state.genQueueDone[tabKey]) || 0);
   const itemsLeft = Math.max(1, queueSize - queueDone);
-  // How much of the CURRENT item is still pending. When the user just
-  // kicked off the run, genStartMs is the start of the whole run (not
-  // the current item), so we approximate per-item elapsed as
-  // (now - runStart) / itemsLeft. This is a slight underestimate for
-  // the first few items (a long first item pushes the per-item avg up),
-  // but it's the best we can do without per-item timestamps and it
-  // self-corrects as soon as the first item finishes. Clamp to [0, avg]
-  // so a race condition (e.g. startMs=0 right after arm) can't produce
-  // a negative remaining time.
+  // How much of the CURRENT item is still pending. Inferred from
+  // the total run-elapsed MINUS the expected cost of the items that
+  // are already done. This is more accurate than the old
+  // (runElapsed / itemsLeft) approximation because it doesn't
+  // smudge the previous items' cost into the current item.
   const runElapsed = Math.max(0, (Date.now() - start) / 1000);
-  const rawPerItem = runElapsed / itemsLeft;
-  const currentItemElapsed = Math.max(0, Math.min(avg, rawPerItem));
+  const currentItemElapsed = Math.max(0, Math.min(avg, runElapsed - (queueDone * avg)));
   const currentItemRemaining = Math.max(0, avg - currentItemElapsed);
+  // Future items in the CURRENT run.
   const futureItems = Math.max(0, itemsLeft - 1);
   const futureTime = futureItems * avg;
-  const totalRemaining = currentItemRemaining + futureTime;
-  // If the user just kicked off the run and genQueueSize hasn't been
-  // written yet (race during the first tick), itemsLeft === 1 so we
-  // fall back to the old "remaining for the current item only" math.
+  // v1.1.9: also include the BatchGen queue (if the user kicked
+  // off a batch from the same tab AFTER this single Generate
+  // click). state.batchQueueLeft[tabKey] is the number of items
+  // still to process. The batch runner updates it on every
+  // item. If it's not set (user isn't running a batch), default
+  // to 0 — no contribution.
+  const batchLeft = Math.max(0, (state.batchQueueLeft && state.batchQueueLeft[tabKey]) || 0);
+  const batchTime = batchLeft * avg;
+  const totalRemaining = currentItemRemaining + futureTime + batchTime;
   const remaining = Math.max(0, Math.round(totalRemaining));
   const m = Math.floor(remaining / 60);
   const s = remaining % 60;
@@ -174,9 +191,16 @@ function ensureEtaTimer() {
         const eta = t.querySelector('.tab-eta');
         if (eta) eta.textContent = '';
       }
+      // v1.1.9: also clear the "all types" ETA next to the
+      // BatGen All Types button (it only shows while a batch
+      // is in flight; the helper hides itself when no batch is
+      // active).
+      if (typeof _refreshAllBatchEta === 'function') _refreshAllBatchEta();
       return;
     }
     refreshTabEtas();
+    // v1.1.9: tick the "all types" ETA every second too.
+    if (typeof _refreshAllBatchEta === 'function') _refreshAllBatchEta();
   }, 1000);
 }
 

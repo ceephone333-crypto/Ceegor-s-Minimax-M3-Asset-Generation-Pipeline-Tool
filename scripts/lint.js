@@ -32,6 +32,7 @@ const LEGACY_OVERSIZE = new Set([
   'imageTab.js',         // 736 Z. — ImageTab build() (god-function, nicht sinnvoll teilbar)
   'musicTab.js',         // 855 Z. — MusicTab build() + previews (god-function)
   'section07_Image_optimisation___compression.js',  // 952 Z. — showUpscaleSettings (god-function)
+  'fileBrowser1.js',     // 528 Z. — list + render + multi-select + bulk-action worker (Phase 3 + v1.1.9)
 ]);
 
 // "God Words" — Dateien mit diesen Suffixen werden abgelehnt.

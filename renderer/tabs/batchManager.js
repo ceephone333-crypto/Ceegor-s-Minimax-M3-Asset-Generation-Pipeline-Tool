@@ -174,6 +174,13 @@ async function startBatchGen(tabKey) {
 
   let ok = 0, fail = 0;
   let batchError = null;
+  // v1.1.9: seed the per-tab "batch queue left" counter so the
+  // per-tab ETA timer (section10) can include the remaining
+  // batch items in its total estimate. Reset on entry; we
+  // decrement on every completed / failed item. The "all types"
+  // ETA span (in app.js) reads the sum across tabs.
+  if (!state.batchQueueLeft) state.batchQueueLeft = { image: 0, speech: 0, music: 0, video: 0 };
+  state.batchQueueLeft[tabKey] = items.length;
   try {
     for (let i = 0; i < items.length && !_batchAbort; i++) {
       const item = items[i];
@@ -182,6 +189,9 @@ async function startBatchGen(tabKey) {
 
       counter.textContent = `${i + 1} / ${items.length}`;
       currentPrompt.textContent = itemPrompt.slice(0, 200) + (itemPrompt.length > 200 ? '…' : '');
+      // Update the "items left" counter for the per-tab ETA so the
+      // user can see the queue draining in real time.
+      if (state.batchQueueLeft) state.batchQueueLeft[tabKey] = Math.max(0, items.length - i - 1);
 
       let currentVariantsCount = variantsCount;
       if (isObj) {
@@ -316,6 +326,10 @@ async function startBatchGen(tabKey) {
     stopBtn.textContent = 'Close';
     stopBtn.disabled = false;
     stopBtn.onclick = () => overlay.remove();
+    // v1.1.9: clear the per-tab batch-queue counter so the ETA
+    // timer stops showing batch left-over. Done in finally so an
+    // aborted / errored batch still resets the counter.
+    if (state.batchQueueLeft) state.batchQueueLeft[tabKey] = 0;
 
     // Restore global upscale state
     state.upscaleEnabled = savedUpscaleEnabled;

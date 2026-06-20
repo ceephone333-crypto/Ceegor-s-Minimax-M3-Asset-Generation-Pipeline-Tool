@@ -133,6 +133,13 @@ window.state = {
   // durations (seconds, alpha=0.4). Drives the per-tab ETA timer in
   // section10. Same shape as genStartMs above.
   genAvgSec: { image: 0, speech: 0, music: 0, video: 0 },
+  // v1.1.9: how many BatchGen items are still in flight for each
+  // tab. The per-tab ETA timer (section10) reads this so the user
+  // sees the total remaining time for the whole batch, not just
+  // the current single Generate. The batchManager updates it on
+  // entry (== items.length - i) and decrements on every completed
+  // item. 0 = no batch in flight.
+  batchQueueLeft: { image: 0, speech: 0, music: 0, video: 0 },
   // The path of the image currently shown in the right-side preview
   // pane. Used by previewImageFromFile to short-circuit "click the
   // same file twice" and avoid a re-decode + flicker. Cleared when
@@ -149,6 +156,14 @@ window.state = {
   // mtimeMs, isDir) without re-issuing an IPC call. Populated by
   // renderFbList on every refresh.
   _fbItems: [],
+  // v1.1.9: Set of file paths the user has ticked in the new
+  // checkbox column. Persisted across refreshes (a refresh
+  // re-checks the boxes that are still in the visible list).
+  // Cleared on navigation, on Refresh, and on bulk-action
+  // success. The bulk-action menu reads this to know which
+  // items to operate on. Set lives in plain JS (not in the
+  // state.json snapshot) because it's transient UI state.
+  fbSelected: new Set(),
   // The current multi-image preview batch, when one is shown. Set
   // by previewImagesFromFiles to { paths: string[], index: number }.
   // Cleared by previewImageFromFile when a single-image preview
