@@ -184,6 +184,12 @@ window.state = {
   // order so a corrupted state.json value just falls back to the
   // server-side default.
   fbSort: 'name-asc',
+  // v1.1.11: the asset-type filter value (the same comma-
+  // separated extension list the #fb-type-filter dropdown
+  // uses). Empty string = "All types". Persisted so a user who
+  // prefers to browse only generated images (or only audio)
+  // sees the same filter on the next launch.
+  fbTypeFilter: '',
   // Which file-browser columns are visible. An object keyed by
   // column id (see FB_COLUMNS) with boolean values. The "name"
   // column is mandatory and is always rendered, regardless of

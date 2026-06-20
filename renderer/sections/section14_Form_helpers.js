@@ -61,6 +61,15 @@ function buildFilePrefixRow() {
     // (the input listener above does both).
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
+  // v1.1.11 (reported by user): reorder the children so the +1
+  // button sits BETWEEN the "?" help icon and the input field
+  // (left of the input). Visually the row now reads:
+  //   "Target file prefix   [?]   [+1]   [____________________]"
+  // which puts the increment affordance right where the user's
+  // eye is after reading the help icon, instead of all the way
+  // at the far right where it was easy to miss. The flex layout
+  // in styles.css keeps the label fixed-width, the +1 button
+  // fixed-width, and the input takes the remaining space.
   return el('div', { class: 'row file-prefix-row' }, [
     el('label', {}, [
       'Target file prefix',
@@ -70,8 +79,8 @@ function buildFilePrefixRow() {
         title: 'Prepended to every generated file name. Empty = original name. Example: prefix "ZYX" turns abc123.jpg into ZYXabc.jpg.',
       }, '?'),
     ]),
-    input,
     plusOneBtn,
+    input,
   ]);
 }
 

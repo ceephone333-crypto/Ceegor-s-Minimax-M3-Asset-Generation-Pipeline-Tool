@@ -145,13 +145,185 @@ function stopGenPolling() {
   state._lastPolledItems = null;
 }
 
+// v1.1.11 (reported by user): redesigned the audio preview
+// so the user sees the filename prominently + a big "▶ Play"
+// button (not the OS-native audio controls bar). Clicking Play
+// starts playback; the button then switches to "■ Stop" for
+// the duration of the audio, and reverts to "▶ Play" again
+// when the audio ends. The audio element itself is hidden
+// (it's only there as a JS-controlled playback source — the
+// user interacts only via the Play button). This matches the
+// user's spec: "previewed with their file name and a Play
+// button. It should play once and then stop after the play
+// button was clicked."
 function previewAudioFromFile(p) {
-  const root = $(`#tab-${state.currentTab} .preview`);
+  const root = $(`#fb-preview-content`);
   if (!root) return;
+  if (state._lastPreviewPath === p) return;
+  state._lastPreviewPath = p;
+  state._previewBatch = null;
+  markFbItemActive(p);
   const url = fileUrl(p);
+  const filename = (p || '').split(/[\\/]/).pop() || 'audio';
   root.innerHTML = '';
-  root.appendChild(el('audio', { controls: '', src: url }));
-  root.appendChild(el('div', { class: 'meta' }, p));
+  // Hidden audio element. The user never sees the native
+  // controls; the Play/Stop button below drives playback.
+  const audio = el('audio', { src: url, preload: 'auto' });
+  audio.style.display = 'none';
+  // Container with the filename header + a centred Play
+  // button. Uses the same preview-pane layout as images
+  // (filename row under the media) so the three preview
+  // types (image / video / audio) read as one family.
+  const wrap = el('div', { class: 'preview-pane-audio' });
+  const icon = el('div', { class: 'preview-pane-audio-icon' }, '🎵');
+  const name = el('div', { class: 'preview-pane-audio-name', title: filename }, filename);
+  const playBtn = el('button', { class: 'primary preview-pane-audio-btn', type: 'button' }, '▶ Play');
+  const status = el('div', { class: 'preview-pane-audio-status' }, '');
+  // v1.1.11: drive the audio element via JS so we can swap
+  // the button label between Play / Stop / Loading, and so
+  // we never auto-loop (the user explicitly asked for
+  // "play once and then stop").
+  function setPlaying(isPlaying) {
+    playBtn.textContent = isPlaying ? '■ Stop' : '▶ Play';
+    playBtn.classList.toggle('playing', isPlaying);
+    status.textContent = isPlaying ? `Playing ${filename}…` : '';
+  }
+  playBtn.addEventListener('click', () => {
+    if (audio.paused) {
+      // .play() returns a promise that can reject if the
+      // browser blocks autoplay. We treat that as a soft
+      // "couldn't start" rather than a hard error — the user
+      // can click Play again.
+      const p = audio.play();
+      if (p && typeof p.then === 'function') {
+        playBtn.disabled = true;
+        p.then(() => { playBtn.disabled = false; setPlaying(true); })
+         .catch((e) => { playBtn.disabled = false; setPlaying(false); console.warn('audio play() rejected:', e); });
+      } else {
+        setPlaying(true);
+      }
+    } else {
+      audio.pause();
+      audio.currentTime = 0;
+      setPlaying(false);
+    }
+  });
+  audio.addEventListener('ended', () => {
+    // "Play once and then stop" — when the audio finishes
+    // naturally, reset the button to its initial Play state.
+    // The audio element's `loop` attribute is NOT set, so we
+    // never get into a loop on our own.
+    setPlaying(false);
+  });
+  audio.addEventListener('pause', () => {
+    // If the audio pauses for any reason (manual, ended, OS
+    // media-key), reset the button label.
+    if (audio.currentTime === 0 || audio.ended) setPlaying(false);
+  });
+  wrap.append(icon, name, playBtn, status);
+  root.append(wrap, audio);
+  const fname = el('div', { class: 'preview-pane-filename', title: p }, filename);
+  root.appendChild(fname);
+}
+
+// v1.1.11 (reported by user): video preview. Click on a .mp4
+// (or other supported video) in the file browser → the preview
+// pane shows the video with the OS-native <video controls>
+// bar so the user can play / pause / seek / adjust volume /
+// go fullscreen. Clicking the video element itself opens a
+// larger overlay (the same overlay pattern used for images,
+// adapted to host a <video> element + a big Play button).
+function previewVideoFromFile(p) {
+  const root = $('#fb-preview-content');
+  if (!root) return;
+  if (state._lastPreviewPath === p) return;
+  state._lastPreviewPath = p;
+  state._previewBatch = null;
+  markFbItemActive(p);
+  const url = fileUrl(p);
+  const filename = (p || '').split(/[\\/]/).pop() || 'video';
+  root.innerHTML = '';
+  // Thumbnail-style video preview: a <video> with `controls`
+  // AND `preload="metadata"` so the first frame is fetched
+  // and shown even before the user clicks Play. The thumbnail
+  // is the click target for the overlay.
+  const wrap = el('div', { class: 'preview-pane-video' });
+  const vid = el('video', {
+    src: url,
+    controls: '',
+    preload: 'metadata',
+    title: filename + ' — click for the full-size overlay',
+    class: 'preview-pane-video-el',
+  });
+  // The overlay path is the same modal used for images; it
+  // accepts a custom render callback so we can put a <video>
+  // + big Play button inside. We use the user's spec: "preview
+  // image to trigger the overlay, in which a play button can
+  // play the video".
+  vid.addEventListener('click', (e) => {
+    // Don't open the overlay if the user is interacting with
+    // the native controls (the controls bar is at the bottom
+    // of the element).
+    e.preventDefault();
+    openVideoOverlay(url, filename, p);
+  });
+  wrap.appendChild(vid);
+  root.appendChild(wrap);
+  const fname = el('div', { class: 'preview-pane-filename', title: p }, filename);
+  root.appendChild(fname);
+}
+
+// Open the full-size video overlay (image-overlay shape, but
+// with a <video> + big Play button in the centre). Uses the
+// shared showModal primitive so Esc / click-outside close
+// it. The Play button is hidden once the video starts
+// playing (the user can pause via the native controls at the
+// bottom of the video).
+function openVideoOverlay(src, filename, filePath) {
+  if (typeof showModal !== 'function') return;
+  showModal((m, close) => {
+    m.classList.add('video-overlay');
+    const header = el('div', { class: 'video-overlay-header' }, [
+      el('span', { class: 'video-overlay-filename', title: filename || '' }, filename || ''),
+      el('button', { type: 'button', class: 'btn-mini', onclick: close }, '✕ Close'),
+    ]);
+    m.appendChild(header);
+    const wrap = el('div', { class: 'video-overlay-stage' });
+    const vid = el('video', { src, controls: '', preload: 'metadata', class: 'video-overlay-el' });
+    wrap.appendChild(vid);
+    // Big Play button overlay, centred on top of the video.
+    // Click → start playback; the button hides itself once
+    // the video starts playing and the native controls take
+    // over.
+    const playBtn = el('button', { type: 'button', class: 'video-overlay-playbtn' }, '▶ Play');
+    playBtn.addEventListener('click', () => {
+      const p = vid.play();
+      if (p && typeof p.then === 'function') {
+        p.then(() => { playBtn.style.display = 'none'; })
+         .catch((e) => { console.warn('video play() rejected:', e); });
+      } else {
+        playBtn.style.display = 'none';
+      }
+    });
+    vid.addEventListener('play', () => { playBtn.style.display = 'none'; });
+    vid.addEventListener('pause', () => {
+      // Re-show the Play button when paused (e.g. user clicked
+      // pause on the native controls, or the video ended).
+      if (vid.currentTime > 0 || vid.ended) playBtn.style.display = '';
+    });
+    vid.addEventListener('ended', () => {
+      // "Play once and then stop" — when the video ends, reset
+      // the playhead AND re-show the big Play button so the
+      // user can play it again. The video element's `loop`
+      // attribute is NOT set.
+      vid.currentTime = 0;
+      playBtn.style.display = '';
+    });
+    wrap.appendChild(playBtn);
+    m.appendChild(wrap);
+    const fname = el('div', { class: 'video-overlay-meta', title: filePath || '' }, filePath || '');
+    m.appendChild(fname);
+  });
 }
 
 async function previewTextFromFile(p) {

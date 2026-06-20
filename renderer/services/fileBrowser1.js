@@ -215,7 +215,30 @@ function openFolderOptions() {
 
 function applyFileSearch() {
   const q = ($('#fb-search')?.value || '').toLowerCase();
+  // v1.1.11 (reported by user): also respect the asset-type
+  // filter (#fb-type-filter). The dropdown value is a
+  // comma-separated list of extensions (no dot, lower case);
+  // empty string = "All types" (no type filtering).
+  const typeSet = (() => {
+    const raw = ($('#fb-type-filter')?.value || '').trim();
+    if (!raw) return null;
+    return new Set(raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+  })();
   for (const item of $$('.fb-item')) {
+    // The ".." parent row has no .name / .ext attribute; always
+    // show it regardless of the filter (it's navigation, not a
+    // real item).
+    if (!item.dataset.name) { item.style.display = ''; continue; }
+    // Asset-type filter: if active, hide items whose extension
+    // isn't in the selected set. Directories always pass
+    // (their type is "folder", shown via the icon column).
+    if (typeSet) {
+      const ext = (item.dataset.ext || '').toLowerCase();
+      const isDir = item.dataset.isdir === '1';
+      if (!isDir && ext && !typeSet.has(ext)) { item.style.display = 'none'; continue; }
+    }
+    // Free-text filter: empty query = show everything that
+    // survived the type filter.
     if (!q) { item.style.display = ''; continue; }
     const name = (item.dataset.name || item.querySelector('.name')?.textContent || '').toLowerCase();
     item.style.display = name.includes(q) ? '' : 'none';
@@ -435,6 +458,12 @@ function renderFbList(items) {
       class: 'fb-item',
       'data-path': it.path,
       'data-isdir': it.isDir ? '1' : '0',
+      // v1.1.11: also persist the lowercase extension on the row
+      // so the asset-type filter (#fb-type-filter) can read it
+      // without re-parsing the filename each time. Empty string
+      // for folders (their "type" is "folder", always passes the
+      // filter).
+      'data-ext': (it.ext || '').toLowerCase(),
       'data-name': it.name,
       draggable: it.isDir ? 'false' : 'true',
       // CSS grid does NOT inherit grid-template-columns from the
@@ -502,6 +531,14 @@ async function openItem(it) {
     previewImageFromFile(it.path);
   } else if (['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.opus', '.pcm'].includes(it.ext)) {
     previewAudioFromFile(it.path);
+  } else if (['.mp4', '.webm', '.mov', '.mkv', '.avi'].includes(it.ext)) {
+    // v1.1.11 (reported by user): preview pane also handles
+    // video files now. Click on a .mp4 etc. in the file
+    // browser → preview pane shows the video with native
+    // controls. Same UX as images (click thumbnail → opens
+    // a larger overlay) but with an HTML5 <video> instead of
+    // an <img>.
+    previewVideoFromFile(it.path);
   } else if (['.txt', '.srt', '.json', '.md', '.lrc'].includes(it.ext)) {
     previewTextFromFile(it.path);
   } else {

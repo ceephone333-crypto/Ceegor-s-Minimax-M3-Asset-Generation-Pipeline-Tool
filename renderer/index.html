@@ -47,6 +47,19 @@
       </div>
       <div class="sidebar-toolbar">
         <input id="fb-search" type="text" placeholder="Filter…" title="Filter file browser" data-help-topic="sidebar.filter" style="flex: 1;" />
+        <select id="fb-type-filter" class="fb-type-filter" title="Filter file browser by asset type"
+                data-help-topic="sidebar.typeFilter">
+          <!-- v1.1.11 (reported by user): asset-type filter so the user can
+               hide everything except images / audio / video / text / etc.
+               The value is a comma-separated list of lowercase extensions
+               (no dot); the file browser filter combines this with the
+               free-text search so "Images + 'foo'" works as expected. -->
+          <option value="">All types</option>
+          <option value="png,jpg,jpeg,webp,gif,bmp">🖼 Images</option>
+          <option value="mp3,wav,flac,ogg,m4a,opus,pcm">🎵 Audio</option>
+          <option value="mp4,webm,mov,mkv,avi">🎬 Video</option>
+          <option value="txt,srt,json,md,lrc">📝 Text</option>
+        </select>
         <select id="fb-sort" class="fb-sort" title="Sort the file browser by…"
                 data-help-topic="sidebar.sort">
           <option value="name-asc">Name ↑</option>

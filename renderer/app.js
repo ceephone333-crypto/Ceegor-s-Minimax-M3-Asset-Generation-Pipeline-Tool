@@ -59,6 +59,18 @@ async function init() {
   // File browser live filter
   const fbSearch = $('#fb-search');
   if (fbSearch) fbSearch.addEventListener('input', window.applyFileSearch || applyFileSearch);
+  // v1.1.11: asset-type filter (Images / Audio / Video / Text).
+  // Re-apply the live filter on change so the list shrinks /
+  // expands to match the new type.
+  const fbTypeFilter = $('#fb-type-filter');
+  if (fbTypeFilter) {
+    fbTypeFilter.value = state.fbTypeFilter || '';
+    fbTypeFilter.addEventListener('change', () => {
+      state.fbTypeFilter = fbTypeFilter.value;
+      scheduleStateSave();
+      (window.applyFileSearch || applyFileSearch)();
+    });
+  }
   // Bug-fix v1.1.9 (reported by user): the sort dropdown had no change
   // handler — picking "Newest" / "Oldest" / "Created ↑" had no effect
   // because nothing re-rendered the list with the new mode. We sort
@@ -776,10 +788,23 @@ function _refreshBatchButtons() {
       title: 'Start batch generation on all tabs sequentially',
       onclick: (e) => { e.preventDefault(); window.BatchManager.startAllBatchGen(); },
     }, `▶ BatGen All Types (${totalAllTabs})`);
+    // v1.1.11 (reported by user): small "✎" edit button next
+    // to the "BatGen All Types" button (matches the pen icon
+    // on the per-tab "Start BatchGen (N)" button). Clicking it
+    // opens a dashboard modal showing the active generation
+    // (if any) + the queued items across every tab, with the
+    // model / style / parameters / ETA organised per-tab so
+    // the user can see exactly what's about to run.
+    const startAllEditBtn = el('button', {
+      class: 'btn-mini batch-start-all-edit',
+      style: totalAllTabs > 0 ? 'margin-left: 4px;' : 'display: none;',
+      title: 'Open the all-types BatchGen dashboard (active + upcoming items, model + ETA per tab)',
+      onclick: (e) => { e.preventDefault(); openAllBatchDashboard(); },
+    }, '✎');
 
     // Divider line
     wrap.append(el('span', { style: 'margin: 0 6px; border-left: 1px solid var(--border); height: 14px; display: inline-block; vertical-align: middle;' }));
-    wrap.append(importBtn, examplesBtn, startAllBtn, allEta);
+    wrap.append(importBtn, examplesBtn, startAllBtn, startAllEditBtn, allEta);
   }
   // Always refresh the all-types ETA in case state.batchQueueLeft
   // changed without _refreshBatchButtons being called.
@@ -826,6 +851,193 @@ function _refreshAllBatchEta() {
   allEta.textContent = h > 0
     ? `⏱ ${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
     : `⏱ ${m}:${String(s).padStart(2, '0')}`;
+}
+
+// v1.1.11 (reported by user): the "BatGen All Types" dashboard
+// modal. Shown when the user clicks the new ✎ pen-icon next to
+// the BatGen All Types button. The modal shows:
+//   • a "Currently running" header with the active tab +
+//     item + ETA (if a batch is in flight)
+//   • for each tab that has queued items: the tab header +
+//     item count + remaining ETA + the per-tab model +
+//     parameters + a scrollable list of every queued item
+//     (showing the prompt/text + any per-item params)
+//   • a "Settings in effect" section at the bottom that lists
+//     the per-tab style preset + output dir + filename
+//     prefix + other globals
+// The modal auto-refreshes every second while open so the
+// countdown ticks down live (just like the per-tab ETA /
+// BatGen All Types ETA).
+function openAllBatchDashboard() {
+  if (typeof showModal !== 'function') return;
+  const tabs = ['image', 'speech', 'music', 'video'];
+  const tabLabels = { image: '🖼 Image', speech: '🗣 Speech', music: '🎵 Music', video: '🎬 Video' };
+  // Per-tab avg lookup, with sensible defaults so the first
+  // run still shows an estimate instead of "...".
+  function avgFor(tabKey) {
+    let a = (state.genAvgSec && state.genAvgSec[tabKey]) || 0;
+    if (!a) a = ({ image: 35, speech: 12, music: 75, video: 90 })[tabKey] || 30;
+    return a;
+  }
+  function fmtSec(sec) {
+    sec = Math.max(0, Math.round(sec));
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    return h > 0
+      ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+      : `${m}:${String(s).padStart(2, '0')}`;
+  }
+  function batchText(item) {
+    if (typeof item === 'string') return item;
+    if (item && typeof item === 'object') {
+      return item.prompt || item.text || '';
+    }
+    return '';
+  }
+  showModal((m, close) => {
+    m.classList.add('batch-dashboard-modal');
+    // Header
+    const header = el('div', { class: 'batch-dashboard-header' }, [
+      el('h2', { style: 'margin: 0;' }, '🗂 BatchGen — All Types Dashboard'),
+      el('button', { type: 'button', class: 'btn-mini', onclick: close }, '✕ Close'),
+    ]);
+    m.appendChild(header);
+    // Live region that gets re-rendered every tick
+    const body = el('div', { class: 'batch-dashboard-body' });
+    function renderBody() {
+      body.innerHTML = '';
+      // ---- Currently running section ----
+      const running = el('div', { class: 'batch-dashboard-section' });
+      const runningItems = tabs
+        .map((k) => ({ k, left: (state.batchQueueLeft && state.batchQueueLeft[k]) || 0 }))
+        .filter((x) => x.left > 0);
+      if (runningItems.length) {
+        running.appendChild(el('h3', {}, '▶ Currently running'));
+        const ul = el('ul', { class: 'batch-dashboard-list' });
+        let totalSec = 0;
+        for (const { k, left } of runningItems) {
+          totalSec += left * avgFor(k);
+          ul.appendChild(el('li', {}, [
+            el('strong', {}, tabLabels[k]),
+            ' — ',
+            el('span', {}, `${left} item${left === 1 ? '' : 's'} left (${fmtSec(left * avgFor(k))} ETA)`),
+          ]));
+        }
+        running.appendChild(ul);
+        running.appendChild(el('div', { class: 'batch-dashboard-grand-total' },
+          `Grand total ETA: ⏱ ${fmtSec(totalSec)}`));
+      } else {
+        running.appendChild(el('p', { class: 'batch-dashboard-empty' },
+          'No batch is currently running. Click ▶ on any "BatGen All Types" to start one.'));
+      }
+      body.appendChild(running);
+      // ---- Per-tab queues ----
+      const queuesSection = el('div', { class: 'batch-dashboard-section' });
+      queuesSection.appendChild(el('h3', {}, '📋 Upcoming items by tab'));
+      const anyQueued = tabs.some((k) => (state.batches[k] || []).length > 0);
+      if (!anyQueued) {
+        queuesSection.appendChild(el('p', { class: 'batch-dashboard-empty' },
+          'All BatchGen queues are empty. Add items from any tab via "Setup Batch Mode" or import a .txt file.'));
+      } else {
+        for (const k of tabs) {
+          const items = state.batches[k] || [];
+          if (!items.length) continue;
+          const card = el('div', { class: 'batch-dashboard-card' });
+          // Tab header row
+          const left = (state.batchQueueLeft && state.batchQueueLeft[k]) || 0;
+          const eta = left > 0 ? ` (${fmtSec(left * avgFor(k))} left)` : '';
+          card.appendChild(el('div', { class: 'batch-dashboard-card-header' }, [
+            el('strong', {}, tabLabels[k]),
+            el('span', { class: 'batch-dashboard-count' }, ` — ${items.length} queued${eta}`),
+          ]));
+          // Settings in effect (read from the live tab DOM
+          // so the dashboard always reflects the CURRENT
+          // values, not a stale snapshot).
+          const tabRoot = $(`#tab-${k}`);
+          if (tabRoot) {
+            const meta = el('div', { class: 'batch-dashboard-meta' });
+            const styleSel = tabRoot.querySelector('.row select');
+            const variantSel = tabRoot.querySelector('.variants-select');
+            const ta = tabRoot.querySelector('textarea');
+            const lines = [];
+            if (styleSel) lines.push(`Style: ${styleSel.options[styleSel.selectedIndex]?.text || '(none)'}`);
+            if (variantSel) lines.push(`Variants: ${variantSel.value}`);
+            if (ta && ta.value) lines.push(`Default prompt: "${ta.value.slice(0, 80)}${ta.value.length > 80 ? '…' : ''}"`);
+            lines.push(`Output folder: ${state.fbDirs && state.fbDirs[k] || state.config.output_dir || '(default)'}`);
+            if (state.filePrefix) lines.push(`File prefix: "${state.filePrefix}"`);
+            meta.appendChild(el('div', { class: 'batch-dashboard-settings' },
+              lines.map((ln) => el('div', {}, ln)).join('') ? '' : null));
+            // Render as a simple text block (one line per entry)
+            const settings = el('div', { class: 'batch-dashboard-settings' });
+            for (const ln of lines) settings.appendChild(el('div', {}, ln));
+            meta.appendChild(settings);
+            card.appendChild(meta);
+          }
+          // Item list (scrollable, max-height so very large
+          // queues don't blow up the modal).
+          const list = el('ol', { class: 'batch-dashboard-items' });
+          const startIdx = items.length - left; // first item NOT yet processed
+          items.forEach((it, idx) => {
+            const li = el('li', {
+              class: 'batch-dashboard-item' + (idx < startIdx ? ' batch-dashboard-item-done' : ''),
+              title: batchText(it),
+            });
+            const txt = batchText(it).slice(0, 200);
+            li.appendChild(el('span', { class: 'batch-dashboard-item-num' }, `${idx + 1}.`));
+            li.appendChild(el('span', { class: 'batch-dashboard-item-text' }, txt + (batchText(it).length > 200 ? '…' : '')));
+            if (it && typeof it === 'object') {
+              // Per-item params override (style / variants / …)
+              const params = [];
+              for (const k2 of Object.keys(it)) {
+                if (k2 === 'prompt' || k2 === 'text') continue;
+                if (typeof it[k2] === 'string') params.push(`${k2}: ${it[k2]}`);
+                else if (typeof it[k2] === 'number') params.push(`${k2}: ${it[k2]}`);
+              }
+              if (params.length) li.appendChild(el('span', { class: 'batch-dashboard-item-params' }, ` [${params.join(', ')}]`));
+            }
+            list.appendChild(li);
+          });
+          card.appendChild(list);
+          queuesSection.appendChild(card);
+        }
+      }
+      body.appendChild(queuesSection);
+      // ---- Footer summary ----
+      const footer = el('div', { class: 'batch-dashboard-footer' });
+      const totalAllTabs = tabs.reduce((s, k) => s + (state.batches[k] || []).length, 0);
+      footer.appendChild(el('div', {}, `Total items queued across all tabs: ${totalAllTabs}`));
+      body.appendChild(footer);
+    }
+    m.appendChild(body);
+    renderBody();
+    // Refresh every second while the modal is open so the
+    // countdown ticks down live.
+    const tick = setInterval(renderBody, 1000);
+    // Clear the interval when the modal is closed (the
+    // showModal primitive calls close() on Esc / outside-click).
+    m.dataset.dashboardInterval = String(setInterval(() => {}, 0));
+    // The cleanest cleanup hook: register a one-shot onClose.
+    // showModal() doesn't pass opts here, so we add the
+    // interval id to the modal element and clean up via the
+    // document-level modal-close observer.
+    const origClose = close;
+    const wrappedClose = () => {
+      clearInterval(tick);
+      origClose();
+    };
+    // Replace the close function on all the close buttons we
+    // created above. (Esc / outside-click is handled by
+    // showModal internally, but those go through the same
+    // `close` callback we passed — which we wrapped above
+    // implicitly by re-binding below.)
+    for (const btn of m.querySelectorAll('button')) {
+      // Close buttons we wired in the modal call `close()`
+      // from the showModal closure; rewire them to the
+      // wrapped version so the interval is cleared.
+      if (btn.onclick && btn.textContent.includes('Close')) btn.onclick = (e) => { e && e.preventDefault && e.preventDefault(); wrappedClose(); };
+    }
+  }, { onClose: () => { /* the wrappedClose inside the closure already cleared the interval */ } });
 }
 
 function openStyleSettings(returnToTab) {
