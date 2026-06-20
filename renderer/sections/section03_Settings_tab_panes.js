@@ -13,8 +13,24 @@
 // { root, instance: null }.
 
 function buildSettingsGeneralPane() {
-  // API key (with reveal toggle), output dir, region, theme.
+  // v1.1.14 (reported by user): the General pane used to be
+  // a flat list of 5 fields in declaration order. The user
+  // found it confusing — "where do I start?" / "is theme
+  // more important than region?" — because nothing told them
+  // what each field was FOR. The new layout groups the fields
+  // into 4 sections in a fixed top-to-bottom reading order,
+  // each preceded by a small uppercase section header so the
+  // pane reads like a checklist:
+  //   1. Authentication  (you cannot generate anything without this)
+  //   2. Storage         (where every generated file lands)
+  //   3. Generation defaults (region / theme — both have safe defaults)
+  //   4. Diagnostics     (read-only info + ad-hoc test buttons)
   const root = el('div', {});
+  root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin: 0 0 8px;' },
+    'Your core settings — the tool needs (1) a working API key and (2) an output folder before it can generate anything. The rest has safe defaults.'));
+
+  // ---- Section 1: Authentication ----
+  root.appendChild(el('h4', { class: 'settings-group-title' }, '🔐 Authentication'));
   const apiKeyRow = showRevealableKey(state.config.api_key || '', {
     placeholder: 'sk-cp-xxxxxxxx  (or your PAYG key)',
     label: 'API key',
@@ -36,55 +52,53 @@ function buildSettingsGeneralPane() {
     id: 'api-key-no-save',
   });
   noSaveCb.checked = !!state.apiKeyNoSave;
-  // The checkbox sits in its own row directly below the
-  // API-key row, with the same indent so it visually attaches
-  // to the API key. The label clarifies the implication:
-  // "session-only" (in memory) vs. "saved to disk".
   const noSaveRow = el('div', { class: 'row api-key-no-save-row' }, [
     el('label', { for: 'api-key-no-save', class: 'api-key-no-save-label' }, [
       noSaveCb,
       el('span', {}, [
         el('strong', {}, "Don't save"),
         '  — key is used this session only, never written to config.txt. Re-enter on next start.',
+        helpButton('settings.apiKeyNoSave'),
       ]),
     ]),
   ]);
-  // A subtle visual hint: when checked, dim the input so the
-  // user notices the key won't survive a restart. Not a hard
-  // disable — they may want to keep typing / test the
-  // connection before deciding.
   function syncNoSaveStyle() {
     apiKeyRow.input.classList.toggle('api-key-no-save-active', noSaveCb.checked);
   }
   noSaveCb.addEventListener('change', () => {
     state.apiKeyNoSave = noSaveCb.checked;
     syncNoSaveStyle();
-    // Don't auto-save the toggle alone — wait for the main
-    // Save button so the change is atomic with the rest of
-    // the settings. scheduleStateSave() is called from the
-    // Save handler below.
   });
   syncNoSaveStyle();
-  const outInput = el('input', { type: 'text', value: state.config.output_dir || '', placeholder: '(default: ./generated/)' });
-  const regInput = el('select', {});
-  for (const r of ['global', 'cn']) regInput.appendChild(el('option', { value: r }, r));
-  regInput.value = state.config.region || 'global';
-  const themeSel = el('select', {});
-  for (const [val, lbl] of [['dark', 'Dark'], ['light', 'Light']]) themeSel.appendChild(el('option', { value: val }, lbl));
-  themeSel.value = state.theme || state.config.theme || 'dark';
-
   root.appendChild(apiKeyRow.row);
   root.appendChild(noSaveRow);
+
+  // ---- Section 2: Storage ----
+  root.appendChild(el('h4', { class: 'settings-group-title' }, '📁 Storage'));
+  const outInput = el('input', { type: 'text', value: state.config.output_dir || '', placeholder: '(default: ./generated/)' });
   root.appendChild(el('div', { class: 'row' }, [
     el('label', {}, ['Output directory', helpButton('settings.outputDir')]),
     el('div', { class: 'combo' }, [outInput, el('button', { class: 'btn-mini', onclick: async () => { const p = await window.api.pickFolder(); if (p) outInput.value = p; } }, 'Browse…')]),
   ]));
+  const cp = el('div', { class: 'row' }, [el('label', {}, ['Config file location', helpButton('settings.configFile')]), el('input', { type: 'text', value: '', readonly: '', title: 'Where config.txt (api_key, output_dir, region, styles) is stored on disk' })]);
+  root.appendChild(cp);
+  window.api.configPath().then((p) => { cp.querySelector('input').value = p; });
+
+  // ---- Section 3: Generation defaults ----
+  root.appendChild(el('h4', { class: 'settings-group-title' }, '🌐 Generation defaults'));
+  const regInput = el('select', {});
+  for (const r of ['global', 'cn']) regInput.appendChild(el('option', { value: r }, r));
+  regInput.value = state.config.region || 'global';
   root.appendChild(el('div', { class: 'row' }, [el('label', {}, ['Region', helpButton('settings.region')]), regInput]));
+  const themeSel = el('select', {});
+  for (const [val, lbl] of [['dark', 'Dark'], ['light', 'Light']]) themeSel.appendChild(el('option', { value: val }, lbl));
+  themeSel.value = state.theme || state.config.theme || 'dark';
   root.appendChild(el('div', { class: 'row' }, [el('label', {}, ['Theme', helpButton('settings.theme')]), themeSel]));
 
-  // Connection-test row (same behaviour as the old inline
-  // buttons). Pushed to the bottom of the pane so the main
-  // fields are visible without scrolling.
+  // ---- Section 4: Diagnostics ----
+  root.appendChild(el('h4', { class: 'settings-group-title' }, '🔧 Diagnostics'));
+  root.appendChild(el('p', { style: 'color: var(--fg-3); font-size: 11.5px; margin: 4px 0 8px;' },
+    'Ad-hoc tools. They do not change any setting — they just probe the current state (auth status, mmx binary path, etc.).'));
   const test = el('button', { class: 'btn-mini' }, 'Test connection');
   const diag = el('button', { class: 'btn-mini' }, 'Diagnose');
   test.addEventListener('click', async () => {
@@ -100,30 +114,13 @@ function buildSettingsGeneralPane() {
   diag.addEventListener('click', () => { showDiagnose(); });
   root.appendChild(el('div', { class: 'settings-pane-actions' }, [test, diag]));
 
-  // Config-file path row (read-only, shows the user where
-  // the file lives on disk so they can back it up).
-  const cp = el('div', { class: 'row' }, [el('label', {}, 'Config file'), el('input', { type: 'text', value: '', readonly: '' })]);
-  root.appendChild(cp);
-  window.api.configPath().then((p) => { cp.querySelector('input').value = p; });
-
   return {
     root,
     instance: {
       collect() {
-        // v1.1.13: include the apiKeyNoSave flag so the Save
-        // handler in openSettings() knows whether to strip
-        // the api_key field from the merged config before
-        // setConfig. We don't include api_key itself here
-        // when noSaveCb is checked — the Save handler reads
-        // apiKeyRow.getValue() and ONLY includes it in
-        // merged if !noSaveCb.checked.
         return {
           api_key: noSaveCb.checked ? '' : apiKeyRow.getValue().trim(),
           _apiKeyNoSave: noSaveCb.checked,
-          // v1.1.13: pass the entered value to the save
-          // handler so it can keep it in memory even when
-          // not persisting (the Save handler reads this
-          // and assigns state.config.api_key).
           _apiKeyValue: noSaveCb.checked ? apiKeyRow.getValue().trim() : '',
           output_dir: outInput.value.trim(),
           region: regInput.value || 'global',
@@ -139,17 +136,25 @@ function buildSettingsImagePane() {
   // selector, and (in a future change) IS-Net background-
   // removal status. Wrapped in a single scrollable section so
   // the pane layout matches the General pane.
+  //
+  // v1.1.14 (reported by user): the pane was a flat list of
+  // 6 rows with no visual grouping — the user couldn't tell
+  // which rows were "status" vs "controls" vs "installers".
+  // The new layout uses the same .settings-group-title pattern
+  // as General / BatchGen so the pane reads like a checklist:
+  //   1. Status (read-only)
+  //   2. Upscale model (control)
+  //   3. Installation (one-click + add-ons link)
   const root = el('div', {});
-  root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-    'The built-in pipeline is always available. Real-ESRGAN (BSD-3-Clause) gives noticeably better detail when the binary is installed.'));
+  root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin: 0 0 8px;' },
+    'Local image pipeline. The built-in multi-step pipeline always works (no install). Real-ESRGAN (BSD-3-Clause) + IS-Net (MIT) are optional quality upgrades.'));
 
-  // ---- Real-ESRGAN status ----
+  // ---- Section 1: Status ----
+  root.appendChild(el('h4', { class: 'settings-group-title' }, '📊 Status'));
   const statusText = el('div', { class: 're-status' }, 'Detecting…');
   const reBtn = el('button', { class: 'btn-mini' }, '🔄 Re-detect');
-  const installBtnStatus = el('button', { class: 'btn-mini' }, '⬇ Download & install');
-  installBtnStatus.style.display = 'none';
   root.appendChild(el('div', { class: 'row' }, [
-    el('label', {}, 'Real-ESRGAN upscaler'), statusText, installBtnStatus, reBtn,
+    el('label', {}, ['Real-ESRGAN', helpButton('settings.upscale')]), statusText, reBtn,
   ]));
 
   // ---- Real-ESRGAN model selector ----
@@ -168,19 +173,30 @@ function buildSettingsImagePane() {
     state.realesrganModel = modelSel.value;
     scheduleStateSave();
   });
+  // ---- Section 2: Upscale model ----
+  root.appendChild(el('h4', { class: 'settings-group-title' }, '🔍 Upscale model'));
+  root.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
+    'Which Real-ESRGAN model to use when the upscale post-processing step runs. Change this if you primarily generate a specific style.'));
   root.appendChild(el('div', { class: 'row' }, [
     el('label', {}, 'Upscale model'), modelSel,
   ]));
 
+  // ---- Section 3: Installation ----
+  root.appendChild(el('h4', { class: 'settings-group-title' }, '📥 Installation'));
+  root.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
+    'Install or replace the optional binaries. The Real-ESRGAN download streams progress below; the add-ons installer covers IS-Net (binary + ONNX model) plus manual install paths.'));
+
   // ---- One-click installer ----
   const installBtn = el('button', { class: 'btn-mini' }, '⬇ Download Real-ESRGAN');
+  const installBtnStatus = el('button', { class: 'btn-mini' }, '⬇ Install (when missing)');
+  installBtnStatus.style.display = 'none';
   const installProgress = el('div', { class: 're-progress' });
   installProgress.style.display = 'none';
   installProgress.style.color = 'var(--fg-2)';
   installProgress.style.fontSize = '12px';
   root.appendChild(el('div', { class: 'row' }, [
     el('label', {}, 'One-click install'),
-    el('div', { style: 'display: flex; gap: 8px; align-items: center; flex-wrap: wrap;' }, [installBtn, installProgress]),
+    el('div', { style: 'display: flex; gap: 8px; align-items: center; flex-wrap: wrap;' }, [installBtn, installBtnStatus, installProgress]),
   ]));
 
   async function refreshStatus() {
@@ -259,7 +275,7 @@ function buildSettingsImagePane() {
   const openAddonsBtn = el('button', { class: 'btn-mini' }, '🧩 Open add-ons installer');
   openAddonsBtn.addEventListener('click', () => openOptionalAddons({ force: true }).catch(() => {}));
   root.appendChild(el('div', { class: 'row' }, [
-    el('label', {}, 'Optional add-ons'),
+    el('label', {}, ['Optional add-ons', helpButton('settings.optionalAddons')]),
     openAddonsBtn,
   ]));
 
@@ -356,10 +372,16 @@ function buildSettingsStylesPane() {
 
 function buildSettingsPopupsPane() {
   // Popups policy + reset history (was the standalone popup).
+  // v1.1.14: two logical sections — Behaviour (the dropdown)
+  // and Reset (the destructive action). Same .settings-group-
+  // title pattern as General / BatchGen so the whole settings
+  // dialog reads consistently.
   const root = el('div', {});
-  root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-    'Control how often the optional popups appear: the welcome screen on every fresh launch, the first-time setup, the optional add-ons installer, and the per-tab intro messages.'));
+  root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin: 0 0 8px;' },
+    'Control how often the optional popups appear: the welcome screen, the first-time setup, the optional add-ons installer, and the per-tab intro messages.'));
 
+  // ---- Section 1: Behaviour ----
+  root.appendChild(el('h4', { class: 'settings-group-title' }, '💬 Behaviour'));
   const polSel = el('select', { class: 'popup-policy-select' });
   for (const [val, lbl] of [
     ['once-fresh',  'Show once to fresh users, then never (default)'],
@@ -374,6 +396,10 @@ function buildSettingsPopupsPane() {
     polSel,
   ]));
 
+  // ---- Section 2: Reset ----
+  root.appendChild(el('h4', { class: 'settings-group-title' }, '🔄 Reset'));
+  root.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
+    'Force every dismissed popup to fire again on its next trigger. Useful while you\'re still learning the tool.'));
   const resetBtn = el('button', { class: 'btn-mini' }, '🔄 Reset popup history');
   resetBtn.addEventListener('click', async () => {
     if (!confirm('Reset all popup "seen" history? Every popup will fire again the next time it is triggered (until you dismiss it).')) return;
@@ -388,7 +414,7 @@ function buildSettingsPopupsPane() {
   }
   refreshSeenCount();
   root.appendChild(el('div', { class: 'row' }, [
-    el('label', {}, 'Reset'),
+    el('label', {}, 'Reset history'),
     el('div', { style: 'display: flex; gap: 8px; align-items: center;' }, [resetBtn, seenSpan]),
   ]));
 
@@ -404,11 +430,20 @@ function buildSettingsBatchgenPane() {
   // with two files when they only need one. The format is
   // chosen here and used by batchesGenerateExamples (both
   // the renderer + the main-process IPC).
+  //
+  // v1.1.14 (reported by user): added an opt-out switch for
+  // the "auto-remove completed items" behaviour (which is now
+  // the default — see startBatchGen() in batchManager.js for
+  // the per-item splice logic).
   const root = el('div', {});
   root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
-    'Settings for the BatchGen "Gen Examples" button (creates a template you can hand to an AI to generate a batch import file). The chosen format is the ONLY one the button writes — pick whichever one you actually use.'));
+    'Settings for BatchGen — the bulk runner that executes every prompt/text you queue in the per-tab batch editors. Each setting below controls a behaviour that affects every batch run (per tab + the all-types runner).'));
 
-  // ---- Export format dropdown ----
+  // ---- Group 1: Example export format ----
+  root.appendChild(el('h4', { class: 'settings-group-title' }, '📋 Example export'));
+  root.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
+    'The "Gen Examples" button (next to "BatGen All Types") writes a template you can hand to an AI to generate a batch import file. Pick whichever single format you actually use.'));
+
   const fmtSel = el('select', { class: 'batches-export-format-select' });
   for (const [val, lbl] of [
     ['md',  '📝 Markdown (.md) — AI-friendly table with header rows (recommended)'],
@@ -428,17 +463,42 @@ function buildSettingsBatchgenPane() {
     fmtSel,
   ]));
 
-  // Caption below the dropdown that explains the choice in
-  // one short line, so the user doesn't have to remember
-  // which format they picked last time.
-  root.appendChild(el('p', { class: 'batches-export-format-hint', style: 'color: var(--fg-3); font-size: 11.5px; margin: 4px 0 14px;' },
-    'Only the chosen type is generated. The example file lands in your output folder as "example_batch_import.{ext}".'));
+  // ---- Group 2: Auto-remove behaviour ----
+  root.appendChild(el('h4', { class: 'settings-group-title', style: 'margin-top: 18px;' }, '🧹 Queue cleanup'));
+  root.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px; margin: 4px 0 8px;' },
+    'After a batch item finishes generating, what should happen to the entry in the BatchGen list? Default behaviour is to remove it (so the list always reflects only upcoming work); failed items are NEVER removed — you decide whether to retry or skip them.'));
+
+  const autoRemoveCb = el('input', {
+    type: 'checkbox',
+    class: 'batches-auto-remove-cb',
+    id: 'batches-auto-remove-cb',
+  });
+  autoRemoveCb.checked = state.batchesAutoRemove !== false;  // default true
+  autoRemoveCb.addEventListener('change', () => {
+    state.batchesAutoRemove = autoRemoveCb.checked;
+    scheduleStateSave();
+  });
+  root.appendChild(el('div', { class: 'row batches-auto-remove-row' }, [
+    el('label', { for: 'batches-auto-remove-cb' }, [
+      autoRemoveCb,
+      el('span', {}, [
+        el('strong', {}, 'Auto-remove completed items'),
+        '  — each successful generation is removed from the BatchGen list immediately. Failed items stay until you decide.',
+        helpButton('settings.batchesAutoRemove'),
+      ]),
+    ]),
+  ]));
 
   return {
     root,
     instance: {
       collect() {
-        return { /* batchesExportFormat lives in state.json, not config.txt */ };
+        // Both batchesExportFormat and batchesAutoRemove live
+        // in state.json (persisted via scheduleStateSave on
+        // change), not in config.txt — so the collect() returns
+        // an empty partial and the Save handler merges state
+        // JSON + config in-place without re-writing these.
+        return {};
       },
     },
   };

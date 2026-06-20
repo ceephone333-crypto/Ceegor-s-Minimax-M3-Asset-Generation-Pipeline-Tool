@@ -34,6 +34,7 @@ const LEGACY_OVERSIZE = new Set([
   'section07_Image_optimisation___compression.js',  // 952 Z. — showUpscaleSettings (god-function)
   'fileBrowser1.js',     // 528 Z. — list + render + multi-select + bulk-action worker (Phase 3 + v1.1.9)
   'fileBrowser2b.js',    // 548 Z. — preview pane (image / video / audio) + text preview (Phase 3 + v1.1.11)
+  'section03_Settings_tab_panes.js',  // 534 Z. — General + Image + BatchGen + Styles + Popups + Shortcuts panes (Phase 3 + v1.1.14)
 ]);
 
 // "God Words" — Dateien mit diesen Suffixen werden abgelehnt.

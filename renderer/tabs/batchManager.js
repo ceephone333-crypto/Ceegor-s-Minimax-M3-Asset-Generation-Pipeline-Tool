@@ -131,6 +131,14 @@ async function startBatchGen(tabKey) {
   }
 
   _batchAbort = false;
+  // v1.1.14 (reported by user): default behaviour is now to
+  // remove a successful item from state.batches[tabKey]
+  // immediately after it finishes, so the list always
+  // reflects only upcoming work. The user can opt out in
+  // ⚙ Settings → BatchGen ("Keep completed items in
+  // list"). Failed items are NEVER removed — the user
+  // decides whether to retry or skip them.
+  const autoRemove = state.batchesAutoRemove !== false;
   const tabName = tabKey.charAt(0).toUpperCase() + tabKey.slice(1);
   const tabRoot = $(`#tab-${tabKey}`);
   const promptTa = tabRoot.querySelector('textarea');        // first textarea = main prompt
@@ -285,6 +293,24 @@ async function startBatchGen(tabKey) {
         const variantTag = currentVariantsCount > 1 ? ` v${vi + 1}/${currentVariantsCount}` : '';
         if (looksOk) { ok++; logLine(`✓ ${i + 1}/${items.length}${variantTag} OK`, 'ok'); }
         else { fail++; logLine(`✗ ${i + 1}/${items.length}${variantTag} FAILED`, 'err'); }
+        // v1.1.14 (reported by user): default behaviour is to
+        // remove successful items from state.batches[tabKey]
+        // immediately. We do this after the LAST variant of the
+        // current item so a multi-variant run still generates
+        // every variant of the prompt before the entry is
+        // dropped. Failed items stay so the user can retry.
+        if (looksOk && autoRemove && vi === currentVariantsCount - 1) {
+          // Splice out the just-finished item by index `i`.
+          // We mutate state.batches[tabKey] in place so any
+          // subscriber reading the array sees the new state.
+          // Persist the new batches array to batches.json so
+          // a restart doesn't bring the entry back.
+          const next = (state.batches[tabKey] || []).slice();
+          if (i < next.length) next.splice(i, 1);
+          state.batches[tabKey] = next;
+          try { await window.api.batchesSet(state.batches); } catch (_) { /* best-effort persist */ }
+          logLine(`✓ ${i + 1}/${items.length} removed from queue (auto-remove on)`, 'ok');
+        }
       }
 
       // Restore modified fields for this item

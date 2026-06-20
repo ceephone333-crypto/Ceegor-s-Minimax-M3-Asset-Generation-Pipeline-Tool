@@ -80,10 +80,15 @@ async function ensureSubDir(base, fbDir, name, fbMkdir) {
     targetDir = join(base, name, baseSep);
   }
   if (targetDir === join(base, name, baseSep)) {
-    await fbMkdir(base, name).catch(() => null);
+    // v1.1.12 (reported by user): no .catch(() => null) here.
+    // A failed mkdir must surface as a thrown error so the
+    // gen handler's catch block can show the real reason
+    // (instead of silently returning a targetDir that doesn't
+    // exist on disk, which then ENOENTs in mmxRun).
+    await fbMkdir(base, name);
   } else if (externalPicked) {
     const picked = (fbDir || '').replace(/[\\/]+$/, '');
-    await fbMkdir(picked, name).catch(() => null);
+    await fbMkdir(picked, name);
   } else {
     const stripped = targetDir.replace(/[\\/]+$/, '');
     const baseN = base.replace(/[\\/]+$/, '');
@@ -94,7 +99,7 @@ async function ensureSubDir(base, fbDir, name, fbMkdir) {
     }
     let cur = base;
     for (const p of relParts) {
-      await fbMkdir(cur, p).catch(() => null);
+      await fbMkdir(cur, p);
       cur = join(cur, p, baseSep);
     }
   }

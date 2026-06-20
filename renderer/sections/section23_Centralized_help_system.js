@@ -99,12 +99,22 @@ const helpTopics = {
 
   // -- Settings dialog --
   'settings.apiKey':       { title: 'API key',                  text: 'Your MiniMax API key. Works with both Token Plan keys (which look like "sk-cp-xxxxxxxx") and pay-as-you-go (PAYG) keys. Get a Token Plan key from the MiniMax dashboard, or create a PAYG key at the developer portal under "Interface Keys". Paste it here. The key is stored in config.txt next to the executable — never in the cloud, never embedded in the tool. You can use the "Show" / "Hide" toggle to confirm you pasted it correctly; the field is masked by default to prevent shoulder-surfing.' },
+  // v1.1.14 (reported by user): the "Don't save" checkbox on
+  // the API-key row keeps the entered key in memory only —
+  // config.txt is NOT updated and the next launch starts
+  // empty. Useful on shared / kiosk machines.
+  'settings.apiKeyNoSave': { title: 'Don\'t save the API key', text: 'When this is checked, the entered API key is kept in memory for this session only — config.txt is NOT written, and the next launch starts with an empty key. Use this on shared / kiosk machines where you don\'t want the next user to find your key. When unchecked, behaviour is unchanged: the key is written to config.txt and re-loaded on every launch.' },
   'settings.outputDir':    { title: 'Output folder',            text: 'Where every generated file (image, audio, music, video) is written. Pick a folder with enough free space — videos and high-resolution images can be hundreds of megabytes each. The default is a "generated" folder next to the executable.' },
+  'settings.configFile':   { title: 'Config file location',     text: 'Where config.txt lives on disk (read-only display). This is the file the tool reads at launch to load your API key, output folder, region, theme, and styles. You can back it up here, or move it manually if you want the tool to start fresh on the next launch.' },
   // v1.1.13 (reported by user): the export format the user
   // picked in the BatchGen settings. The previous version
   // hard-wrote BOTH a .md and a .txt example file every time;
   // the user wanted to choose which one they actually need.
   'settings.batchesExportFormat': { title: 'Example export format', text: 'The format the "Gen Examples" button writes when you click it from the BatchGen controls. Pick ONE — only the chosen file is left in your output folder. The .md format (default) is the AI-friendly markdown table; the .txt format is the plain-text pipe-separated version.' },
+  // v1.1.14 (reported by user): the auto-remove switch in the
+  // BatchGen settings. The default is to remove successful
+  // items from the queue immediately; failed items stay.
+  'settings.batchesAutoRemove': { title: 'Auto-remove completed items', text: 'When this is checked (the default), each batched item is removed from the BatchGen queue the moment it generates successfully. The list always reflects only upcoming work. Failed items are NEVER removed — you decide whether to retry or skip them. When unchecked, every item stays in the queue until you manually clear or edit it.' },
   'settings.region':       { title: 'Region',                   text: 'Which MiniMax API region to talk to. Most users want "global". Pick the regional endpoint only if you are inside a regulated network that blocks the global one. The region setting applies to both Token Plan and pay-as-you-go (PAYG) keys.' },
   'settings.theme':        { title: 'Theme',                    text: 'Pick the UI theme. "Dark" is easier on the eyes for long sessions. "Light" is better for screenshots / screen sharing in a bright room.' },
   'settings.upscale':      { title: 'Image upscaling',          text: 'Configure the local post-processing pipeline. The default works without any extra software, but you can install Real-ESRGAN (BSD-3-Clause) for noticeably higher-quality 4× upscale, and IS-Net for one-click background removal. Both are optional.' },

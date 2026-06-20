@@ -982,16 +982,27 @@ function openAllBatchDashboard() {
           // queues don't blow up the modal).
           const list = el('ol', { class: 'batch-dashboard-items' });
           const startIdx = items.length - left; // first item NOT yet processed
+          // v1.1.14 (reported by user): per-item edit + remove
+          // buttons so the user can manage the queue from the
+          // dashboard without re-opening the per-tab batch
+          // editor. The buttons act on state.batches[k] in
+          // place and persist via batchesSet so a refresh
+          // doesn't bring them back. "Edit" opens the existing
+          // per-tab batch editor (openBatchManager) where the
+          // textareas support per-item editing; "Remove" drops
+          // the entry immediately. Both buttons are disabled
+          // for items the batch has already processed
+          // (startIdx cutoff) — you can't undo history.
           items.forEach((it, idx) => {
+            const isDone = idx < startIdx;
             const li = el('li', {
-              class: 'batch-dashboard-item' + (idx < startIdx ? ' batch-dashboard-item-done' : ''),
+              class: 'batch-dashboard-item' + (isDone ? ' batch-dashboard-item-done' : ''),
               title: batchText(it),
             });
             const txt = batchText(it).slice(0, 200);
             li.appendChild(el('span', { class: 'batch-dashboard-item-num' }, `${idx + 1}.`));
             li.appendChild(el('span', { class: 'batch-dashboard-item-text' }, txt + (batchText(it).length > 200 ? '…' : '')));
             if (it && typeof it === 'object') {
-              // Per-item params override (style / variants / …)
               const params = [];
               for (const k2 of Object.keys(it)) {
                 if (k2 === 'prompt' || k2 === 'text') continue;
@@ -999,6 +1010,36 @@ function openAllBatchDashboard() {
                 else if (typeof it[k2] === 'number') params.push(`${k2}: ${it[k2]}`);
               }
               if (params.length) li.appendChild(el('span', { class: 'batch-dashboard-item-params' }, ` [${params.join(', ')}]`));
+            }
+            if (!isDone) {
+              const actions = el('span', { class: 'batch-dashboard-item-actions' });
+              const editBtn = el('button', {
+                type: 'button',
+                class: 'btn-mini',
+                title: 'Open the per-tab BatchGen editor to edit this entry',
+                onclick: () => {
+                  close();
+                  try { window.BatchManager.openBatchManager(k); } catch (_) { /* tab scripts may not have loaded yet */ }
+                },
+              }, '✎');
+              const removeBtn = el('button', {
+                type: 'button',
+                class: 'btn-mini danger',
+                title: 'Remove this entry from the queue (no undo)',
+                onclick: async () => {
+                  const next = (state.batches[k] || []).slice();
+                  // Map dashboard index → live array index. The
+                  // dashboard shows the same order as
+                  // state.batches[k] (we read items from there
+                  // at the top of renderBody). So idx maps 1:1.
+                  if (idx < next.length) next.splice(idx, 1);
+                  state.batches[k] = next;
+                  try { await window.api.batchesSet(state.batches); } catch (_) { /* best-effort */ }
+                  renderBody();  // re-render in place so the modal reflects the change
+                },
+              }, '✕');
+              actions.append(editBtn, removeBtn);
+              li.appendChild(actions);
             }
             list.appendChild(li);
           });

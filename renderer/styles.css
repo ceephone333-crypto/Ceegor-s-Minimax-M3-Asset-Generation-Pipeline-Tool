@@ -2428,6 +2428,52 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
 .batch-dashboard-item-num { color: var(--fg-3); flex: 0 0 auto; }
 .batch-dashboard-item-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .batch-dashboard-item-params { color: var(--accent); flex: 0 0 auto; }
+.batch-dashboard-item-actions {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  display: inline-flex;
+  gap: 4px;
+}
+.batch-dashboard-item-actions .btn-mini {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* v1.1.14 (reported by user): settings pane group titles
+   that split a single tab into logical sections (e.g.
+   "📋 Example export" + "🧹 Queue cleanup" inside the
+   BatchGen tab). Sits above each section's content, with
+   the help-button + caption row right below it. */
+.settings-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  margin: 14px 0 0;
+  padding: 0 0 4px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-group-title:first-of-type { margin-top: 0; }
+/* v1.1.14: per-pane checkbox rows with an explanation
+   inline (the API-key "Don't save" row + the BatchGen
+   "Auto-remove" row share this layout). */
+.row.batches-auto-remove-row label {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-weight: 500;
+}
+.row.batches-auto-remove-row input[type="checkbox"] {
+  margin: 1px 0 0 0;
+  cursor: pointer;
+  accent-color: var(--accent, #d9a300);
+}
+.row.batches-auto-remove-row label strong { color: var(--fg); }
 .batch-dashboard-footer {
   margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
   color: var(--fg-2); font-size: 12px;

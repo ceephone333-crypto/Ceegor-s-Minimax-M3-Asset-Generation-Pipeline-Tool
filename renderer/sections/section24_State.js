@@ -207,6 +207,18 @@ window.state = {
   // actually want (default: 'md', which is the AI-readable
   // format most users use). Persisted to state.json.
   batchesExportFormat: 'md',
+  // v1.1.14 (reported by user): when true (the default),
+  // each batched item is removed from state.batches[tabKey]
+  // once it finishes generating successfully. The previous
+  // behaviour kept every entry around until the user
+  // manually cleared the list, so the list grew stale and
+  // duplicates were easy to accidentally re-run. The list
+  // now always reflects only the moment's upcoming work.
+  // Failed items are NOT removed — the user has to decide
+  // whether to retry or skip them. The user can opt out in
+  // ⚙ Settings → BatchGen ("Keep completed items in list").
+  // Persisted to state.json.
+  batchesAutoRemove: true,
   // Which file-browser columns are visible. An object keyed by
   // column id (see FB_COLUMNS) with boolean values. The "name"
   // column is mandatory and is always rendered, regardless of
