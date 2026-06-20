@@ -62,6 +62,25 @@ async function init() {
   $('#fb-refresh').addEventListener('click', () => refreshBrowser());
   $('#fb-new').addEventListener('click', () => promptNewFolder());
   $('#fb-open').addEventListener('click', () => window.api.fbReveal(state.fbDir || state.config.output_dir || ''));
+  // Bug-fix (2026-06-20, reported by user): the 📂 button was added to
+  // index.html but its click handler was never wired up — the previous
+  // "Up" button only climbs inside `output_dir`, so a user whose
+  // output_dir is at a drive root (e.g. `D:\`) couldn't reach any
+  // folder on a different drive. The native folder picker (Windows
+  // `IFileDialog` via Electron's `dialog.showOpenDialog`) lets the user
+  // browse ANY drive and ANY folder on it in one dialog — the simplest
+  // fix and the one the user asked for as the alternative. The picked
+  // path is auto-added to the IPC allow-list (`pathSecurity.addTrusted`
+  // inside the main-process handler) so subsequent reads / writes /
+  // moves work without any extra "allow" gesture.
+  $('#fb-pick').addEventListener('click', async () => {
+    const picked = await window.api.pickFolder();
+    if (!picked) return;
+    state.fbDir = picked;
+    if (state.currentTab) state.fbDirs[state.currentTab] = picked;
+    scheduleStateSave();
+    refreshBrowser();
+  });
   $('#quota-refresh').addEventListener('click', () => refreshQuota());
   $('#btn-styles').addEventListener('click', () => openStyleSettings());
   $('#btn-theme').addEventListener('click', () => toggleTheme());
@@ -301,6 +320,144 @@ async function ensureSubDir(name) {
 // Phase 4 Fix 15: 'window.ensureSubDir = ensureSubDir' so the tab
 // scripts (loaded BEFORE app.js) can see it without crashing.
 window.ensureSubDir = ensureSubDir;
+
+// ----------------- Generation helpers -----------------
+// Bug-fix (2026-06-20, reported by user): Generate did nothing because
+// armGenBtnWithCancel (and several sibling helpers) was lost during the
+// Phase 3 Block 29 refactor — the section-boundary regex missed them in
+// f40f56b's monolithic app.js, so the new section files reference functions
+// that don't exist anywhere. The renderer hits a ReferenceError at the
+// first click on the Generate button (after the pre-flight checks all
+// pass), the async handler rejects, and the user sees nothing. The
+// functions below are the canonical v1.1.0 implementations, restored
+// verbatim so the gen handlers in imageTab / speechTab / musicTab /
+// videoTab can resolve them. Without these the tool is completely
+// unable to produce an asset, no matter how valid the inputs are.
+
+// "YYYYMMDD_HHMMSS" timestamp used as the slug stem for every generated
+// file. The renderer doesn't have a built-in `strftime`, so we build it
+// by hand with leading-zero padding. Local-time by design — the user
+// sees the same wall-clock time they generated the file at.
+function timestamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+// Convert a free-form prompt into a filename-safe slug. The same rule
+// the v1.1.0 helper used: lowercase, swap any non-[a-z0-9] run for a
+// single `-`, trim leading/trailing dashes. Empty result falls back
+// to the per-tab default name in the gen handler (`|| 'image'` etc.).
+function slugify(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+// Renderer's uniquePath: append a 4-char base36 suffix to virtually
+// eliminate in-session collisions (two clicks in the same second would
+// otherwise overwrite each other). We can't query the FS from the
+// renderer, so a random suffix is the simplest correct approach.
+function uniquePath(dir, name) {
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  const suffix = Math.random().toString(36).slice(2, 6) || 'rndm';
+  return dir.replace(/[\\/]+$/, '') + (dir.includes('\\') ? '\\' : '/') + stem + '_' + suffix + ext;
+}
+// Format mmx error: strip the "node.exe :" prefix PowerShell wraps
+// around stderr, then surface the most informative bit. mmx returns
+// errors in a few different shapes depending on which command failed;
+// see classifyMmxError below for the categorisation that follows.
+function formatMmxError(r) {
+  let msg = (r.stderr || r.stdout || '').toString();
+  msg = msg.replace(/^node\.exe\s*:\s*/gm, '').trim();
+  if (r.parsed && typeof r.parsed === 'object') {
+    // Shape 1: { "error": { "code": N, "message": "..." } }
+    if (r.parsed.error && typeof r.parsed.error === 'object' && r.parsed.error.message) {
+      const m = String(r.parsed.error.message);
+      if (m) return msg ? `${m} (${msg})` : m;
+    }
+    // Shape 2: { "base_resp": { "status_code": N, "status_msg": "..." } }
+    if (r.parsed.base_resp && r.parsed.base_resp.status_msg) {
+      const sm = r.parsed.base_resp.status_msg;
+      const sc = r.parsed.base_resp.status_code;
+      if (sm && sc !== 0) return msg ? `${sm} (${msg})` : sm;
+    }
+    // Shape 3: { "message": "..." } (catch-all)
+    if (typeof r.parsed.message === 'string' && r.parsed.message) return r.parsed.message;
+  }
+  return msg || `mmx exited with code ${r.code}`;
+}
+// Classify an mmx error so the image tab's error UI can show targeted
+// troubleshooting tips (auth / rate / quota / network / server /
+// unknown). Matches a deliberately small set of substrings; the
+// patterns are case-insensitive on the combined stderr/stdout/msg blob.
+function classifyMmxError(r, msg) {
+  const combined = ((msg || '') + ' ' + (r.stderr || '') + ' ' + (r.stdout || '')).toLowerCase();
+  if (/401|403|unauthor|forbidden|invalid.api.key|api.key.*invalid|auth.*fail/.test(combined)) return 'auth';
+  if (/429|rate|limit|throttl|too many/.test(combined)) return 'rate';
+  if (/quota|not.in.plan|exhaust|insufficient/.test(combined)) return 'quota';
+  if (/enotfound|econnrefused|econnreset|etimedout|network|dns/.test(combined)) return 'network';
+  if (/500|502|503|504|server.error|system.error|internal/.test(combined)) return 'server';
+  return 'unknown';
+}
+// Bump the in-session "N generations this session" counter shown in
+// the status bar. Called from every gen handler's success path (image /
+// speech / music / video). Cleared on app restart — this is purely a
+// per-session UX hint, not persisted.
+let _generationCounter = 0;
+function bumpGenerationCounter(kind, n = 1) {
+  _generationCounter += Math.max(1, n | 0);
+  setStatus(`${_generationCounter} generations this session`, false);
+}
+// Wrap a generation call with a cancel button. While the call is in
+// flight the button text becomes "Cancel" (clicking it triggers the
+// cancel path), state.generating is set to the tab key so re-entrant
+// click guards and the batch runner can detect an in-flight run, and
+// state.genStatus[tabKey] is set to "running" (drives the red tab dot).
+// On cleanup: the original button label is restored, state.generating
+// is cleared, the per-tab ETA average is updated (alpha=0.4, recent
+// runs weighted higher), and the tab dot flips to "done".
+function armGenBtnWithCancel(genBtn, label) {
+  let cancelled = false;
+  const origLabel = label || genBtn.textContent;
+  const tabKey = (genBtn.closest('.tabpanel')?.id || '').replace('tab-', '') || null;
+  genBtn.textContent = 'Cancel';
+  genBtn.classList.add('danger');
+  state.generating = tabKey;
+  if (tabKey) {
+    state.genStatus[tabKey] = 'running';
+    if (!state.genStartMs) state.genStartMs = { image: null, speech: null, music: null, video: null };
+    state.genStartMs[tabKey] = Date.now();
+  }
+  refreshTabStatusDots();
+  ensureEtaTimer();
+  const onCancelClick = async (ev) => {
+    ev.preventDefault(); ev.stopPropagation();
+    if (!confirm('Cancel the current generation?')) return;
+    cancelled = true;
+    toast('Cancelling…', 'warn', 1500);
+    await window.api.mmxCancel();
+  };
+  genBtn.addEventListener('click', onCancelClick);
+  return {
+    cancel: () => { cancelled = true; },
+    wasCancelled: () => cancelled,
+    cleanup: () => {
+      genBtn.removeEventListener('click', onCancelClick);
+      genBtn.classList.remove('danger');
+      genBtn.textContent = origLabel;
+      genBtn.disabled = false;
+      if (tabKey && !cancelled && state.genStartMs && state.genStartMs[tabKey]) {
+        const dur = (Date.now() - state.genStartMs[tabKey]) / 1000;
+        if (!state.genAvgSec) state.genAvgSec = { image: 0, speech: 0, music: 0, video: 0 };
+        const prev = state.genAvgSec[tabKey] || 0;
+        state.genAvgSec[tabKey] = prev === 0 ? dur : (prev * 0.6 + dur * 0.4);
+        state.genStartMs[tabKey] = null;
+      }
+      if (state.generating === tabKey) state.generating = null;
+      if (tabKey) state.genStatus[tabKey] = cancelled ? 'idle' : 'done';
+      refreshTabStatusDots();
+    },
+  };
+}
 
 function installKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {

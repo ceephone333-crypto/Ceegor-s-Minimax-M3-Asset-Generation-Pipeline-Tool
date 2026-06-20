@@ -122,6 +122,17 @@ window.state = {
   // batch will be done.
   genQueueSize: { image: 0, speech: 0, music: 0, video: 0 },
   genQueueDone: { image: 0, speech: 0, music: 0, video: 0 },
+  // Wall-clock start time (Date.now()) of the in-flight generation, per
+  // tab. armGenBtnWithCancel sets this on entry; cleanup() reads it to
+  // update genAvgSec. Bug-fix (2026-06-20): previously these keys were
+  // created implicitly on first write (via `if (!state.genStartMs)` in
+  // app.js), which made the state shape harder to grep for and let a
+  // corrupted state.json with a non-object value crash the gen handler.
+  genStartMs: { image: null, speech: null, music: null, video: null },
+  // Per-tab exponential moving average of successful generation
+  // durations (seconds, alpha=0.4). Drives the per-tab ETA timer in
+  // section10. Same shape as genStartMs above.
+  genAvgSec: { image: 0, speech: 0, music: 0, video: 0 },
   // The path of the image currently shown in the right-side preview
   // pane. Used by previewImageFromFile to short-circuit "click the
   // same file twice" and avoid a re-decode + flicker. Cleared when
