@@ -63,6 +63,11 @@ test('video: Fast model requires a first frame', () => {
 });
 test('video: last-frame requires first-frame', () => bad('video', { model: 'MiniMax-Hailuo-02', 'last-frame': 'b.png' }, /first-frame/));
 test('video: rejects an unknown model', () => bad('video', { model: 'Hailuo-9' }, /model/));
+test('video: S2V-01 requires a subject image', () => {
+  bad('video', { model: 'S2V-01', prompt: 'x' }, /subject/i);
+  ok('video', { model: 'S2V-01', prompt: 'x', 'subject-image': 'face.png' });
+});
+test('video: default T2V model needs no images', () => ok('video', { model: 'MiniMax-Hailuo-2.3', prompt: 'a cat walking' }));
 
 test('unknown keys and missing optional values do not error', () => {
   ok('speech', { text: 'hi', somethingUnknown: 'x' });

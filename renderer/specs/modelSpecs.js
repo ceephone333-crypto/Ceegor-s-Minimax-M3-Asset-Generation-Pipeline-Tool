@@ -372,8 +372,12 @@ function validateValues(tabKey, values, opts) {
   } else if (tabKey === 'video') {
     const hasFirst = !!(v['first-frame'] || v['first-frame-image']);
     const hasLast = !!(v['last-frame'] || v['last-frame-image']);
+    const hasSubject = !!(v['subject-image']);
     if (String(v.model) === 'MiniMax-Hailuo-2.3-Fast' && !hasFirst) errors.push('MiniMax-Hailuo-2.3-Fast requires a first-frame image.');
     if (hasLast && !hasFirst) errors.push('A last-frame image also requires a first-frame image.');
+    // S2V-01 is the subject-reference model — the API rejects it without
+    // a subject image ("param 'subject_reference' is required").
+    if (String(v.model) === 'S2V-01' && !hasSubject) errors.push('The S2V-01 model requires a subject reference image (set --subject-image, or switch to MiniMax-Hailuo-2.3 for text-to-video).');
     if (v.prompt && String(v.prompt).length > A.promptMax) errors.push(`Prompt is ${String(v.prompt).length} chars; max for video is ${A.promptMax}.`);
   }
   return { errors };

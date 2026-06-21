@@ -56,33 +56,73 @@ const SYNC_ENTRIES = [
   'src',
   'renderer',
 ];
-const SYNC_NODE_MODULES = [
-  // IS-NET (background removal) — Node.js wrapper around
-  // onnxruntime-node. Without this in the asar, `pickBackend()`
-  // returns null and the Re-detect button reports "not found"
-  // even though the package is on disk.
+// Runtime dependency ROOTS. The full set of packages synced into the
+// asar is the transitive closure of these (computed below) PLUS the whole
+// @img scope (sharp's prebuilt native wrapper).
+//
+// Bug-fix (2026-06-20, reported by user): the previous static list synced
+// ONLY these three (+@img) and NOT their transitive dependencies, so the
+// packaged app threw at runtime — "Cannot find module 'onnxruntime-common'"
+// (background removal) and "Sharp is not installed" (image optimise),
+// because onnxruntime-common / color / detect-libc / semver / … were
+// never bundled. We now walk each package's dependencies +
+// optionalDependencies and include every reachable package that's
+// actually installed.
+const RUNTIME_DEP_ROOTS = [
+  // IS-NET (background removal) — Node.js wrapper around onnxruntime-node.
   'onnxruntime-node',
-  // Image pipeline (resize, format conversion, the auto-rotate
-  // pass). sharp ships a native binding in app.asar.unpacked
-  // and the JS entry in the asar.
+  // Image pipeline (resize, format conversion, optimise). Native binding
+  // lives in app.asar.unpacked; the JS + its deps go in the asar.
   'sharp',
-  '@img',
-  // Audio (cut, metadata, waveform) uses ffmpeg-static for the
-  // conversion pass. The .exe lives in app.asar.unpacked.
+  // Audio (cut, metadata, waveform) — ffmpeg-static. The .exe is unpacked.
   'ffmpeg-static',
 ];
 
-// Inside each synced node_modules package, skip files that
-// electron-builder already unpacks. Their entries in the asar
-// would just shadow the unpacked version and cause weird
-// behaviour. The patterns match the `asarUnpack` whitelist
-// in package.json.
-const NODE_MODULES_SKIP_PATTERNS = [
-  /\.node$/,                 // N-API native bindings (dlopen'd from .unpacked)
-  /[/\\]bin[/\\].*\.dll$/i,  // sharp's bundled OpenCV / codec DLLs
-  /[/\\]bin[/\\]ffmpeg\.exe$/i,
-  /[/\\]prebuilds?[/\\]/i,   // sharp's prebuild cache
-];
+// Read dependencies + optionalDependencies of a package directory.
+function readPkgDeps(pkgDir) {
+  try {
+    const pj = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
+    return Object.assign({}, pj.dependencies || {}, pj.optionalDependencies || {});
+  } catch (_) { return {}; }
+}
+// Transitive closure of the runtime roots over (optional)dependencies,
+// limited to packages actually present in node_modules.
+function collectClosure(nmRoot, roots) {
+  const seen = new Set();
+  const stack = roots.slice();
+  while (stack.length) {
+    const name = stack.pop();
+    if (seen.has(name)) continue;
+    const dir = path.join(nmRoot, name);
+    if (!fs.existsSync(path.join(dir, 'package.json'))) continue; // not installed / skip
+    seen.add(name);
+    for (const dep of Object.keys(readPkgDeps(dir))) if (!seen.has(dep)) stack.push(dep);
+  }
+  // Always include the whole @img scope (sharp's prebuilt native wrapper);
+  // its members are referenced via optionalDependencies and may not all be
+  // declared, but the installed one(s) must ship.
+  const imgDir = path.join(nmRoot, '@img');
+  if (fs.existsSync(imgDir)) {
+    for (const m of fs.readdirSync(imgDir)) seen.add('@img/' + m);
+  }
+  return [...seen].sort();
+}
+
+// Single glob passed to `asar pack --unpack` so native binaries are
+// written to app.asar.unpacked AND marked in the asar header (so Electron
+// redirects native loads there). MUST be ONE pattern: the asar CLI's
+// --unpack takes a single value (repeating the flag keeps only the last),
+// so we brace-expand every native extension into one matchBase glob.
+// Without this, native .node/.dll stay inside the asar; Electron then
+// extracts a .node to a temp dir WITHOUT its sibling DLLs (e.g. sharp's
+// libvips), and dlopen fails with "The specified module could not be
+// found".
+const UNPACK_GLOB = '*.{node,exe,dll,dylib,so}';
+
+// Subdirs that are pure noise (docs/tests) — skipped to keep the asar
+// lean. We deliberately do NOT skip build/prebuilds/bin: those hold the
+// native binaries, which we now KEEP and let --unpack handle.
+const NOISE_DIRS = new Set(['test', 'tests', 'doc', 'docs', '.github', 'example', 'examples', '__tests__']);
 
 function rimraf(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
 function copyDir(src, dst) {
@@ -94,23 +134,17 @@ function copyDir(src, dst) {
     else fs.copyFileSync(sp, dp);
   }
 }
-// Like copyDir but skips files that match any of
-// NODE_MODULES_SKIP_PATTERNS (native bindings / prebuilds /
-// the ffmpeg.exe that lives in asar.unpacked). Walks the
-// tree non-recursively (we don't want to descend into
-// `bin/napi-v6/linux` on a Windows build, etc.) by skipping
-// known-noise subdirectories per top-level package.
-const NOISE_DIRS = new Set([
-  'prebuilds', 'prebuild', 'node-gyp', 'gyp', 'build', 'test', 'tests', 'doc', 'docs',
-]);
-function copyPackage(src, dst, skipPatterns) {
+// Copy a node_modules package in full (including native binaries — those
+// are unpacked at pack time, NOT skipped here; skipping them lost the
+// asar's "unpacked" markers so Electron couldn't find the .node files).
+function copyPackage(src, dst) {
   fs.mkdirSync(dst, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    if (NOISE_DIRS.has(entry.name)) continue; // skip noisy subdirs
+    if (entry.isDirectory() && NOISE_DIRS.has(entry.name)) continue;
     const sp = path.join(src, entry.name);
     const dp = path.join(dst, entry.name);
-    if (entry.isDirectory()) copyPackage(sp, dp, skipPatterns);
-    else if (!skipPatterns.some((re) => re.test(sp))) fs.copyFileSync(sp, dp);
+    if (entry.isDirectory()) copyPackage(sp, dp);
+    else fs.copyFileSync(sp, dp);
   }
 }
 function run(cmd, args) {
@@ -163,8 +197,10 @@ async function main() {
   const nmSrc = path.join(ROOT, 'node_modules');
   const nmDst = path.join(WORK, 'node_modules');
   fs.mkdirSync(nmDst, { recursive: true });
+  const pkgsToSync = collectClosure(nmSrc, RUNTIME_DEP_ROOTS);
+  console.log('  resolved ' + pkgsToSync.length + ' runtime packages (deps closure): ' + pkgsToSync.join(', '));
   let pkgBytes = 0;
-  for (const pkg of SYNC_NODE_MODULES) {
+  for (const pkg of pkgsToSync) {
     const src = path.join(nmSrc, pkg);
     const dst = path.join(nmDst, pkg);
     if (!fs.existsSync(src)) {
@@ -172,7 +208,7 @@ async function main() {
       continue;
     }
     rimraf(dst);
-    copyPackage(src, dst, NODE_MODULES_SKIP_PATTERNS);
+    copyPackage(src, dst);
     // Crude size estimate: count of bytes in the synced subtree.
     let bytes = 0;
     function walk(p) {
@@ -193,8 +229,11 @@ async function main() {
     console.log('[3/4] Backup already present at', BACKUP, '— keeping it');
   }
 
-  console.log('[4/4] Repacking asar...');
-  await run(process.execPath, [asarBin, 'pack', WORK, ASAR]);
+  console.log('[4/4] Repacking asar (unpacking native binaries)...');
+  // Regenerate app.asar.unpacked from scratch so stale leftovers from the
+  // original electron-builder layout don't linger.
+  rimraf(ASAR + '.unpacked');
+  await run(process.execPath, [asarBin, 'pack', WORK, ASAR, '--unpack', UNPACK_GLOB]);
   rimraf(WORK);
 
   const stat = fs.statSync(ASAR);
