@@ -39,4 +39,12 @@
       window.HelpDelegation.setupHelpDelegation();
     }
   } catch (e) { console.warn('setupHelpDelegation failed:', e); }
+  // Phase B: boot the active-jobs widget. The widget is a pure
+  // projection of state.jobs so it doesn't need any extra setup;
+  // it just subscribes to JobRunner events and renders.
+  try {
+    if (window.ActiveJobsWidget && typeof window.ActiveJobsWidget.init === 'function') {
+      window.ActiveJobsWidget.init();
+    }
+  } catch (e) { console.warn('ActiveJobsWidget.init failed:', e); }
 })();

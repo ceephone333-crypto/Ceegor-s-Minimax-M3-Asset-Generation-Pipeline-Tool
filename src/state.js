@@ -224,6 +224,20 @@ function write(s) {
           .filter(([k, v]) => typeof k === 'string' && k.length <= 64 && typeof v === 'string' && v.length <= 32)
           .slice(-64))
       : {},
+    // Phase C: L2 list of finished jobs (recent summary). The
+    // renderer appends a job summary every time a job finishes.
+    // The list is FIFO-capped at `state.config.lastFinishedCap`
+    // (default 200, configurable 20..1000 in ⚙ Settings →
+    // History). The cap is enforced on every write; trimmed
+    // entries are appended to the JSONL archive
+    // (state.jobs.archive.jsonl) so the user can search / clear
+    // long-term history without bloating state.json. The list is
+    // `null` (not `[]`) until the first job finishes — saves a
+    // needless empty array in state.json.
+    jobsSnapshot: (s && Array.isArray(s.jobsSnapshot) ? s.jobsSnapshot : null),
+    // L2 cap. Clamped to [20, 1000] so a corrupted state.json
+    // cannot make the cap insanely high.
+    jobsArchiveCap: Math.max(20, Math.min(1000, Math.round(Number(s && s.jobsArchiveCap) || 200))),
   };
   // Atomic write: write to a temp file then rename. Avoids a corrupt
   // state.json if the process is killed mid-write.

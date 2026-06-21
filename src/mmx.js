@@ -132,12 +132,13 @@ function resolve() {
   return resolved;
 }
 
-function runMmx({ args, apiKey, cwd, onLog }) {
+function runMmx({ args, apiKey, cwd, onLog, onChunk, jobId }) {
   return new Promise((resolveP) => {
     const r = resolve();
     if (!r.command) {
       const msg = `[mmx] ${r.error}`;
       onLog?.(msg);
+      onChunk?.({ line: msg, jobId: jobId || null, kind: 'stderr' });
       resolveP({ ok: false, code: -1, stdout: '', stderr: r.error || 'mmx unavailable', parsed: null });
       return;
     }
@@ -163,6 +164,7 @@ function runMmx({ args, apiKey, cwd, onLog }) {
     const cmdLine = `$ ${r.command} ${fullArgs.map(quote).join(' ')}`
       .replace(/--api-key(?:\s+(?:"[^"]*"|'[^']*'|\S+))?/, '--api-key ***');
     onLog?.(cmdLine);
+    onChunk?.({ line: cmdLine, jobId: jobId || null, kind: 'stderr' });
 
     let stdout = '';
     let stderr = '';
@@ -172,11 +174,12 @@ function runMmx({ args, apiKey, cwd, onLog }) {
       // Use a whitelisted env instead of the full process.env — see
       // buildChildEnv for the rationale.
       proc = spawn(r.command, fullArgs, { cwd, windowsHide: true, env: buildChildEnv() });
-      // Mark this as the current generation proc. cancelAll() only kills
-      // this one — NOT other in-flight procs (e.g. a parallel quota check
-      // triggered from the Diagnose dialog). Killing everything would
-      // cancel a quota refresh the user might still want to see complete.
-      currentGenProc = proc;
+      // Phase A: track every active proc in a Set. The legacy
+      // currentGenProc slot is now a Set so cancelOne(proc) can kill
+      // a specific in-flight generation while leaving sibling procs
+      // (e.g. a parallel quota check) alone. cancelAll() still works
+      // as the "panic" button.
+      currentGenProcs.add(proc);
     } catch (err) {
       resolveP({ ok: false, code: -1, stdout: '', stderr: String(err), parsed: null });
       return;
@@ -197,6 +200,7 @@ function runMmx({ args, apiKey, cwd, onLog }) {
         // grows them.
         if (/^[\s]*[{[]/.test(trimmed) || /error|warning|failed/i.test(trimmed)) {
           onLog?.(trimmed);
+          onChunk?.({ line: trimmed, jobId: jobId || null, kind: 'stdout' });
         }
       }
     });
@@ -205,22 +209,27 @@ function runMmx({ args, apiKey, cwd, onLog }) {
       stderr += s;
       // filter the noisy PowerShell wrapping
       const trimmed = s.replace(/^node\.exe\s*:\s*/gm, '').trimEnd();
-      if (trimmed) onLog?.(trimmed);
+      if (trimmed) {
+        onLog?.(trimmed);
+        onChunk?.({ line: trimmed, jobId: jobId || null, kind: 'stderr' });
+      }
     });
     proc.on('error', (err) => {
       // `error` fires when the process can't be spawned (ENOENT etc.) and
       // is usually followed by `close`. Resolve here in case `close` never
-      // fires, and clear the current-gen-proc slot so a later cancelAll()
-      // doesn't try to kill a non-existent process.
-      if (currentGenProc === proc) currentGenProc = null;
+      // fires, and clear the proc slot so a later cancelAll() doesn't
+      // try to kill a non-existent process.
+      currentGenProcs.delete(proc);
       resolveP({ ok: false, code: -1, stdout, stderr: stderr + '\n' + String(err), parsed: null });
     });
     proc.on('close', (code) => {
-      if (currentGenProc === proc) currentGenProc = null;
+      currentGenProcs.delete(proc);
       const parsed = tryParseAll(stdout);
       const ok = code === 0;
       if (!ok && !parsed) {
-        onLog?.(`[mmx] exit code ${code}`);
+        const exitLine = `[mmx] exit code ${code}`;
+        onLog?.(exitLine);
+        onChunk?.({ line: exitLine, jobId: jobId || null, kind: 'stderr' });
       }
       resolveP({ ok, code, stdout, stderr, parsed, command: r.command, argv: fullArgs });
     });
@@ -250,19 +259,27 @@ function quote(v) {
   return s;
 }
 
-// Track the current "generation" proc so we can cancel it on demand.
-// We deliberately track only ONE proc (the most recent generation) rather
-// than a Set of all in-flight procs: the renderer enforces a single
-// in-flight generation via state.generating, so the only proc that should
-// ever be cancellable is the one the user just kicked off. Other procs
-// (e.g. a parallel mmx quota check from the Diagnose dialog) are
-// unrelated and should keep running.
-let currentGenProc = null;
+// Track every active mmx proc so we can cancel individual jobs on
+// demand. Phase A: the renderer runs multiple jobs in parallel (one
+// per tab + secondary jobs for post-processing), so a single-slot
+// `currentGenProc` no longer works. We track the whole Set and
+// expose cancelOne(proc) / getActiveProcs() / cancelAll() helpers
+// (see _plan3.md §4.3). cancelAll() remains as the "panic" button.
+const currentGenProcs = new Set();
+function getActiveProcs() {
+  return Array.from(currentGenProcs);
+}
+function cancelOne(proc) {
+  if (!proc) return false;
+  if (!currentGenProcs.has(proc)) return false;
+  try { proc.kill('SIGTERM'); } catch {}
+  return true;
+}
 function cancelAll() {
-  if (currentGenProc) {
-    try { currentGenProc.kill('SIGTERM'); } catch {}
-    currentGenProc = null;
+  for (const p of currentGenProcs) {
+    try { p.kill('SIGTERM'); } catch {}
   }
+  currentGenProcs.clear();
 }
 
-module.exports = { runMmx, resolve, cancelAll };
+module.exports = { runMmx, resolve, cancelAll, cancelOne, getActiveProcs };

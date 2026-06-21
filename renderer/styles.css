@@ -2373,8 +2373,12 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
 }
 .log-pane .log-event {
   display: grid;
-  /* Time-stamp | category icon | result icon | headline (fills) | chevron */
-  grid-template-columns: 72px 18px 18px 1fr 18px;
+  /* Phase A: timestamp | type icon | headline (fills) | progress | wip-dots | cancel | chev.
+     The legacy 5-column grid (timestamp | cat | res | headline | chev) is replaced
+     because the new row carries: a leading type icon, optional progress fraction,
+     optional WIP dots, and an optional inline cancel button. The headline is
+     the only flexible column. */
+  grid-template-columns: 72px 18px 1fr 48px 24px 18px 18px;
   align-items: center;
   gap: 6px;
   padding: 3px 4px;

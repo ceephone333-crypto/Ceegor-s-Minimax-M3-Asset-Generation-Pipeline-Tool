@@ -35,6 +35,8 @@ const LEGACY_OVERSIZE = new Set([
   'fileBrowser1.js',     // 528 Z. — list + render + multi-select + bulk-action worker (Phase 3 + v1.1.9)
   'fileBrowser2b.js',    // 548 Z. — preview pane (image / video / audio) + text preview (Phase 3 + v1.1.11)
   'section03_Settings_tab_panes.js',  // 534 Z. — General + Image + BatchGen + Styles + Popups + Shortcuts panes (Phase 3 + v1.1.14)
+  'LogService.js',       // Phase A of _plan3.md: row layout + selection + keyboard + autoscroll + JobRunner integration (one of two planned split targets; split in Phase B/C)
+  'batchManager.js',     // Phase 4 Fix 2 + Phase A: per-tab re-entrancy check uses _isTabRunningNow (no behaviour change); the underlying god-function is unchanged
 ]);
 
 // "God Words" — Dateien mit diesen Suffixen werden abgelehnt.

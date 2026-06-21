@@ -175,7 +175,9 @@ window.TABS.speech = {
       // on a pre-flight failure).
       try {
       // Re-entrancy guard: another generation is in progress.
-      if (state.generating) return;
+      // Phase A: per-tab gate so a job on a different tab does NOT block speech.
+      if (window.JobRunner && window.JobRunner.isTabRunning('speech')) return;
+      if (!window.JobRunner && state.generating) return;
       if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
       const txt = text.input.value.trim();
       if (!txt) { toast('Text is required.', 'warn'); return; }

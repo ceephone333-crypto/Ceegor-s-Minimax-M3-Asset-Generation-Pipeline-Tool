@@ -138,7 +138,9 @@ window.TABS.video = {
       // because we never set state.generating on a pre-flight failure).
       try {
       // Re-entrancy guard: another generation is in progress.
-      if (state.generating) return;
+      // Phase A: per-tab gate so a job on a different tab does NOT block video.
+      if (window.JobRunner && window.JobRunner.isTabRunning('video')) return;
+      if (!window.JobRunner && state.generating) return;
       if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
       const promptText = buildFinalPrompt(styleRow.sel, prompt.input);
       if (!promptText) { toast('Prompt is required (style or manual input).', 'warn'); return; }

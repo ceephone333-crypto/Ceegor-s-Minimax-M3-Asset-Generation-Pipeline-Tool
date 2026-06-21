@@ -33,6 +33,62 @@ function showDiagnose() {
     ];
     box.textContent = lines.join('\n');
 
+    // Phase B: concurrency hint. When the user has multiple jobs in
+    // flight, the profile fetch tells us whether the upstream
+    // exposes a hard concurrentLimit. We surface a coloured hint
+    // (recommendation, not a hard block). If the upstream doesn't
+    // expose concurrentLimit we show a neutral message; we do NOT
+    // invent a number.
+    if (window.api.mmxProfile) {
+      const hintBox = el('div', {
+        id: 'diagnose-concurrency-hint',
+        style: 'margin-top: 12px; padding: 10px; border-radius: var(--radius); font-size: 12px; background: var(--bg-2); border: 1px solid var(--border);',
+      }, 'Checking plan concurrency…');
+      m.appendChild(hintBox);
+      window.api.mmxProfile().then((profile) => {
+        try {
+          const m0 = (window.JobRunner && typeof window.JobRunner.activeJobs === 'function')
+            ? window.JobRunner.activeJobs().length : 0;
+          if (!profile || !profile.ok) {
+            hintBox.textContent = 'Plan concurrency: unknown (no quota response).';
+            hintBox.style.color = 'var(--fg-3)';
+            return;
+          }
+          if (profile.concurrentLimit == null) {
+            hintBox.textContent = 'Plan concurrency: parallel mode is enabled; the upstream may throttle you. If generations are slow, switch to sequential in Settings.';
+            hintBox.style.color = 'var(--fg-2)';
+            return;
+          }
+          const limit = profile.concurrentLimit;
+          const planType = profile.planType ? ` (${profile.planType})` : '';
+          if (m0 > limit) {
+            hintBox.innerHTML = '';
+            hintBox.appendChild(document.createTextNode(`Plan concurrency: ${limit}${planType}. You currently have ${m0} running. `));
+            const seq = el('button', { class: 'btn-mini' }, 'Switch to sequential');
+            seq.addEventListener('click', async () => {
+              // Best-effort: try to open Settings. The actual setting
+              // is in section03 (Settings tab panes). We just toast
+              // for now; the plan says "one-click switch" is a
+              // future polish.
+              if (window.toast) window.toast('Open Settings → Generation to switch to sequential mode.', 'info', 4000);
+            });
+            hintBox.appendChild(seq);
+            hintBox.style.background = 'rgba(255, 87, 87, 0.10)';
+            hintBox.style.borderColor = 'var(--danger)';
+          } else {
+            hintBox.textContent = `Plan concurrency: ${limit}${planType}. You currently have ${m0} running.`;
+            hintBox.style.color = 'var(--fg-2)';
+          }
+        } catch (e) {
+          hintBox.textContent = 'Plan concurrency: error reading profile.';
+          hintBox.style.color = 'var(--danger)';
+        }
+      }).catch(() => {
+        hintBox.textContent = 'Plan concurrency: profile fetch failed.';
+        hintBox.style.color = 'var(--fg-3)';
+      });
+    }
+
     if (d.nodePath && d.mmxEntry) {
       const test = el('button', { class: 'btn-mini' }, 'Run real quota test');
       m.appendChild(el('div', { style: 'margin-top: 12px;' }, test));

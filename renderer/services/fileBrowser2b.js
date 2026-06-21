@@ -1,6 +1,17 @@
 // renderer/services/fileBrowser2b.js (Phase 3 Block 32)
 // Second half of fileBrowser2.js (context menu + clipboard).
 
+// Phase A: per-tab "is anything running?" gate. Used by the gen
+// poller below so a parallel job on a different tab doesn't keep
+// this poller alive. Falls back to the legacy `state.generating`
+// single-slot value when JobRunner isn't loaded.
+function _isSomeTabGenerating() {
+  if (window.JobRunner && typeof window.JobRunner.activeJobs === 'function') {
+    return window.JobRunner.activeJobs().length > 0;
+  }
+  return !!(window.state && window.state.generating);
+}
+
 function notifyImageGenerated(p) {
   if (!p || typeof p !== 'string') return;
   const key = p.toLowerCase();
@@ -92,7 +103,7 @@ async function startGenPolling() {
   _resetPreviewedPaths();
   const tick = async () => {
     _genPollTimer = null;
-    if (!state.generating) return;
+    if (!_isSomeTabGenerating()) return;
     if (_genPollBusy) return; // skip overlapping ticks
     _genPollBusy = true;
     try {
@@ -143,7 +154,7 @@ async function startGenPolling() {
       // The next tick is re-armed here (rather than via a
       // setInterval) so an error inside tick() doesn't queue
       // up overlapping polls.
-      if (state.generating) _genPollTimer = setTimeout(tick, 1000);
+      if (_isSomeTabGenerating()) _genPollTimer = setTimeout(tick, 1000);
     }
   };
   _genPollTimer = setTimeout(tick, 1000);

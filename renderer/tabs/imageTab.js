@@ -194,8 +194,10 @@ window.TABS.image = {
     genBtn.addEventListener('click', async () => {
       // Re-entrancy guard: another generation is in progress. The cancel
       // click handler (added by armGenBtnWithCancel) will run for clicks
-      // that should cancel instead.
-      if (state.generating) return;
+      // that should cancel instead. Phase A: per-tab gate so a job on
+      // the music / speech / video tab does NOT block the image tab.
+      if (window.JobRunner && window.JobRunner.isTabRunning('image')) return;
+      if (!window.JobRunner && state.generating) return;
       if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
       const promptText = buildFinalPrompt(styleRow.sel, prompt.input);
       if (!promptText) { toast('Prompt is required (style or manual input).', 'warn'); return; }

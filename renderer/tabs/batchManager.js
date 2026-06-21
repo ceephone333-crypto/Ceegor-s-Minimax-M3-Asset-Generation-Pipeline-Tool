@@ -10,6 +10,27 @@
 // reconstructParamStr is defined in batchImportHelper.js (loaded first)
 // and read via window.BatchManager below — NOT re-declared here (a global
 // const of the same name would collide and break this script).
+
+// Phase A: the per-tab "is anything running?" gate. Replaces the old
+// `state.generating === tabKey` check which couldn't tell which tab
+// a job belonged to once the new multi-job model landed.
+//
+// The check is the OR of two sources of truth:
+//   1. JobRunner.isTabRunning(tabKey) — true when a JobRunner job
+//      is in flight for this tab (Phase A flow).
+//   2. state.generating === tabKey — true when the LEGACY
+//      `armGenBtnWithCancel` flow is running a job for this tab
+//      (pre-Phase-A flow; still used by the tab gen handlers until
+//      they're individually migrated to JobRunner.run).
+// Either being true means "this tab is busy, don't start another
+// job on it".
+function _isTabRunningNow(tabKey) {
+  if (window.JobRunner && typeof window.JobRunner.isTabRunning === 'function'
+      && window.JobRunner.isTabRunning(tabKey)) {
+    return true;
+  }
+  return !!(window.state && window.state.generating === tabKey);
+}
 function openBatchManager(tabKey) {
   const tabName = tabKey.charAt(0).toUpperCase() + tabKey.slice(1);
   const current = (state.batches[tabKey] || []).slice();
@@ -311,10 +332,11 @@ async function startBatchGen(tabKey) {
       // Run N variants for this batch item
       for (let vi = 0; vi < currentVariantsCount; vi++) {
         if (_batchAbort) break;
-        // Wait until no other generation is in progress (state.generating is
-        // null). armGenBtnWithCancel sets it to the tab key on entry and clears
-        // it on cleanup, so this is a reliable signal.
-        while (state.generating) {
+        // Wait until no other generation is in progress for THIS tab.
+        // (Phase A: replaced the old `state.generating` single-slot
+        // check with _isTabRunningNow(tabKey) so a parallel job on a
+        // different tab doesn't block the batch.)
+        while (_isTabRunningNow(tabKey)) {
           if (_batchAbort) break;
           await new Promise((r) => setTimeout(r, 50));
         }
@@ -326,19 +348,20 @@ async function startBatchGen(tabKey) {
         // just scrape the preview DOM.
         state.genLastResult = state.genLastResult || { image: null, speech: null, music: null, video: null };
         state.genLastResult[tabKey] = null;
-        // Trigger generation. The click handler is async — we poll state.generating
-        // to detect when it has set the busy flag (i.e. the handler started).
+        // Trigger generation. The click handler is async — we poll
+        // the per-tab running flag to detect when it has set the busy
+        // signal (i.e. the handler started).
         genBtn.click();
         const startDeadline = Date.now() + 8000;
-        while (state.generating !== tabKey) {
+        while (!_isTabRunningNow(tabKey)) {
           if (_batchAbort) break;
           if (Date.now() > startDeadline) { logLine(`✗ Gen did not start for item ${i + 1}.`, 'err'); fail++; break; }
           await new Promise((r) => setTimeout(r, 20));
         }
-        if (_batchAbort || state.generating !== tabKey) break;
+        if (_batchAbort || !_isTabRunningNow(tabKey)) break;
         // Wait for the generation to finish (armGenBtnWithCancel's cleanup
         // resets state.generating to null when the gen handler returns).
-        while (state.generating === tabKey) {
+        while (_isTabRunningNow(tabKey)) {
           if (_batchAbort) break;
           await new Promise((r) => setTimeout(r, 100));
         }

@@ -14,6 +14,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none';" />
   <title>MiniMax Assets Tool — Token Plan &amp; PAYG</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="jobs/jobs.css" />
 </head>
 <body>
   <header id="topbar">
@@ -105,12 +106,23 @@
         <summary>
           <span>Log</span>
           <span class="logbar-buttons">
-            <button id="log-copy" class="btn-mini" title="Copy selected events (or all) to the clipboard" data-help-topic="log.copy">📋 Copy</button>
+            <!-- Phase A: jump to newest/oldest, expand/collapse all, autoscroll chip.
+                 The legacy 📋 Copy / 🗑 Clear / ▲ Collapse / ? buttons stay so the
+                 existing keyboard shortcuts + help bindings keep working. -->
+            <button id="log-jump-newest" class="btn-mini" title="Jump to newest log row (Home)" data-help-topic="log.jumpNewest">▲ Newest</button>
+            <button id="log-jump-oldest" class="btn-mini" title="Jump to oldest log row (End)" data-help-topic="log.jumpOldest">▼ Oldest</button>
+            <span class="log-pane-toolbar">
+              <button id="log-collapse-all" class="btn-mini" title="Collapse every row" data-help-topic="log.collapseAll">− Collapse all</button>
+              <button id="log-expand-all" class="btn-mini" title="Expand every row" data-help-topic="log.expandAll">+ Expand all</button>
+            </span>
+            <span id="log-autoscroll-chip" class="log-autoscroll-chip on" title="Auto-scroll: jump to newest row on every new event">Auto: ON</span>
+            <button id="log-copy" class="btn-mini" title="Copy selected events (Ctrl+C) or all to the clipboard" data-help-topic="log.copy">📋 Copy</button>
             <button id="log-clear" class="btn-mini" title="Clear the log" data-help-topic="log.clear">🗑 Clear</button>
             <button id="log-toggle" class="btn-mini" title="Collapse / expand the log" data-help-topic="log.toggle">▲ Collapse</button>
             <button id="log-help" class="btn-mini" title="About the log pane" data-help-topic="log.structured">?</button>
           </span>
         </summary>
+        <div id="log-jump-pill" class="log-jump-pill" title="Click to jump to the newest row">↓ 0 new</div>
         <div id="log" class="log-pane"></div>
       </details>
     </div>
@@ -149,6 +161,15 @@
        the script 404'd, the entire log pane (addLogEvent, log, …)
        failed to load, and bootstrap.js's LogService.init() threw. -->
   <script src="services/LogService.js"></script>
+  <!-- Phase A: multi-job runner + new log layout. Must load AFTER
+       LogService so JobRunner can call into addLogEvent. Loads BEFORE
+       tabs and app.js so it's wired up by the time the gen handlers
+       run. -->
+  <script src="jobs/JobRunner.js"></script>
+  <!-- Phase B: floating "active jobs" widget. Subscribes to JobRunner
+       events and renders a small list in the bottom-right of the
+       content area. Pure projection of state.jobs. -->
+  <script src="widgets/ActiveJobsWidget.js"></script>
   <script src="utils/dropTarget.js"></script>
   <script src="utils/tinyUtils.js"></script>
   <script src="utils/pureFuncs.js"></script>

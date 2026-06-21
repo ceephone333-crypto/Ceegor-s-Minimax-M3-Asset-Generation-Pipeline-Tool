@@ -1,56 +1,60 @@
 // renderer/services/LogService.js
-// Log pane + log event API. Phase 3 Block 21.
+// Log pane + log event API. Phase 3 Block 21 + Phase A of _plan3.md
+// (multi-job primary row + new toolbar + jump pill + autoscroll +
+// Ctrl+Click multi-select + per-job secondary events).
 //
-// Exports: addLogEvent, renderLogEvent, formatLogEventForCopy,
-// collectLogCopyText, setupLogClicks, log, isLogSelected,
-// toggleLogSelection, clearLogSelection, selectLogRange.
+// The new row layout (Phase A):
+//   Every job has exactly ONE primary log row. Secondary stderr
+//   chunks attached to a job are rendered into the primary row's
+//   expanded details, NOT as their own rows. Free-form events
+//   (no jobId) still get their own row.
 //
-// Internal state: _logIdCounter, _logSelected. Reachable via
-// the global `state._logEvents` and `state._logLastClickedId`.
+// The new public API additions (all optional, existing callers
+// continue to work):
+//   addLogEvent({ ..., jobId, pinToBottom, progress, cancellable })
+//   collapseAll() / expandAll()
+//   jumpToNewest() / jumpToOldest()
+//   setAutoscroll(on) / getAutoscroll()
+//   countSelected() / selectedRowsExpanded()
+//   attachSecondaryToJob(jobId, line)
+//   updateLogStatus(logEventId, { status, result })
+//   appendLogDetails(logEventId, lines)
+//   scrollToJob(jobId)
+//
+// Keyboard (Phase A):
+//   Ctrl+Click         toggle selection
+//   Shift+Click        range select
+//   Plain click        toggle expand (no longer toggles selection)
+//   Ctrl+C             copy selected rows
+//   Ctrl+A             select all (in the visible pane)
+//   Ctrl+Shift+C       copy all visible rows
+//   Esc                clear selection
+//   Home / End         jump to newest / oldest
 
-var { el, $ } = window.createElement ? { el: window.createElement, $: (s) => document.querySelector(s) } : window.DomHelpers || {};
-var $$ = (sel) => Array.from(document.querySelectorAll(sel));
-var { maskLine } = window.securityUtils || (() => String);  // fallback
+var { el } = window.createElement ? { el: window.createElement } : window.DomHelpers || { el: (tag, attrs, children) => {
+  const node = document.createElement(tag);
+  if (attrs) for (const k of Object.keys(attrs)) {
+    const v = attrs[k];
+    if (v == null) continue;
+    if (k === 'class') node.className = v;
+    else if (k === 'text') node.textContent = v;
+    else node.setAttribute(k, v);
+  }
+  if (children != null) {
+    if (!Array.isArray(children)) children = [children];
+    for (const c of children) {
+      if (c == null) continue;
+      node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    }
+  }
+  return node;
+}};
+var $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+var { maskLine } = window.securityUtils || (() => String);
 
-// Add a new event to the log. Returns the new event id so the
-// caller can reference it later (e.g. for a "background
-// generation complete" event that needs to update a prior
-// "background generation started" event).
-//
-// Args:
-//   opts.headline  : string, short one-line description (required)
-//   opts.category  : string, one of LOG_CATEGORIES keys (default 'info')
-//   opts.details   : string | string[] | null, extra lines shown
-//                    when the row is expanded. Strings are split
-//                    on \n into multiple lines; null is no details.
-//   opts.result    : 'ok' | 'err' | null (default null). Drives the
-//                    trailing ✓ / ✕ icon.
-//   opts.ts        : Date | null (default: now). Pass a custom
-//                    timestamp for events that happened earlier
-//                    (e.g. after a delay).
-//   opts.select    : boolean (default false). If true, the new
-//                    event is also added to the current selection.
-//   opts.raw       : string | null. Free-form text (used by the
-//                    legacy log() wrapper). Included in the
-//                    copy output but not shown in the row.
-//   opts.groupId   : string | number | null. Free-form tag the
-//                    caller can use to group related events
-//                    (e.g. one generation run produces a
-//                    "started" + "completed" event that share
-//                    the same groupId). The renderer tints
-//                    all events with the same groupId the
-//                    same colour so the user can visually
-//                    trace which log lines belong to which
-//                    generated picture. The ID itself is
-//                    not shown — it's only used as a CSS
-//                    class hash (group-1, group-2, …) so a
-//                    long session doesn't grow an unbounded
-//                    stylesheet. We cap to 12 distinct hues
-//                    and cycle.
-//
-// Masking: the headline + details are passed through maskLine()
-// so a full API key never appears in a log event the user
-// might paste into a support ticket.
+// Default per-job secondary-event cap. Phase C moves this to a config
+// field; the constant here is the safe baseline.
+const SECONDARY_PER_JOB_CAP = 500;
 const _LOG_GROUP_HUE_COUNT = 12;
 const _logGroupSeen = new Map();
 let _logGroupNextIdx = 0;
@@ -65,13 +69,118 @@ function _groupClass(gid) {
   }
   return 'log-group-' + idx;
 }
+
+// Map of logId -> jobId for fast lookups by row clicks. Populated by
+// addLogEvent / renderLogEvent, pruned when the buffer is trimmed.
+const _logJobIndex = new Map();
+
+// ----- autoscroll state (persisted via state.json by app.js if desired) -----
+let _autoscroll = true;
+function getAutoscroll() { return _autoscroll; }
+function setAutoscroll(on) {
+  _autoscroll = !!on;
+  if (_autoscroll) {
+    _hideJumpPill();
+    _scrollPaneToNewest();
+  }
+  _updateAutoscrollChip();
+}
+
+function _updateAutoscrollChip() {
+  const chip = document.querySelector('#log-autoscroll-chip');
+  if (!chip) return;
+  chip.classList.toggle('on', _autoscroll);
+  chip.classList.toggle('off', !_autoscroll);
+  chip.textContent = `Auto: ${_autoscroll ? 'ON' : 'OFF'}`;
+}
+
+function _scrollPaneToNewest() {
+  const root = document.querySelector('#log');
+  if (!root) return;
+  // With flex-direction: column-reverse, scrollTop=0 IS the visual
+  // top (newest row). This is intentional — see styles.css comments.
+  root.scrollTop = 0;
+}
+function _scrollPaneToOldest() {
+  const root = document.querySelector('#log');
+  if (!root) return;
+  root.scrollTop = root.scrollHeight;
+}
+
+let _pendingNewCount = 0;
+function _onPaneScroll() {
+  if (_autoscroll) return;
+  const root = document.querySelector('#log');
+  if (!root) return;
+  // If the user is near the top (column-reverse => scrollTop=0),
+  // they're "at newest" — clear the pill and re-enable autoscroll.
+  if (root.scrollTop <= 4) {
+    _autoscroll = true;
+    _pendingNewCount = 0;
+    _hideJumpPill();
+    _updateAutoscrollChip();
+  }
+}
+function _bumpNewCount() {
+  if (_autoscroll) return;
+  const root = document.querySelector('#log');
+  if (!root) return;
+  if (root.scrollTop <= 4) return; // already at newest
+  _pendingNewCount++;
+  _showJumpPill(_pendingNewCount);
+}
+function _showJumpPill(n) {
+  const pill = document.querySelector('#log-jump-pill');
+  if (!pill) return;
+  pill.textContent = `↓ ${n} new`;
+  pill.classList.add('visible');
+}
+function _hideJumpPill() {
+  const pill = document.querySelector('#log-jump-pill');
+  if (pill) pill.classList.remove('visible');
+}
+
+function jumpToNewest() {
+  _autoscroll = true;
+  _pendingNewCount = 0;
+  _hideJumpPill();
+  _updateAutoscrollChip();
+  _scrollPaneToNewest();
+}
+function jumpToOldest() {
+  _scrollPaneToOldest();
+}
+
+// ----- addLogEvent (Phase A extended) -----
+//
+// New optional fields:
+//   jobId          string | null   links the row to a Job
+//   pinToBottom    boolean         primary job rows are rendered "last"
+//                                  visually (in a column-reverse flex
+//                                  container that means at the top of
+//                                  the visible list, which is the
+//                                  newest). We just append normally —
+//                                  the column-reverse flex does the
+//                                  rest; the flag is informational and
+//                                  affects ordering only when older
+//                                  jobs are present.
+//   progress       { step, total } | null   shows a small "step/total"
+//                                  fraction on the row.
+//   cancellable    boolean         shows an inline ✕ on the row.
+//   typeIcon       string          emoji or short glyph (🖼 🎵 🗣 🎬 ⬆ ⚙ ✂).
+//   state          'wip' | 'ok' | 'warn' | 'err' | 'cancel'  default 'wip'
+//   expanded       boolean         open the details on first render.
+//
+// Backwards compat: every existing caller (the tab gen handlers, the
+// legacy log() wrapper, etc.) passes the OLD signature and continues
+// to work. New fields default to safe nulls.
 function addLogEvent(opts) {
   var { LOG_MAX_EVENTS, LOG_CATEGORIES } = window.LogCategories;
   opts = opts || {};
   const cfg = window.state && window.state.config || {};
   const mask = (s) => maskLine(String(s == null ? '' : s), cfg.api_key);
   const ev = {
-    id: (_logNextId()),
+    id: _logNextId(),
     ts: opts.ts instanceof Date ? opts.ts : new Date(),
     category: LOG_CATEGORIES[opts.category] ? opts.category : 'info',
     headline: mask(opts.headline || ''),
@@ -84,101 +193,139 @@ function addLogEvent(opts) {
     result: opts.result === 'ok' || opts.result === 'err' ? opts.result : null,
     expanded: !!opts.expanded,
     raw: opts.raw != null ? mask(String(opts.raw)) : null,
-    // v1.1.9: optional groupId the caller can use to colour-code
-    // related events. Stored on the event AND resolved into a
-    // log-group-N CSS class (capped to 12 distinct hues, cycled)
-    // when the row is rendered.
     groupId: opts.groupId != null ? String(opts.groupId) : null,
+    // Phase A fields
+    jobId: opts.jobId != null ? String(opts.jobId) : null,
+    pinToBottom: !!opts.pinToBottom,
+    progress: opts.progress && typeof opts.progress === 'object'
+      ? { step: opts.progress.step | 0, total: opts.progress.total | 0 }
+      : null,
+    cancellable: !!opts.cancellable,
+    typeIcon: opts.typeIcon || null,
+    state: opts.state || 'wip',
+    // Internal flag used by JobRunner._addLogSecondary to bypass
+    // the wip-jobId routing (avoids infinite recursion: the
+    // routing would call attachSecondaryToJob, which calls
+    // addLogEvent again with the same jobId).
+    _internal: !!opts._internal,
   };
+  // If a jobId is set, the JobRunner owns the row; the job is the
+  // source of truth. Free-form events get their own row. The
+  // `_internal` flag tells us we're already inside the
+  // attachSecondaryToJob flow and must NOT re-route.
+  if (ev.jobId && _jobStatusFor(ev.jobId) === 'wip' && !ev._internal) {
+    // Append the line into the job's primary row's details, not as
+    // its own row. (attachSecondaryToJob is the public path; this
+    // branch keeps `addLogEvent({ jobId })` working for callers that
+    // prefer to talk to addLogEvent directly.)
+    if (window.JobRunner && typeof window.JobRunner.attachSecondaryToJob === 'function') {
+      window.JobRunner.attachSecondaryToJob(ev.jobId, ev.headline);
+    }
+    return ev.id;
+  }
+  return _appendEvent(ev, opts);
+}
+
+// _appendEvent is the common code path used by both addLogEvent
+// (public) and the internal recursive call from JobRunner. It
+// creates the event, appends to the buffer, renders the row, and
+// scrolls the pane.
+function _appendEvent(ev, opts) {
+  var { LOG_MAX_EVENTS } = window.LogCategories;
   window.state._logEvents.push(ev);
-  // Cap the buffer. Drop the oldest events (FIFO) so the
-  // visible scroll position stays near the bottom (newest
-  // event). The user can still scroll up to see what's left
-  // of the dropped events (they're gone from memory but the
-  // UI re-renders only the live buffer).
+  _logJobIndex.set(ev.id, ev.jobId);
+  // Cap the buffer. Drop the oldest events (FIFO) so the visible
+  // scroll position stays near the bottom (newest event). The user
+  // can still scroll up to see what's left of the dropped events.
   if (window.state._logEvents.length > LOG_MAX_EVENTS) {
-    window.state._logEvents.splice(0, window.state._logEvents.length - LOG_MAX_EVENTS);
+    const dropped = window.state._logEvents.length - LOG_MAX_EVENTS;
+    const removed = window.state._logEvents.splice(0, dropped);
+    for (const r of removed) _logJobIndex.delete(r.id);
   }
   renderLogEvent(ev);
-  // v1.1.15 (reported by user): the user wanted the newest
-  // entry to always stay on top. The CSS uses
-  // `flex-direction: column-reverse` on .log-pane, so the
-  // LAST appended child is at the TOP visually. In a
-  // column-reverse flex container, scrollTop=0 is the
-  // visual top (the newest row's position) and
-  // scrollTop=scrollHeight is the visual bottom (the
-  // oldest row). We scroll to 0 so the newest row is
-  // always visible — matching the "newest on top" contract.
-  // (Before v1.1.15 we set scrollTop=scrollHeight, which
-  // with column-reverse would have scrolled to the visual
-  // bottom / oldest row — the opposite of what the user
-  // asked for.)
-  const root = document.querySelector('#log');
-  if (root) root.scrollTop = 0;
-  if (opts.select) toggleLogSelection(ev.id, true, false);
+  if (_autoscroll) _scrollPaneToNewest();
+  else _bumpNewCount();
+  if (opts && opts.select) toggleLogSelection(ev.id, true, false);
   return ev.id;
 }
 
 let _logIdCounter = 0;
 function _logNextId() { return ++_logIdCounter; }
 
-// Render a single event into the log pane. Builds the row's
-// DOM once and appends it. The row carries the event id on a
-// data attribute so click handlers can look up the underlying
-// event in window.state._logEvents.
+// _jobStatusFor looks up the status of a job in state.jobs. Used to
+// decide whether a `jobId`-tagged event should become its own row or
+// attach to the primary row.
+function _jobStatusFor(jobId) {
+  if (!jobId || !window.state || !window.state.jobs) return null;
+  const j = window.state.jobs.get(jobId);
+  return j ? j.status : null;
+}
+
+// Render a single event into the log pane. Builds the row's DOM once
+// and appends it. The row carries the event id on a data attribute
+// so click handlers can look up the underlying event in
+// window.state._logEvents.
 function renderLogEvent(ev) {
   var { LOG_CATEGORIES } = window.LogCategories;
   const root = document.querySelector('#log');
   if (!root) return;
   const cat = LOG_CATEGORIES[ev.category] || LOG_CATEGORIES.info;
-  // v1.1.9: tint the row with a group-N class if the event has
-  // a groupId, so the user can visually trace which log lines
-  // belong to which generated picture / generation run. The
-  // group class is resolved to one of 12 stable hues (see
-  // _groupClass above) and cycled for new IDs.
-  // v1.1.15: also tag the row with a result class so the
-  // CSS can colour the WHOLE row (not just the small icon)
-  // based on the result. Green for ok, red for err, no class
-  // for info. The user reported that the small icon at the
-  // start of the row was easy to miss in a long log, so the
-  // row-level tint makes the success/failure status obvious
-  // at a glance.
   const groupCls = _groupClass(ev.groupId);
   const resultCls = ev.result === 'ok' ? ' log-result-ok'
     : ev.result === 'err' ? ' log-result-err' : '';
+  const stateCls = ' log-state-' + (ev.state || 'wip');
+  // The icon column shows the type icon (for jobs) or the category
+  // icon (for free-form events). The user gets one glyph per row.
+  const icon = ev.typeIcon || cat.icon;
   const row = el('div', {
-    class: 'log-event' + (groupCls ? ' ' + groupCls : '') + resultCls,
+    class: 'log-event' + (groupCls ? ' ' + groupCls : '') + resultCls + stateCls,
     'data-log-id': ev.id,
     'data-log-cat': ev.category,
     'data-log-group': ev.groupId || '',
+    'data-log-state': ev.state || 'wip',
   });
   // 1. Time stamp
   const tsText = ev.ts.toLocaleTimeString('en-GB', { hour12: false });
   row.appendChild(el('span', { class: 'log-event-ts', title: ev.ts.toISOString() }, tsText));
-  // 2. Category icon (single character so the row stays compact)
-  row.appendChild(el('span', { class: 'log-event-cat', title: cat.label }, cat.icon));
-  // 3. Result icon. "ok" → green check, "err" → red cross, null → no icon.
-  let resChar = '';
-  let resTitle = '';
-  if (ev.result === 'ok') { resChar = '✓'; resTitle = 'Success'; }
-  else if (ev.result === 'err') { resChar = '✕'; resTitle = 'Error'; }
-  if (resChar) {
-    const cls = 'log-event-res ' + (ev.result === 'ok' ? 'ok' : 'err');
-    row.appendChild(el('span', { class: cls, title: resTitle }, resChar));
-  } else {
-    row.appendChild(el('span', { class: 'log-event-res none' }, ''));
-  }
-  // 4. Headline + the (collapsed) details, shown as a single
-  //    text node. The user-visible headline is truncated with
-  //    ellipsis if it overflows the row, but the full text is
-  //    available on hover via the title attribute.
+  // 2. Type / category icon
+  row.appendChild(el('span', { class: 'log-type-icon', title: cat.label }, icon));
+  // 3. Headline. Truncated with ellipsis on overflow; full text on
+  //    hover.
   const headlineEl = el('span', { class: 'log-event-headline', title: ev.headline }, ev.headline);
   row.appendChild(headlineEl);
-  // 5. Expand chevron. Toggles the details section on click.
-  //    We always render it (even when details is empty) so the
-  //    visual position of the column is stable. The chevron is
-  //    visually-disabled (lower opacity, no hover) when there
-  //    are no details to show.
+  // 3b. WIP animated dots (only on wip state).
+  if (ev.state === 'wip' && !ev.cancellable) {
+    // No inline cancel but still wip — show the dots to indicate
+    // activity. (Most wip rows are also cancellable; this is the
+    // rare "free-form wip" case.)
+    const dots = el('span', { class: 'log-wip-dots' }, [el('span', {}), el('span', {}), el('span', {})]);
+    row.appendChild(dots);
+  } else if (ev.state === 'wip' && ev.cancellable) {
+    // WIP + cancellable: dots are appended AFTER the cancel button
+    // (below) so the dots sit just left of the chevron.
+  }
+  // 3c. Progress fraction (e.g. "3/20")
+  if (ev.progress && ev.progress.total > 0) {
+    row.appendChild(el('span', { class: 'log-progress', title: 'Progress' },
+      `${ev.progress.step}/${ev.progress.total}`));
+  }
+  // 3d. Animated dots for wip + cancellable rows
+  if (ev.state === 'wip' && ev.cancellable) {
+    const dots = el('span', { class: 'log-wip-dots' }, [el('span', {}), el('span', {}), el('span', {})]);
+    row.appendChild(dots);
+  }
+  // 4. Inline cancel button (cancellable + wip only).
+  let cancelBtn = null;
+  if (ev.cancellable && ev.state === 'wip') {
+    cancelBtn = el('button', {
+      type: 'button',
+      class: 'log-cancel-btn',
+      title: 'Cancel this job',
+      'aria-label': 'Cancel',
+    }, '✕');
+    row.appendChild(cancelBtn);
+  }
+  // 5. Expand chevron
   const hasDetails = ev.details.length > 0 || !!ev.raw;
   const chev = el('button', {
     type: 'button',
@@ -186,11 +333,7 @@ function renderLogEvent(ev) {
     'aria-label': hasDetails ? 'Toggle details' : 'No details',
   }, ev.expanded ? '▾' : '▸');
   row.appendChild(chev);
-  // 6. Details section (rendered but hidden when not expanded).
-  //    Each detail line is its own <div> for clean wrapping.
-  //    When the user copies selected events, both the headline
-  //    and every detail line are included (so the clipboard
-  //    contains everything, not just the visible one-liner).
+  // 6. Details section
   if (hasDetails) {
     const det = el('div', { class: 'log-event-details' });
     if (!ev.expanded) det.style.display = 'none';
@@ -202,22 +345,13 @@ function renderLogEvent(ev) {
     }
     row.appendChild(det);
   }
-  // Selection state. If this event id is currently in the
-  // selection set, add the class so the row shows the
-  // highlight. The toggle is done in the click handler.
+  // Selection state
   if (isLogSelected(ev.id)) row.classList.add('selected');
   if (ev.expanded) row.classList.add('expanded');
   root.appendChild(row);
-  // Click delegation: the row-level click listener is attached
-  // once on the root element (see setupLogClicks below), so
-  // individual rows don't need per-row listeners.
 }
 
-// Track which events are currently in the multi-selection. A
-// Set is used so the copy path can do a fast ordered iteration
-// (Set preserves insertion order). The set is NOT exposed on
-// window.state — it's an internal implementation detail of the log
-// pane.
+// ----- selection helpers -----
 const _logSelected = new Set();
 function isLogSelected(id) { return _logSelected.has(id); }
 function toggleLogSelection(id, selected, scrollIntoView) {
@@ -235,8 +369,6 @@ function clearLogSelection() {
   _logSelected.clear();
   $$('.log-event.selected').forEach((n) => n.classList.remove('selected'));
 }
-// Range-select helper: select every event between `fromId` and
-// `toId` (inclusive) by document order. Used by shift-click.
 function selectLogRange(fromId, toId) {
   const ids = window.state._logEvents.map((e) => e.id);
   const a = ids.indexOf(fromId);
@@ -245,66 +377,178 @@ function selectLogRange(fromId, toId) {
   const lo = Math.min(a, b), hi = Math.max(a, b);
   for (let i = lo; i <= hi; i++) toggleLogSelection(ids[i], true, false);
 }
+function selectAllLog() {
+  clearLogSelection();
+  for (const ev of window.state._logEvents) toggleLogSelection(ev.id, true, false);
+}
+function countSelected() { return _logSelected.size; }
+function selectedRowsExpanded() {
+  if (_logSelected.size === 0) return false;
+  for (const id of _logSelected) {
+    const ev = window.state._logEvents.find((x) => x.id === id);
+    if (!ev) continue;
+    if (!ev.expanded) return false;
+  }
+  return true;
+}
 
-// Serialize a single event for the clipboard. Returns a string
-// with the event's headline + every detail line, separated by
-// \n so the paste target can render it correctly. The format
-// is intentionally simple (no markdown) — a support ticket
-// should display it as-is.
+// ----- format / copy -----
 function formatLogEventForCopy(ev) {
   var { LOG_CATEGORIES } = window.LogCategories;
   const parts = [];
   const ts = ev.ts.toLocaleString();
   const cat = (LOG_CATEGORIES[ev.category] || LOG_CATEGORIES.info).label;
   const res = ev.result === 'ok' ? ' [OK]' : ev.result === 'err' ? ' [ERR]' : '';
-  // v1.1.9: include the group tag in the copy so a help-desk
-  // helper can see which events came from the same run even
-  // when the colour-coding isn't visible (plain text email,
-  // monospaced log viewer, etc.).
   const grp = ev.groupId ? ` [group=${ev.groupId}]` : '';
-  parts.push(`[${ts}] [${cat}]${res}${grp} ${ev.headline}`);
+  // Phase A: include the state so a help-desk helper can see "this row
+  // was wip when the user copied" without having to open DevTools.
+  const st = ev.state && ev.state !== 'wip' ? ` [${ev.state}]` : '';
+  parts.push(`[${ts}] [${cat}]${res}${st}${grp} ${ev.headline}`);
   for (const d of ev.details) parts.push('    ' + d);
   if (ev.raw) parts.push('    ' + ev.raw);
   return parts.join('\n');
 }
-
-// Serialize the current selection (or all events, if the
-// selection is empty) for the clipboard. Returns the joined
-// string the caller writes to the clipboard. The order is the
-// same as the document order so a multi-line copy reads top
-// to bottom.
-function collectLogCopyText() {
+function collectLogCopyText(opts) {
+  opts = opts || {};
   const events = window.state._logEvents;
   if (!events.length) return '';
-  // If the user has a selection, only copy those. Otherwise
-  // copy every event currently in memory.
   let chosen;
-  if (_logSelected.size > 0) {
+  if (opts.all || _logSelected.size === 0) {
+    chosen = events.slice();
+  } else {
     const selSet = _logSelected;
     chosen = events.filter((e) => selSet.has(e.id));
-    // Sort by document order (events are pushed in order so
-    // _logEvents is already sorted by id, but we re-derive the
-    // order to be safe against future changes).
     chosen.sort((a, b) => a.id - b.id);
-  } else {
-    chosen = events.slice();
   }
   return chosen.map(formatLogEventForCopy).join('\n');
 }
 
-// Wire click + keydown on the log root. Click handling:
-//   click on a row              → toggle that row's selection
-//                                 (single-click replaces; ctrl
-//                                 adds; shift range-selects)
-//   click on the chevron        → toggle that row's expand
-//                                 (NOT the selection)
-// We attach the listener once, on the root, and let event
-// delegation do the rest (so dynamically-added events get
-// the behaviour for free).
+// ----- expand / collapse all -----
+function collapseAll() {
+  for (const ev of window.state._logEvents) {
+    if (ev.expanded) {
+      ev.expanded = false;
+      const row = document.querySelector(`.log-event[data-log-id="${ev.id}"]`);
+      if (!row) continue;
+      row.classList.remove('expanded');
+      const det = row.querySelector('.log-event-details');
+      if (det) det.style.display = 'none';
+      const chev = row.querySelector('.log-event-chev');
+      if (chev) chev.textContent = '▸';
+    }
+  }
+}
+function expandAll() {
+  for (const ev of window.state._logEvents) {
+    if (!ev.expanded) {
+      ev.expanded = true;
+      const row = document.querySelector(`.log-event[data-log-id="${ev.id}"]`);
+      if (!row) continue;
+      row.classList.add('expanded');
+      const det = row.querySelector('.log-event-details');
+      if (det) det.style.display = '';
+      const chev = row.querySelector('.log-event-chev');
+      if (chev) chev.textContent = '▾';
+    }
+  }
+}
+
+// ----- update log status (Phase A) -----
+// Called by JobRunner when a job finishes; updates the row's state
+// class + result + removes the inline cancel button.
+function updateLogStatus(logEventId, patch) {
+  if (logEventId == null) return;
+  patch = patch || {};
+  const ev = window.state._logEvents.find((x) => x.id === logEventId);
+  const row = document.querySelector(`.log-event[data-log-id="${logEventId}"]`);
+  if (!row) return;
+  if (ev) {
+    if (patch.status) ev.state = patch.status;
+    if (patch.result) ev.result = patch.result;
+  }
+  // Replace state class
+  const oldStates = ['log-state-wip', 'log-state-ok', 'log-state-warn', 'log-state-err', 'log-state-cancel'];
+  for (const c of oldStates) row.classList.remove(c);
+  const newState = (patch && patch.status) || (ev && ev.state) || 'wip';
+  row.classList.add('log-state-' + newState);
+  row.setAttribute('data-log-state', newState);
+  // Replace result class
+  row.classList.remove('log-result-ok', 'log-result-err');
+  if (patch.result === 'ok') row.classList.add('log-result-ok');
+  if (patch.result === 'err') row.classList.add('log-result-err');
+  // Remove the wip dots + cancel button (the row is done)
+  const dots = row.querySelector('.log-wip-dots');
+  if (dots) dots.remove();
+  const cancelBtn = row.querySelector('.log-cancel-btn');
+  if (cancelBtn) cancelBtn.remove();
+  // WIP was a 4px progress; the result column was empty. Put a
+  // small static marker so the row is still easy to scan.
+  // (The result-ok / result-err class already drives the colour.)
+}
+function appendLogDetails(logEventId, lines) {
+  if (logEventId == null || !lines || !lines.length) return;
+  const ev = window.state._logEvents.find((x) => x.id === logEventId);
+  const row = document.querySelector(`.log-event[data-log-id="${logEventId}"]`);
+  if (!ev || !row) return;
+  const det = row.querySelector('.log-event-details');
+  if (!det) return;
+  for (const line of lines) {
+    const safe = String(line == null ? '' : line);
+    ev.details.push(safe);
+    det.appendChild(el('div', { class: 'log-event-detail-line' }, safe));
+  }
+}
+
+// ----- attach a free-form line to a job's primary row -----
+// Used by the mmx:log handler: any line with a jobId is appended
+// into the row's details, NOT as its own row.
+function attachSecondaryToJob(jobId, line) {
+  if (!jobId || !line) return;
+  if (!window.JobRunner) return;
+  if (typeof window.JobRunner.attachSecondaryToJob === 'function') {
+    window.JobRunner.attachSecondaryToJob(jobId, line);
+  }
+}
+
+// ----- scrollToJob (Phase B helper, declared here for completeness) -----
+function scrollToJob(jobId) {
+  if (!jobId || !window.state || !window.state.jobs) return;
+  const job = window.state.jobs.get(jobId);
+  if (!job || job.logEventId == null) return;
+  const row = document.querySelector(`.log-event[data-log-id="${job.logEventId}"]`);
+  if (!row) return;
+  // Expand the row.
+  const ev = window.state._logEvents.find((x) => x.id === job.logEventId);
+  if (ev && !ev.expanded) {
+    ev.expanded = true;
+    row.classList.add('expanded');
+    const det = row.querySelector('.log-event-details');
+    if (det) det.style.display = '';
+    const chev = row.querySelector('.log-event-chev');
+    if (chev) chev.textContent = '▾';
+  }
+  row.scrollIntoView({ block: 'center' });
+}
+
+// ----- click + keyboard wiring -----
 function setupLogClicks() {
   const root = document.querySelector('#log');
   if (!root) return;
   root.addEventListener('click', (e) => {
+    // Inline cancel button
+    const cancelEl = e.target.closest('.log-cancel-btn');
+    if (cancelEl) {
+      e.preventDefault();
+      e.stopPropagation();
+      const row = cancelEl.closest('.log-event');
+      if (!row) return;
+      const ev = window.state._logEvents.find((x) => x.id === parseInt(row.getAttribute('data-log-id') || '0', 10));
+      if (!ev || !ev.jobId) return;
+      if (window.JobRunner && typeof window.JobRunner.cancel === 'function') {
+        window.JobRunner.cancel(ev.jobId);
+      }
+      return;
+    }
     const row = e.target.closest('.log-event');
     if (!row) return;
     const id = parseInt(row.getAttribute('data-log-id') || '0', 10);
@@ -323,29 +567,116 @@ function setupLogClicks() {
       if (chev) chev.textContent = ev.expanded ? '▾' : '▸';
       return;
     }
-    // Multi-select on row click.
-    e.preventDefault();
+    // Multi-select on Ctrl+Click, range on Shift+Click, expand on plain click.
     if (e.shiftKey && window.state._logLastClickedId != null) {
+      e.preventDefault();
       selectLogRange(window.state._logLastClickedId, id);
     } else if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
       toggleLogSelection(id, !isLogSelected(id), false);
+      window.state._logLastClickedId = id;
     } else {
-      clearLogSelection();
-      toggleLogSelection(id, true, false);
+      // Plain click: toggle expand. Selection is NOT changed.
+      e.preventDefault();
+      const ev = window.state._logEvents.find((x) => x.id === id);
+      if (ev && (ev.details.length || ev.raw)) {
+        ev.expanded = !ev.expanded;
+        row.classList.toggle('expanded', ev.expanded);
+        const det = row.querySelector('.log-event-details');
+        if (det) det.style.display = ev.expanded ? '' : 'none';
+        const chev = row.querySelector('.log-event-chev');
+        if (chev) chev.textContent = ev.expanded ? '▾' : '▸';
+      }
+      window.state._logLastClickedId = id;
     }
-    window.state._logLastClickedId = id;
+  });
+  // Scroll listener for the "↓ N new" pill
+  root.addEventListener('scroll', _onPaneScroll, { passive: true });
+  // Keyboard handlers (delegated on document, with input-focus bail-out)
+  document.addEventListener('keydown', (e) => {
+    const tag = e.target && e.target.tagName;
+    const inField = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    if (inField) return;
+    // Only react when the log pane is "in focus" (i.e. no focused
+    // input). Ctrl-modifier handlers still fire — they bail out
+    // explicitly via inField above for non-Ctrl shortcuts.
+    const cmd = e.ctrlKey || e.metaKey;
+    if (!e.key) return;
+    if (cmd && (e.key === 'c' || e.key === 'C') && e.shiftKey) {
+      // Ctrl+Shift+C → copy all visible rows
+      e.preventDefault();
+      const txt = collectLogCopyText({ all: true });
+      _writeToClipboard(txt, 'All log rows copied.');
+      return;
+    }
+    if (cmd && (e.key === 'c' || e.key === 'C')) {
+      // Ctrl+C → copy selected
+      e.preventDefault();
+      const txt = collectLogCopyText();
+      _writeToClipboard(txt, _logSelected.size > 0 ? `${_logSelected.size} row(s) copied.` : 'Log copied.');
+      return;
+    }
+    if (cmd && (e.key === 'a' || e.key === 'A')) {
+      e.preventDefault();
+      selectAllLog();
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (_logSelected.size > 0) {
+        clearLogSelection();
+        e.preventDefault();
+      }
+      return;
+    }
+    if (e.key === 'Home') {
+      e.preventDefault();
+      jumpToNewest();
+      return;
+    }
+    if (e.key === 'End') {
+      e.preventDefault();
+      jumpToOldest();
+      return;
+    }
   });
 }
 
+function _writeToClipboard(txt, successMsg) {
+  if (!txt) {
+    if (window.toast) window.toast('Log is empty.', 'warn');
+    return;
+  }
+  // navigator.clipboard.writeText can reject when the user has a
+  // full clipboard history (e.g. recent images). Fall back to the
+  // legacy text-range + execCommand path that the existing Copy
+  // button uses — it never rejects, just works.
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(() => {
+      if (window.toast && successMsg) window.toast(successMsg, 'ok', 1500);
+    }).catch(() => {
+      _legacyCopyFallback(txt);
+      if (window.toast && successMsg) window.toast(successMsg + ' (fallback)', 'ok', 1500);
+    });
+  } else {
+    _legacyCopyFallback(txt);
+    if (window.toast && successMsg) window.toast(successMsg, 'ok', 1500);
+  }
+}
+function _legacyCopyFallback(txt) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = txt;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  } catch (_) { /* ignore */ }
+}
+
+// ----- legacy log() wrapper -----
 function log(line) {
-  // Legacy free-form log line (used for mmx stderr streaming).
-  // We now route these through addLogEvent() so the new
-  // structured pane picks them up. The 'info' category + a
-  // 'headline' that is the full line preserves the original
-  // text; the headline is also used by the new pane (one
-  // line per event) so a casual user sees a one-line
-  // summary, and a help-desk helper can click the chevron
-  // to see the full line.
   if (!line) return;
   addLogEvent({
     category: 'info',
@@ -353,8 +684,37 @@ function log(line) {
   });
 }
 
+// ----- toolbar wire-up (Phase A) -----
+// The buttons live inside the <details><summary> in index.html. We
+// wire them here so the markup stays in the template.
+function setupLogToolbar() {
+  const newBtn = document.querySelector('#log-jump-newest');
+  const oldBtn = document.querySelector('#log-jump-oldest');
+  const collapseBtn = document.querySelector('#log-collapse-all');
+  const expandBtn = document.querySelector('#log-expand-all');
+  const chip = document.querySelector('#log-autoscroll-chip');
+  const pill = document.querySelector('#log-jump-pill');
+  if (newBtn) newBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); jumpToNewest(); });
+  if (oldBtn) oldBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); jumpToOldest(); });
+  if (collapseBtn) collapseBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); collapseAll(); });
+  if (expandBtn) expandBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); expandAll(); });
+  if (chip) chip.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); setAutoscroll(!_autoscroll); });
+  if (pill) pill.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); jumpToNewest(); });
+  _updateAutoscrollChip();
+}
+
 window.LogService = {
   init: setupLogClicks,
+  setupLogToolbar,
   addLogEvent, renderLogEvent, formatLogEventForCopy, collectLogCopyText,
-  setupLogClicks, log, isLogSelected, toggleLogSelection, clearLogSelection, selectLogRange,
+  setupLogClicks, log,
+  isLogSelected, toggleLogSelection, clearLogSelection, selectLogRange, selectAllLog,
+  countSelected, selectedRowsExpanded,
+  collapseAll, expandAll,
+  jumpToNewest, jumpToOldest,
+  setAutoscroll, getAutoscroll,
+  attachSecondaryToJob,
+  updateLogStatus, appendLogDetails,
+  scrollToJob,
+  SECONDARY_PER_JOB_CAP,
 };

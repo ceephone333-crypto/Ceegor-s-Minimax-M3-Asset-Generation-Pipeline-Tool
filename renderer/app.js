@@ -380,8 +380,33 @@ async function init() {
   // Startup popup (deferred so the rest of the UI is visible behind it)
   showStartupPopup();
 
-  // Logs from main
-  window.api.onLog((line) => log(line));
+  // Logs from main. Phase A: main now sends { line, jobId, kind }.
+  // The preload bridge wraps the legacy string payload so older main
+  // builds still work — see preload.js onLogRich. We prefer onLogRich
+  // (new payload) and fall back to onLog (legacy string) if the
+  // preload doesn't expose it (e.g. older dev build).
+  if (window.api.onLogRich) {
+    window.api.onLogRich((payload) => {
+      // payload = { line, jobId?, kind? }
+      if (!payload) return;
+      if (payload.jobId) {
+        // Attach to the job's primary row instead of adding a new
+        // row. Free-form lines (no jobId) still get their own row
+        // via the addLogEvent path.
+        if (window.LogService && window.LogService.attachSecondaryToJob) {
+          window.LogService.attachSecondaryToJob(payload.jobId, payload.line);
+        }
+        return;
+      }
+      log(payload.line);
+    });
+  } else {
+    window.api.onLog((line) => log(line));
+  }
+  // Wire the new log toolbar (jump, expand/collapse all, autoscroll chip).
+  if (window.LogService && window.LogService.setupLogToolbar) {
+    window.LogService.setupLogToolbar();
+  }
 
   // First quota fetch
   refreshQuota().catch(() => {});

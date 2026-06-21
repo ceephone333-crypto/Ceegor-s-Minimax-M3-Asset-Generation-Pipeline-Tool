@@ -160,6 +160,8 @@ test('preload bridge exposes every tool function and maps to the expected channe
     'configPath',
     'defaultOutputDir',
     'mmxRun',
+    'mmxRunJob',
+    'mmxProfile',
     'voices',
     'quota',
     'authStatus',
@@ -196,8 +198,13 @@ test('preload bridge exposes every tool function and maps to the expected channe
     'pickFile',
     'stateGet',
     'stateSet',
+    'stateArchiveRead',
+    'stateArchiveClear',
+    'stateArchiveSize',
+    'stateArchiveDelete',
     'batchesGenerateExamples',
     'onLog',
+    'onLogRich',
     'logToFile',
   ];
   assert.deepEqual(Object.keys(api).sort(), expectedKeys.slice().sort());
@@ -210,6 +217,8 @@ test('preload bridge exposes every tool function and maps to the expected channe
     ['configPath', [], 'config:path'],
     ['defaultOutputDir', [], 'config:defaultOutputDir'],
     ['mmxRun', [['image', '--prompt', 'hello']], 'mmx:run'],
+    ['mmxRunJob', [{ args: ['image', 'generate'], jobId: 'j1' }], 'mmx:run:job'],
+    ['mmxProfile', [], 'mmx:profile'],
     ['voices', [], 'mmx:voices'],
     ['quota', [], 'mmx:quota'],
     ['authStatus', [], 'mmx:authStatus'],
@@ -769,7 +778,13 @@ test('mmx handlers cover validation, streaming logs, voices, quota, auth, cancel
     runMode = 'ok';
     const okRun = await run(null, ['image', '--prompt', 'robot']);
     assert.equal(okRun.ok, true);
-    assert.deepEqual(sent, [{ channel: 'mmx:log', data: '[log] image --prompt robot' }]);
+    // Phase A: the new wire format is { line, jobId, kind } (the
+    // legacy plain-string fallback would still satisfy the renderer
+    // via preload.js onLog's backwards-compat shim).
+    assert.deepEqual(sent, [{
+      channel: 'mmx:log',
+      data: { line: '[log] image --prompt robot', jobId: null, kind: 'stderr' },
+    }]);
 
     const voiceList = await voices();
     assert.deepEqual(voiceList, [{ id: 'sk-mmx' }]);

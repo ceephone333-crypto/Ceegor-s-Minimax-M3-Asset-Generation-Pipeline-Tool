@@ -20,11 +20,25 @@ contextBridge.exposeInMainWorld('api', {
 
   // ---- mmx ----
   mmxRun: (args) => ipcRenderer.invoke('mmx:run', args),
+  // Phase A: job-aware mmx run. The handler attaches every chunk
+  // to the jobId so the renderer's LogService routes the line into
+  // the right primary log row.
+  mmxRunJob: (payload) => ipcRenderer.invoke('mmx:run:job', payload),
   voices: () => ipcRenderer.invoke('mmx:voices'),
   quota: () => ipcRenderer.invoke('mmx:quota'),
+  // Phase B: profile returns { ok, concurrentLimit, planType } with
+  // a 5-minute main-side cache. Used by the Diagnose modal to show
+  // a "your plan allows N concurrent calls" hint.
+  mmxProfile: () => ipcRenderer.invoke('mmx:profile'),
   authStatus: () => ipcRenderer.invoke('mmx:authStatus'),
   diagnose: () => ipcRenderer.invoke('mmx:diagnose'),
-  mmxCancel: () => ipcRenderer.invoke('mmx:cancel'),
+  // Phase A: mmxCancel accepts an optional { jobId } payload for
+  // per-job cancel (Phase B+). With no payload it's the panic
+  // button and kills every in-flight proc.
+  // Note: we forward `opts` as-is; the legacy `mmxCancel()` (no
+  // args) ends up with `args.length === 0` at the test layer, which
+  // matches the pre-Phase-A contract.
+  mmxCancel: (opts) => opts ? ipcRenderer.invoke('mmx:cancel', opts) : ipcRenderer.invoke('mmx:cancel'),
 
   // ---- file browser ----
   fbList: (dir) => ipcRenderer.invoke('fb:list', dir),
@@ -152,11 +166,46 @@ contextBridge.exposeInMainWorld('api', {
   // ---- state autosave (tab settings) ----
   stateGet: () => ipcRenderer.invoke('state:get'),
   stateSet: (s) => ipcRenderer.invoke('state:set', s),
+  // Phase C: archive IPCs (L3 history).
+  stateArchiveRead: (opts) => ipcRenderer.invoke('state:archiveRead', opts),
+  stateArchiveClear: () => ipcRenderer.invoke('state:archiveClear'),
+  stateArchiveSize: () => ipcRenderer.invoke('state:archiveSize'),
+  stateArchiveDelete: (id) => ipcRenderer.invoke('state:archiveDelete', { id }),
   batchesGenerateExamples: () => ipcRenderer.invoke('batches:generateExamples'),
 
   // ---- events ----
   onLog: (cb) => {
-    const fn = (_e, line) => cb(line);
+    // Backwards-compat: the legacy `onLog(cb)` callback receives a
+    // plain string. The new main-side handler sends { line, jobId,
+    // kind }; we unwrap the `line` here so the renderer's legacy
+    // `log(line)` wrapper keeps working. New code should prefer
+    // `onLogRich(cb)` which receives the full payload.
+    const fn = (_e, payload) => {
+      if (payload == null) return;
+      if (typeof payload === 'string') {
+        cb(payload);
+        return;
+      }
+      cb(payload.line != null ? payload.line : '');
+    };
+    ipcRenderer.on('mmx:log', fn);
+    return () => ipcRenderer.removeListener('mmx:log', fn);
+  },
+  // Phase A: onLogRich(cb) receives the full payload
+  // { line, jobId, kind } so the renderer can route the chunk to
+  // the right job primary row.
+  onLogRich: (cb) => {
+    const fn = (_e, payload) => {
+      if (payload == null) return;
+      if (typeof payload === 'string') {
+        // Legacy main build that still sends strings — wrap so the
+        // renderer's payload-only code path doesn't need its own
+        // shim. The jobId is null (free-form line).
+        cb({ line: payload, jobId: null, kind: 'stderr' });
+        return;
+      }
+      cb(payload);
+    };
     ipcRenderer.on('mmx:log', fn);
     return () => ipcRenderer.removeListener('mmx:log', fn);
   },
