@@ -130,6 +130,11 @@ window.TABS.speech = {
 
     root.appendChild(el('div', { class: 'section' }, [
       el('h3', {}, 'Parameters'),
+      // v1.1.15 (reported by user): speech tab was missing the
+      // "Target file prefix" row that image + music tabs have.
+      // The user wants the same prefix + force-prefix-only
+      // behaviour on every tab that generates assets.
+      buildFilePrefixRow(),
       el('div', { class: 'grid' }, [
         model.row, voice.row,
         speed.row, volume.row,

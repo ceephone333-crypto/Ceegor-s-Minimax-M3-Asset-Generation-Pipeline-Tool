@@ -1064,7 +1064,20 @@ function openAllBatchDashboard() {
               }
               if (params.length) li.appendChild(el('span', { class: 'batch-dashboard-item-params' }, ` [${params.join(', ')}]`));
             }
-            if (!isDone) {
+            // v1.1.15 (reported by user): the per-item Edit / Remove
+            // buttons were hidden for items the batch had
+            // already processed ("you can't undo history").
+            // But the user wanted to be able to remove entries
+            // from the All Types menu without having to switch
+            // to the per-tab editor. We now show the buttons
+            // for ALL items, with a "Remove" that just deletes
+            // the entry from state.batches (no effect on
+            // already-processed items — they stay in the log
+            // for history, but the queued future is no longer
+            // affected). The "Edit" button opens the per-tab
+            // editor where the user can change the entry's
+            // text/params.
+            {
               const actions = el('span', { class: 'batch-dashboard-item-actions' });
               const editBtn = el('button', {
                 type: 'button',
@@ -1078,17 +1091,13 @@ function openAllBatchDashboard() {
               const removeBtn = el('button', {
                 type: 'button',
                 class: 'btn-mini danger',
-                title: 'Remove this entry from the queue (no undo)',
+                title: 'Remove this entry from the queue (no undo). Already-processed items stay in the history log.',
                 onclick: async () => {
                   const next = (state.batches[k] || []).slice();
-                  // Map dashboard index → live array index. The
-                  // dashboard shows the same order as
-                  // state.batches[k] (we read items from there
-                  // at the top of renderBody). So idx maps 1:1.
                   if (idx < next.length) next.splice(idx, 1);
                   state.batches[k] = next;
                   try { await window.api.batchesSet(state.batches); } catch (_) { /* best-effort */ }
-                  renderBody();  // re-render in place so the modal reflects the change
+                  renderBody();
                 },
               }, '✕');
               actions.append(editBtn, removeBtn);

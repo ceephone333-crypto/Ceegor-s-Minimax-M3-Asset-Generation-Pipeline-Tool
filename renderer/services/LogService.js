@@ -100,12 +100,21 @@ function addLogEvent(opts) {
     window.state._logEvents.splice(0, window.state._logEvents.length - LOG_MAX_EVENTS);
   }
   renderLogEvent(ev);
-  // Auto-scroll the container to the new event unless the user
-  // has scrolled up to read older events (a "stick to bottom"
-  // toggle is a future enhancement; the simple "always scroll
-  // to bottom on new event" is the right default for a log).
+  // v1.1.15 (reported by user): the user wanted the newest
+  // entry to always stay on top. The CSS uses
+  // `flex-direction: column-reverse` on .log-pane, so the
+  // LAST appended child is at the TOP visually. In a
+  // column-reverse flex container, scrollTop=0 is the
+  // visual top (the newest row's position) and
+  // scrollTop=scrollHeight is the visual bottom (the
+  // oldest row). We scroll to 0 so the newest row is
+  // always visible — matching the "newest on top" contract.
+  // (Before v1.1.15 we set scrollTop=scrollHeight, which
+  // with column-reverse would have scrolled to the visual
+  // bottom / oldest row — the opposite of what the user
+  // asked for.)
   const root = document.querySelector('#log');
-  if (root) root.scrollTop = root.scrollHeight;
+  if (root) root.scrollTop = 0;
   if (opts.select) toggleLogSelection(ev.id, true, false);
   return ev.id;
 }

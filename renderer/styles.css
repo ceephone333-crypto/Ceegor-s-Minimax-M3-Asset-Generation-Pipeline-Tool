@@ -769,6 +769,50 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
 .row .combo.has-custom select { flex: 1 1 80px; max-width: 110px; }
 .row .combo.has-custom input { flex: 1 1 60%; min-width: 140px; }
 
+/* v1.1.15 (reported by user): the "Custom…" enum option
+   needs a different layout than the 'has-custom' combo
+   above. Per the user spec, when Custom is selected:
+     - The dropdown shrinks to 50% width
+     - The text input takes the other 50%
+     - An OK button sits next to the input
+   Without the .enum-custom-active class, the dropdown
+   takes 100% (default) and the input + OK button are
+   hidden. The transition between the two states is
+   instantaneous (no animation) so the user can rapidly
+   switch between dropdown options without flicker. */
+.combo-select-enum > select {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.combo-select-enum > input.enum-custom-input {
+  flex: 0 0 0;
+  display: none;
+  min-width: 0;
+}
+.combo-select-enum > button.enum-custom-ok {
+  flex: 0 0 0;
+  display: none;
+  margin: 0;
+}
+/* The .enum-custom-active class flips the layout to 50/50.
+   The dropdown becomes exactly 50% (with a min-width so
+   long option labels like "speech-2.8-turbo (faster, lower
+   latency)" don't get clipped to 2 characters). The text
+   input + OK button take the other 50%. */
+.combo-select-enum.enum-custom-active > select {
+  flex: 1 1 50%;
+  min-width: 140px;
+}
+.combo-select-enum.enum-custom-active > input.enum-custom-input {
+  flex: 1 1 calc(50% - 60px);
+  display: '';
+  min-width: 80px;
+}
+.combo-select-enum.enum-custom-active > button.enum-custom-ok {
+  flex: 0 0 50px;
+  display: '';
+}
+
 /* ========== Action bar ========== */
 .actions { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
 .actions .lastcmd {
@@ -2231,7 +2275,16 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   max-height: 100%;
   flex: 1;
   min-height: 120px;
-  overflow-y: auto;
+  /* v1.1.15 (reported by user): we still don't have log
+     scroll bars. The user is on Windows + Electron where
+     the native overlay scrollbar is invisible by default.
+     Use `overflow-y: scroll` (not auto) so the scrollbar
+     is ALWAYS shown — the user can see at a glance that
+     there's more content to scroll to, even when the
+     log is short. Combined with the visible
+     `::-webkit-scrollbar` rule below, the user can now
+     always see + use the scrollbar. */
+  overflow-y: scroll;
   overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: var(--accent) transparent;
@@ -2240,16 +2293,26 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
 }
 /* Webkit (Electron) scrollbar styling. The standard scrollbar-width
    declaration above is for Firefox; Chromium needs the explicit
-   pseudo-elements. Match the thin + accent-tinted look. */
-#log::-webkit-scrollbar { width: 10px; }
-#log::-webkit-scrollbar-track { background: transparent; }
+   pseudo-elements. v1.1.15 (reported by user): the previous
+   `width: 10px` scrollbar was too thin to notice on a 4K display.
+   Bumped to 14px + brighter thumb + a visible track so the
+   scrollbar is always obvious. */
+#log::-webkit-scrollbar { width: 14px; }
+#log::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.04); }
 #log::-webkit-scrollbar-thumb {
   background: var(--accent);
-  border-radius: 5px;
+  border-radius: 7px;
   border: 2px solid var(--bg-2);
 }
 #log::-webkit-scrollbar-thumb:hover { background: var(--accent-2); }
+.log-pane::-webkit-scrollbar { width: 14px; }
+.log-pane::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.04); }
+.log-pane::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: 7px;
+  border: 2px solid var(--bg-2);
 }
+.log-pane::-webkit-scrollbar-thumb:hover { background: var(--accent-2); }
 /* ========== Structured event log ==========
    Each event is a single row in the .log-pane. The row is a
    CSS grid with explicit columns so the time stamp, category
@@ -2257,7 +2320,8 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
    (no matter the headline length). Multi-select state is
    applied via .selected; expand state via .expanded. */
 .log-pane {
-  display: block;
+  display: flex;
+  flex-direction: column-reverse;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--fg-2);
@@ -2271,10 +2335,21 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
      constrained. The outer #log element already had
      overflow: auto, but as a safety net (and to make the
      behaviour explicit at the .log-pane level too) we
-     set overflow-y: auto here as well. The scrollbar is
-     styled to match the dark theme. */
-  overflow-y: auto;
+     set overflow-y: scroll here as well. The scrollbar is
+     styled to match the dark theme and is ALWAYS visible
+     (overflow-y: scroll, not auto) so the user can see
+     when more entries are available even when the log
+     is short. Windows + Electron default to overlay-
+     invisible scrollbars which the user reported as
+     "missing". */
+  overflow-y: scroll;
   overflow-x: hidden;
+  /* v1.1.15 (reported by user): the user wanted the
+     newest entry to ALWAYS stay on top. We achieve this
+     with flex-direction: column-reverse (so the LAST
+     appended child is at the TOP visually) and overflow
+     anchored to the bottom = scrollTop=0 in the reversed
+     layout, which is exactly where the newest row sits. */
   /* v1.1.15: visible-but-subtle scrollbar on Windows so
      the user can see when more entries are available
      even when the log is short. The native scrollbar
@@ -2354,21 +2429,67 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
    cancel) takes precedence on the left border when the
    row is NOT marked as success / failure (so plain
    "info" rows still get the category colour). */
-.log-pane .log-event.log-result-ok {
+/* v1.1.15 fix: the result rules were defined BEFORE the
+   .log-group-N rules further down. With the same
+   specificity (0,0,3,0), the later rule wins — so the
+   group-0 red tint was painting over the result green
+   and the user was seeing "successful" image gen rows
+   as red. We use higher-specificity selectors here
+   (`.log-event.log-result-ok.log-group-N`) so the result
+   always wins, regardless of declaration order. The
+   combined selector `result.group-N` has specificity
+   0,0,4,0 vs the standalone group rule's 0,0,3,0. */
+.log-pane .log-event.log-result-ok,
+.log-pane .log-event.log-result-ok.log-group-0,
+.log-pane .log-event.log-result-ok.log-group-1,
+.log-pane .log-event.log-result-ok.log-group-2,
+.log-pane .log-event.log-result-ok.log-group-3,
+.log-pane .log-event.log-result-ok.log-group-4,
+.log-pane .log-event.log-result-ok.log-group-5,
+.log-pane .log-event.log-result-ok.log-group-6,
+.log-pane .log-event.log-result-ok.log-group-7,
+.log-pane .log-event.log-result-ok.log-group-8,
+.log-pane .log-event.log-result-ok.log-group-9,
+.log-pane .log-event.log-result-ok.log-group-10,
+.log-pane .log-event.log-result-ok.log-group-11 {
   /* Soft success tint on the row background, plus a
      green left border that's bolder than the
      category-tint border. The headline stays the
      regular fg colour so the text reads normally. */
-  background: rgba(110, 224, 168, 0.08);
+  background: rgba(110, 224, 168, 0.12);
   border-left-color: var(--success);
   border-left-width: 3px;
 }
-.log-pane .log-event.log-result-ok .log-event-headline {
+.log-pane .log-event.log-result-ok .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-0 .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-1 .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-2 .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-3 .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-4 .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-5 .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-6 .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-7 .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-8 .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-9 .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-10 .log-event-headline,
+.log-pane .log-event.log-result-ok.log-group-11 .log-event-headline {
   color: var(--success);
   font-weight: 500;
 }
-.log-pane .log-event.log-result-err {
-  background: rgba(255, 138, 138, 0.10);
+.log-pane .log-event.log-result-err,
+.log-pane .log-event.log-result-err.log-group-0,
+.log-pane .log-event.log-result-err.log-group-1,
+.log-pane .log-event.log-result-err.log-group-2,
+.log-pane .log-event.log-result-err.log-group-3,
+.log-pane .log-event.log-result-err.log-group-4,
+.log-pane .log-event.log-result-err.log-group-5,
+.log-pane .log-event.log-result-err.log-group-6,
+.log-pane .log-event.log-result-err.log-group-7,
+.log-pane .log-event.log-result-err.log-group-8,
+.log-pane .log-event.log-result-err.log-group-9,
+.log-pane .log-event.log-result-err.log-group-10,
+.log-pane .log-event.log-result-err.log-group-11 {
+  background: rgba(255, 138, 138, 0.14);
   border-left-color: var(--danger);
   border-left-width: 3px;
 }

@@ -1018,3 +1018,104 @@ test('HARNESS 9: every user-reported change is present in the source files', () 
   assert.ok(appJsSrc.includes('buildFbGridTemplate') && appJsSrc.includes('_resizeEndTimer'),
     'app.js resize handler must re-apply the file-browser grid template');
 });
+
+// ============================================================================
+// HARNESS 10 — Source-level pin of the v1.1.15 second-round bug fixes
+// The user reported 9 more bugs after the first v1.1.15 round. Each
+// one is pinned at the source level here so a future regression
+// (a refactor, a partial revert, a missing file) is caught
+// immediately by the test suite.
+// ============================================================================
+test('HARNESS 10: every v1.1.15-round-2 bug fix is present in the source', () => {
+  function src(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
+  const cssSrc = src('renderer/styles.css');
+  const lsSrc = src('renderer/services/LogService.js');
+  const fb1Src2 = src('renderer/services/fileBrowser1.js');
+  const fb2bSrc2 = src('renderer/services/fileBrowser2b.js');
+  const speechTabSrc = src('renderer/tabs/speechTab.js');
+  const videoTabSrc = src('renderer/tabs/videoTab.js');
+  const appJsSrc2 = src('renderer/app.js');
+  const prSrc2 = src('renderer/components/ParamRow.js');
+  // Bug 1 — log scroll bars: must use overflow-y: scroll
+  // (not auto) on .log-pane so the scrollbar is ALWAYS shown
+  // (Windows + Electron default to overlay-invisible scrollbars).
+  assert.ok(/\.log-pane\s*\{[\s\S]*?overflow-y:\s*scroll/.test(cssSrc),
+    '.log-pane must use overflow-y: scroll (always-visible scrollbar). User reported scroll bars were missing.');
+  // Also require a wide, visible webkit scrollbar (14px+).
+  assert.ok(/\.log-pane::-webkit-scrollbar\s*\{\s*width:\s*1[2-9]px|\.log-pane::-webkit-scrollbar\s*\{\s*width:\s*[2-9]\dpx|#log::-webkit-scrollbar\s*\{\s*width:\s*1[2-9]px|#log::-webkit-scrollbar\s*\{\s*width:\s*[2-9]\dpx/.test(cssSrc),
+    'log scrollbar must be at least 12px wide (so the user can see + grab it on a 4K display)');
+  // Bug 5 — log reverse-sorted: must use flex-direction: column-reverse
+  // on .log-pane so the newest event is at the TOP visually.
+  assert.ok(/\.log-pane\s*\{[^}]*?flex-direction:\s*column-reverse/s.test(cssSrc),
+    '.log-pane must use flex-direction: column-reverse (newest on top). User reported newest was not on top.');
+  // The LogService.js auto-scroll must also be updated to scroll
+  // to scrollTop=0 (which is the TOP in a column-reverse layout).
+  assert.ok(/scrollTop\s*=\s*0/.test(lsSrc),
+    'LogService.addLogEvent must set scrollTop=0 (top in a column-reverse flex layout)');
+  // Bug 6 — log color: result rules must use higher specificity
+  // than the per-group rules (so successful image-gen rows are
+  // GREEN, not red-tinted by the per-group color).
+  assert.ok(/\.log-event\.log-result-ok\.log-group-/.test(cssSrc),
+    'log-result-ok must be paired with .log-group-N selectors (so the result color wins over the per-group color)');
+  assert.ok(/\.log-event\.log-result-err\.log-group-/.test(cssSrc),
+    'log-result-err must be paired with .log-group-N selectors');
+  // The live code must also tag rows with the result class.
+  assert.ok(lsSrc.includes("'log-result-ok'") || lsSrc.includes('"log-result-ok"') || lsSrc.includes('log-result-ok'),
+    'LogService must emit the log-result-ok class string');
+  // Bug 2 — custom param layout: must include an OK button AND
+  // the 50/50 layout (when the wrapper has .enum-custom-active).
+  assert.ok(prSrc2.includes('enum-custom-ok') || prSrc2.includes('OK'),
+    'ParamRow enum Custom mode must include an OK button (per user spec)');
+  assert.ok(/\.enum-custom-active\s*>\s*select\s*\{[^}]*?flex:\s*1\s+1\s+50\s*%/s.test(cssSrc)
+    || /\.enum-custom-active[^}]*?select[^}]*?flex:\s*1\s+1\s+50\s*%/s.test(cssSrc),
+    'ParamRow enum Custom mode must shrink the dropdown to 50% (per user spec)');
+  // Bug 9 — speech + video tab must include buildFilePrefixRow.
+  assert.ok(speechTabSrc.includes('buildFilePrefixRow()'),
+    'speechTab must call buildFilePrefixRow (user reported speech tab was missing the prefix option)');
+  assert.ok(videoTabSrc.includes('buildFilePrefixRow()'),
+    'videoTab must call buildFilePrefixRow (user reported video tab was missing the prefix option)');
+  // Bug 7 — BatchGen All Types must show Edit + Remove buttons
+  // for ALL items (not just non-done ones). The previous version
+  // hid them via `if (!isDone) { ... }`; the new version must
+  // NOT have that guard.
+  const batchDashboardBlock = appJsSrc2.match(/items\.forEach\([\s\S]*?\}\);/);
+  // We check that the file does NOT have a "if (!isDone)" guard
+  // wrapping the edit/remove button creation.
+  assert.ok(!/if\s*\(\s*!isDone\s*\)\s*\{[\s\S]*?editBtn|if\s*\(\s*!isDone\s*\)\s*\{[\s\S]*?removeBtn/.test(appJsSrc2),
+    'BatchGen All Types dashboard must show Edit + Remove buttons for ALL items, not just non-done ones');
+  // The buttons MUST be created (the forEach contains editBtn / removeBtn).
+  assert.ok(/editBtn/.test(appJsSrc2) && /removeBtn/.test(appJsSrc2),
+    'BatchGen All Types dashboard must still create editBtn + removeBtn (just not gated by !isDone)');
+  // Bug 4 — multi-select deselect after bulk action: the
+  // fbBulkAction helper must remove each successful path from
+  // state.fbSelected and then call refreshBrowser().
+  assert.ok(/state\.fbSelected\.delete\(p\)/.test(fb1Src2),
+    'fbBulkAction must remove each successful path from state.fbSelected (so the file browser de-selects it)');
+  assert.ok(/await refreshBrowser\(\)/.test(fb1Src2),
+    'fbBulkAction must call refreshBrowser after all paths are processed (so the checkboxes re-render unchecked)');
+  // Bug 10 — force prefix naming: the image tab's force-prefix-only
+  // output must be exactly `<prefix><counter>.<ext>` (no
+  // `_v<num>`, `_2x`, `_cropped_*`, `_nobg`, or `_optimized`
+  // suffix in the INITIAL filename). The helper is
+  // `buildForcePrefixFileName(counter, prefix, ext)`.
+  assert.ok(/function buildForcePrefixFileName\([\s\S]*?padStart\(6, '0'\)/.test(appJsSrc2),
+    'app.js must define buildForcePrefixFileName with 6-digit zero-pad (per user spec)');
+  // The image tab must use the helper (not the legacy
+  // `${prefix}${ts}_${slug}${variantTag}` template) when
+  // state.filePrefixForceOnly is on.
+  const imageTabForceOnlyBlock = src('renderer/tabs/imageTab.js').match(/if \(state\.filePrefixForceOnly\)[\s\S]*?return[^\n]*buildForcePrefixFileName/);
+  assert.ok(imageTabForceOnlyBlock,
+    'imageTab must use buildForcePrefixFileName when state.filePrefixForceOnly is on');
+  // Bug 8 — upscale when not requested: the post-process chain
+  // must only upscale when state.upscaleEnabled is true. The
+  // check happens in section07_Image_optimisation___compression.js.
+  const s7Src2 = src('renderer/sections/section07_Image_optimisation___compression.js');
+  assert.ok(/if \(state\.upscaleEnabled && state\.upscaleSettings\) \{/.test(s7Src2),
+    'section07.runPostProcessChain must guard the upscale step with `if (state.upscaleEnabled && state.upscaleSettings)` so the upscale only runs when the user explicitly enabled it');
+  // The OUTER condition for running the chain at all is in
+  // imageTab.js. The user might have only enable optimize, and
+  // the chain should still only do optimize (not upscale).
+  const imageTabSrc2 = src('renderer/tabs/imageTab.js');
+  assert.ok(/const postProcessEach = state\.upscaleEnabled\s*\|\|\s*state\.removeBackgroundEnabled\s*\|\|\s*\([\s\S]*?optimizeSettings/.test(imageTabSrc2),
+    'imageTab must guard the post-process chain with `postProcessEach = state.upscaleEnabled || state.removeBackgroundEnabled || (state.optimizeSettings && state.optimizeSettings.enabled)`');
+});

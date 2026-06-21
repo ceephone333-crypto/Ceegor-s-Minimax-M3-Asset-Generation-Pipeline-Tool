@@ -137,11 +137,26 @@ function buildParamRow(label, def, id) {
       sel.appendChild(el('option', { value: '__custom__' }, 'Custom…'));
     }
     // Hidden text input that shows when 'Custom…' is
-    // selected. Same width / styling as the dropdown so
-    // the row stays a single compact line.
+    // selected. Per the v1.1.15 spec (user): the dropdown
+    // shrinks to 50% width, the text input takes the other
+    // 50%, and there's an OK button next to the input.
+    // The user has to explicitly type + click OK to apply
+    // the custom value (the previous version auto-applied
+    // on input, which made typos hard to catch).
     const text = el('input', { type: 'text', value: '', placeholder: 'type custom…', class: 'enum-custom-input' });
     text.style.display = 'none';
     if (id) text.id = id + '-custom';
+    // OK button: only shown in Custom mode. Clicking it
+    // marks the custom value as "confirmed" so the
+    // rest of the UI (e.g. the model-preflight check)
+    // treats the typed value as the effective value.
+    const okBtn = el('button', {
+      type: 'button',
+      class: 'btn-mini enum-custom-ok',
+      title: 'Apply the typed custom value',
+      style: 'display: none;',
+    }, 'OK');
+    if (id) okBtn.id = id + '-custom-ok';
     const current = (def.options || []).find((o) => String(o.value) === String(value));
     if (current) sel.value = String(current.value);
     else if (def.allowCustom !== false) {
@@ -150,23 +165,55 @@ function buildParamRow(label, def, id) {
       // can see + edit it after a restart.
       sel.value = '__custom__';
       text.style.display = '';
+      okBtn.style.display = '';
       text.value = String(value);
+    }
+    function setCustomVisible(visible) {
+      if (visible) {
+        text.style.display = '';
+        okBtn.style.display = '';
+        // Per the user's spec: dropdown shrinks to 50% and
+        // the text input + OK button take the other 50%.
+        // We add a class on the wrapper that CSS uses to
+        // switch to 50/50 layout (the default is full-width
+        // dropdown + hidden input).
+        wrap.classList.add('enum-custom-active');
+      } else {
+        text.style.display = 'none';
+        okBtn.style.display = 'none';
+        wrap.classList.remove('enum-custom-active');
+      }
     }
     sel.addEventListener('change', () => {
       if (sel.value === '__custom__') {
-        text.style.display = '';
+        setCustomVisible(true);
         text.focus();
       } else {
-        text.style.display = 'none';
+        setCustomVisible(false);
         text.value = '';
       }
     });
+    // OK button click: focus the input (so the user can
+    // keep editing) and dispatch an 'input' event on the
+    // text field so any listener that watches for input
+    // (e.g. the preflight check) picks up the new value.
+    okBtn.addEventListener('click', () => {
+      text.focus();
+      text.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    // Enter key in the text input = click OK.
+    text.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        okBtn.click();
+      }
+    });
     if (id) sel.id = id;
-    // Wrap the dropdown + custom input in a flex container
-    // so they line up on one line. getValue() returns the
-    // typed text when in custom mode, otherwise the
-    // dropdown's selected option.
-    const wrap = el('div', { class: 'combo-select-enum', style: 'display: flex; gap: 4px; align-items: center;' }, [sel, text]);
+    // v1.1.15: include the OK button in the wrapper so the
+    // CSS 50/50 layout (active state) has all three elements
+    // to position. The OK button is the third flex child;
+    // it sits next to the text input on the right.
+    const wrap = el('div', { class: 'combo-select-enum', style: 'display: flex; gap: 4px; align-items: center;' }, [sel, text, okBtn]);
     input = wrap;
     input.el = sel;
     input.getValue = () => {
