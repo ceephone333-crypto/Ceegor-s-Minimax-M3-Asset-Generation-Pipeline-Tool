@@ -56,6 +56,43 @@ async function optimizeImageFile(srcPath, opts) {
     stripMetadata: opts.stripMetadata !== false,
     outputPath: out,
   });
+  // v1.1.15 (reported by user): log the optimization to the
+  // structured log pane so the user can see every step.
+  // (The post-process chain logs its own copy at the end
+  // with the size savings; this is the lower-level helper
+  // version that logs the raw success/failure of the IPC
+  // call, so a stand-alone "Optimize" overlay also gets a
+  // log entry.)
+  if (typeof window.addLogEvent === 'function') {
+    try {
+      if (r && r.ok) {
+        const inSize = humanSize(r.inputSize);
+        const outSize = humanSize(r.outputSize);
+        const saved = r.savedPercent || 0;
+        const savedSuffix = saved >= 1 ? ` (−${saved}%)` : '';
+        window.addLogEvent({
+          category: 'optimize',
+          result: 'ok',
+          headline: `Optimized ${(out || '').split(/[\\/]/).pop()}${savedSuffix}`,
+          details: [
+            `Source: ${srcPath}`,
+            `Output: ${out}`,
+            `Size: ${inSize} → ${outSize} (${saved >= 0 ? '−' : '+'}${Math.abs(saved)}%)`,
+            `Quality: ${r.quality || opts.quality}`,
+            `Format: ${r.format || (fmt || 'keep')}`,
+            `Metadata stripped: ${!!(r && r.strippedMetadata)}`,
+          ],
+        });
+      } else {
+        window.addLogEvent({
+          category: 'error',
+          result: 'err',
+          headline: `Optimize failed: ${(r && r.error) || 'unknown error'}`,
+          details: [`Source: ${srcPath}`, `Output: ${out}`],
+        });
+      }
+    } catch (_) { /* best-effort */ }
+  }
   if (!r || !r.ok) {
     const msg = (r && r.error) || 'Image optimisation failed.';
     const err = new Error(msg);

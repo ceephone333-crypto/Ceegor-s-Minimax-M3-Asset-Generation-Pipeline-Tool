@@ -1,0 +1,1 @@
+C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\dist-stable\win-unpacked\MiniMaxAssetTool.exe

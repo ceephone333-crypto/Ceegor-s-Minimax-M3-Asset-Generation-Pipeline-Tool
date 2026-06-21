@@ -77,6 +77,26 @@ function register(_deps) {
     return { ok: true };
   });
 
+  // v1.1.15 (reported by user): open a NEW Windows Explorer
+  // window at the file's parent folder. The previous
+  // "Reveal in Explorer" action (fb:reveal) only highlights
+  // the file in an existing window via shell.showItemInFolder;
+  // the user explicitly asked for the standard Windows
+  // "Open in Explorer" shell verb, which opens a fresh
+  // Explorer window at the containing folder. Same
+  // allow-list as the rest of the fb:* handlers.
+  ipcMain.handle('fb:openInExplorer', async (_e, p) => {
+    if (!pathUtils.isPathUnderAny(p, pathSecurity.getAllowedRoots())) {
+      return { ok: false, error: 'Path is outside the allowed directories.' };
+    }
+    try {
+      await fb.openInExplorer(p);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e) };
+    }
+  });
+
   ipcMain.handle('fb:read', async (_e, p) => {
     if (!pathUtils.isPathUnderAny(p, pathSecurity.getAllowedRoots())) {
       return { ok: false, error: 'Path is outside the allowed directories.' };

@@ -121,10 +121,58 @@ function buildParamRow(label, def, id) {
     for (const o of def.options) {
       sel.appendChild(el('option', { value: String(o.value) }, o.label ?? String(o.value)));
     }
+    // v1.1.15 (reported by user): the previous version of
+    // the 'enum' kind had NO 'Custom…' option, so a user
+    // who wanted to enter a value that wasn't in the
+    // dropdown (e.g. a brand-new model name) had no way
+    // to do it. Add the same 'Custom…' option the
+    // 'number' kind uses, which reveals a small text
+    // input next to the dropdown. The dropdown's effective
+    // value is then the typed text (or the selected option
+    // when not in Custom mode). Honoured the user's
+    // `def.allowCustom` opt-out (default: true) so a
+    // future caller can still lock the enum to a fixed
+    // set.
+    if (def.allowCustom !== false) {
+      sel.appendChild(el('option', { value: '__custom__' }, 'Custom…'));
+    }
+    // Hidden text input that shows when 'Custom…' is
+    // selected. Same width / styling as the dropdown so
+    // the row stays a single compact line.
+    const text = el('input', { type: 'text', value: '', placeholder: 'type custom…', class: 'enum-custom-input' });
+    text.style.display = 'none';
+    if (id) text.id = id + '-custom';
     const current = (def.options || []).find((o) => String(o.value) === String(value));
     if (current) sel.value = String(current.value);
+    else if (def.allowCustom !== false) {
+      // The persisted value doesn't match any dropdown
+      // option — treat it as a custom value so the user
+      // can see + edit it after a restart.
+      sel.value = '__custom__';
+      text.style.display = '';
+      text.value = String(value);
+    }
+    sel.addEventListener('change', () => {
+      if (sel.value === '__custom__') {
+        text.style.display = '';
+        text.focus();
+      } else {
+        text.style.display = 'none';
+        text.value = '';
+      }
+    });
     if (id) sel.id = id;
-    input = sel;
+    // Wrap the dropdown + custom input in a flex container
+    // so they line up on one line. getValue() returns the
+    // typed text when in custom mode, otherwise the
+    // dropdown's selected option.
+    const wrap = el('div', { class: 'combo-select-enum', style: 'display: flex; gap: 4px; align-items: center;' }, [sel, text]);
+    input = wrap;
+    input.el = sel;
+    input.getValue = () => {
+      if (sel.value === '__custom__') return text.value;
+      return sel.value;
+    };
   } else if (def.kind === 'textarea') {
     // Multi-line textarea for prompt-style fields. Defaults to a
     // generous 8 rows + 2000-char cap (matches the spec the user

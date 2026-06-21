@@ -97,26 +97,52 @@
       dragging = true;
       startCoord = splitter.axis === 'x' ? e.clientX : e.clientY;
       startVal = readVar(splitter.cssVar) || 0;
-      document.body.style.cursor = splitter.axis === 'x' ? 'col-resize' : 'row-resize';
+      // v1.1.15 (reported by user): the previous version
+      // only set `document.body.style.cursor` on mousedown,
+      // which the browser would silently drop in some
+      // situations (e.g. the cursor leaves the body and
+      // re-enters a child element). Use a body class
+      // instead, so the CSS keeps the resize cursor stuck
+      // to the entire body for the duration of the drag.
+      document.body.classList.add(splitter.axis === 'x' ? 'resizing-width' : 'resizing-height');
       document.body.style.userSelect = 'none';
+      // Add the .dragging class to the splitter itself so
+      // the visual hover state stays on while the user
+      // drags (otherwise the hover would fade the moment
+      // the cursor leaves the 4-px handle).
+      el.classList.add('dragging');
     });
 
     document.addEventListener('mousemove', (e) => {
       if (!dragging) return;
       const now = splitter.axis === 'x' ? e.clientX : e.clientY;
       const delta = now - startCoord;
-      // For sidebar (left pane pulled right = bigger), preview
-      // (right pane pulled left = bigger), logbar (top pane
-      // pulled down = bigger): all three have the same sign.
-      const next = clamp(splitter.cssVar, startVal + delta);
+      // v1.1.15 (reported by user): the previous sign
+      // convention was the opposite of standard Windows
+      // behaviour. The user explicitly asked for
+      // "normal Windows" behaviour, where dragging the
+      // divider to the right makes the divider follow the
+      // cursor (and the LEFT pane grows, the RIGHT pane
+      // shrinks). This matches Windows Explorer's
+      // "drag the divider to position it" convention: the
+      // divider follows the cursor, and the pane on the
+      // side you're dragging TOWARDS shrinks to make
+      // room. The previous code (`startVal + delta`) made
+      // the right pane grow when dragged right, which is
+      // the opposite of what Windows does.
+      const next = clamp(splitter.cssVar, startVal - delta);
       writeVar(splitter.cssVar, next);
     });
 
     document.addEventListener('mouseup', () => {
       if (!dragging) return;
       dragging = false;
-      document.body.style.cursor = '';
+      document.body.classList.remove('resizing-width');
+      document.body.classList.remove('resizing-height');
       document.body.style.userSelect = '';
+      // Clear the per-splitter dragging class so the
+      // hover state returns to its pre-drag visual.
+      el.classList.remove('dragging');
       const final = readVar(splitter.cssVar);
       if (final == null) return;
       const s = getState();

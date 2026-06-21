@@ -16,18 +16,17 @@ window.TABS.video = {
     const prompt = buildParamRow('Video prompt (prefilled, editable)',
       { kind: 'textarea', value: this.prefilled, help: 'Describe the scene + motion. Up to 2000 chars. Use [Push in], [Pan left], [Static shot] etc. to control camera (15 commands supported).' });
     const styleRow = buildStyleRow('video', 'Select a style preset. Its value is prepended (with a comma) to your video prompt before being sent to mmx.');
-    const stylePreview = buildStylePreviewBlock();
-    const tabState = { previewEl: stylePreview, selEl: styleRow.sel, manualEl: prompt.input };
-    const updatePreview = () => updateStylePreview(tabState);
-    styleRow.sel.addEventListener('change', updatePreview);
-    prompt.input.addEventListener('input', updatePreview);
-    updatePreview();
+    // v1.1.15 (reported by user): the previous version also
+    // rendered a `buildStylePreviewBlock()` element under
+    // the prompt. The user found it empty-looking and
+    // wanted it removed. We keep the helper exported so
+    // other callers don't break, but the tab no longer
+    // mounts it.
     const counter = buildPromptCounter({ selEl: styleRow.sel, manualEl: prompt.input, id: 'video' });
     root.appendChild(el('div', { class: 'section' }, [
       el('h3', {}, 'Prompt'),
       styleRow.row,
       prompt.row,
-      stylePreview,
       counter.wrap,
     ]));
 
@@ -156,6 +155,28 @@ window.TABS.video = {
       }
       const slug = slugify(promptText).slice(0, 60) || 'video';
       const cancel = armGenBtnWithCancel(genBtn, 'Generate');
+      // v1.1.15 (reported by user): the "force prefix only"
+      // counter is per-run (NOT per-prefix) so the first
+      // variant of the first item is 000001. We allocate the
+      // counter object here (before the variant loop) and bump
+      // it on every variant so the file numbering is stable
+      // across retries / cancellations.
+      const forceCounter = { n: 0 };
+      // v1.1.15: log the video generation start so the
+      // structured log pane shows the run.
+      const runGroupId = 'video-' + Date.now();
+      const pShort = (promptText || '').replace(/\s+/g, ' ').slice(0, 120);
+      addLogEvent({
+        category: 'gen',
+        groupId: runGroupId,
+        headline: `Video generation started: ${pShort}${promptText && promptText.length > 120 ? '…' : ''}`,
+        details: [
+          `Variants: ${variantsCount}`,
+          `Model: ${model.input.getValue() || '(default)'}`,
+          `Resolution: ${resolution.input.value || '(default)'}`,
+          `Duration: ${duration.input.value || '(default)'}`,
+        ],
+      });
       let allOk = true;
       let lastPreview = null;
       let lastOutFile = null;
@@ -190,7 +211,15 @@ window.TABS.video = {
           appendFlag(args, pollInterval.input);
           const ts = timestamp();
           const variantTag = variantsCount > 1 ? `_v${v}` : '';
-          const outFile = uniquePath(outDir, `${ts}_${slug}${variantTag}.mp4`);
+          const prefix = (state.filePrefix || '').trim();
+          // v1.1.15: "force prefix only" mode overrides the
+          // legacy slug+timestamp naming scheme. The user
+          // explicitly asked for `<prefix><6-digit
+          // counter>.<ext>` with the counter starting at
+          // 000001 per Generate click.
+          const outFile = state.filePrefixForceOnly
+            ? uniquePath(outDir, buildForcePrefixFileName(forceCounter, prefix, 'mp4'))
+            : uniquePath(outDir, `${ts}_${slug}${variantTag}.mp4`);
           args.push('--download', outFile);
           lastCmd.textContent = `mmx ${args.join(' ')}`;
           const statusMsg = variantsCount > 1
@@ -263,6 +292,14 @@ window.TABS.video = {
       if (allOk && lastOutFile) {
         showVideoPreview(preview, lastOutFile, lastPreview);
         bumpGenerationCounter('video', variantsCount);
+        // v1.1.15: log the success of the video run.
+        addLogEvent({
+          category: 'gen',
+          groupId: runGroupId,
+          result: 'ok',
+          headline: `Generated ${variantsCount} video file${variantsCount === 1 ? '' : 's'}`,
+          details: [`• ${lastOutFile}`],
+        });
       }
       if (allOk) {
         toast(variantsCount > 1

@@ -10,14 +10,17 @@ window.TABS.music = {
     const prompt = buildParamRow('Music prompt (prefilled, editable)',
       { kind: 'textarea', value: this.prefilled, help: 'Describe the music: genre, mood, instruments, tempo, length (e.g. "30 seconds", "2 minutes"). The most up-to-date model (music-2.6) supports up to about 6 minutes. Max 2 000 characters.' });
     const styleRow = buildStyleRow('music', 'Select a style preset. Its value is prepended (with a comma) to your music prompt before the request is sent. Use it for repeated genre/mood tags.');
-    const stylePreview = buildStylePreviewBlock();
-    const tabState = { previewEl: stylePreview._previewEl, selEl: styleRow.sel, manualEl: prompt.input };
-    // extraPrefix is filled in AFTER the vocal-mode `mode` row is defined below.
+    // v1.1.15 (reported by user): the previous version also
+    // rendered a `buildStylePreviewBlock()` element under
+    // the prompt, which showed the final composed prompt
+    // (style + manual + extra prefix). The user found it
+    // empty-looking and wanted it removed. We keep the
+    // helper exported so other callers don't break, but
+    // the tab no longer mounts it. The extra-prefix state
+    // (set by the "Instrumental" toggle below) is still
+    // applied to the character counter via the same
+    // getExtraPrefix callback as before.
     let extraPrefix = () => '';
-    const updatePreview = () => updateStylePreview(tabState, extraPrefix());
-    styleRow.sel.addEventListener('change', updatePreview);
-    prompt.input.addEventListener('input', updatePreview);
-    updatePreview();
     // Character counter for the --prompt argument value.
     // NOTE: extraPrefix is a `let` that gets REASSIGNED below (after `mode`
     // and `instrumental` are defined). Passing it directly would freeze the
@@ -34,7 +37,6 @@ window.TABS.music = {
       el('h3', {}, 'Prompt'),
       styleRow.row,
       prompt.row,
-      stylePreview,
       counter.wrap,
     ]));
 
@@ -481,6 +483,30 @@ window.TABS.music = {
       state.genQueueSize.music = variantsCount;
       state.genQueueDone.music = 0;
       const cancel = armGenBtnWithCancel(genBtn, 'Generate');
+      // v1.1.15 (reported by user): the "force prefix only"
+      // counter is per-run (NOT per-prefix) so the first
+      // variant of the first item is 000001. We allocate the
+      // counter object here (before the variant loop) and bump
+      // it on every variant so the file numbering is stable
+      // across retries / cancellations.
+      const forceCounter = { n: 0 };
+      // v1.1.15: log the music generation start so the
+      // structured log pane shows the run. Without this
+      // the user only saw the raw mmx stderr stream and
+      // couldn't tell at a glance which run was which.
+      const runGroupId = 'music-' + Date.now();
+      const pShort = (promptText || '').replace(/\s+/g, ' ').slice(0, 120);
+      addLogEvent({
+        category: 'gen',
+        groupId: runGroupId,
+        headline: `Music generation started: ${pShort}${promptText && promptText.length > 120 ? '…' : ''}`,
+        details: [
+          `Variants: ${variantsCount}`,
+          `Model: ${model.input.getValue() || '(default)'}`,
+          `Format: ${audioFormat.input.value || '(default)'}`,
+          `Mode: ${mode.input.value}`,
+        ],
+      });
       let allOk = true;
       let lastPreview = null;
       let lastOutFile = null;
@@ -528,7 +554,15 @@ window.TABS.music = {
           // Unique output file per variant
           const ts = timestamp();
           const variantTag = variantsCount > 1 ? `_v${v}` : '';
-          const outFile = uniquePath(outDir, `${ts}_${slug}${variantTag}.${ext}`);
+          const prefix = (state.filePrefix || '').trim();
+          // v1.1.15: "force prefix only" mode overrides the
+          // legacy slug+timestamp naming scheme. The user
+          // explicitly asked for `<prefix><6-digit
+          // counter>.<ext>` with the counter starting at
+          // 000001 per Generate click.
+          const outFile = state.filePrefixForceOnly
+            ? uniquePath(outDir, buildForcePrefixFileName(forceCounter, prefix, ext))
+            : uniquePath(outDir, `${ts}_${slug}${variantTag}.${ext}`);
           args.push('--out', outFile);
           lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
           const statusMsg = variantsCount > 1
@@ -582,6 +616,16 @@ window.TABS.music = {
       if (allOk && lastOutFile) {
         showAudioPreview(preview, lastOutFile, lastPreview);
         bumpGenerationCounter('music', variantsCount);
+        // v1.1.15: log the success of the music run so
+        // the structured log pane shows the
+        // "Generated N audio" row.
+        addLogEvent({
+          category: 'gen',
+          groupId: runGroupId,
+          result: 'ok',
+          headline: `Generated ${variantsCount} music file${variantsCount === 1 ? '' : 's'}`,
+          details: [`• ${lastOutFile}`],
+        });
       }
       if (allOk) {
         toast(variantsCount > 1

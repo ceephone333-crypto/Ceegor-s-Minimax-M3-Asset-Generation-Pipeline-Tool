@@ -10,20 +10,18 @@ window.TABS.speech = {
     const text = buildParamRow('Text to read (prefilled, editable)',
       { kind: 'textarea', value: this.prefilled, help: 'What the voice will say. Up to 10 000 characters across all models.' });
     const styleRow = buildStyleRow('speech', 'Select a style preset. Its value is prepended (with a comma) to your text before the request is sent. Useful for narration tone, language hints, etc.');
-    const stylePreview = buildStylePreviewBlock();
-    const tabState = { previewEl: stylePreview._previewEl, selEl: styleRow.sel, manualEl: text.input };
-    const update = () => updateStylePreview(tabState);
-    styleRow.sel.addEventListener('change', update);
-    text.input.addEventListener('input', update);
-    update();
-    // Speech API actually accepts up to 10 000 chars, but we still show the
-    // same counter pattern so the user has a constant reference.
+    // v1.1.15 (reported by user): the previous version also
+    // rendered a `buildStylePreviewBlock()` element under
+    // the prompt, which showed the final composed text
+    // (style + manual). The user found it empty-looking
+    // and wanted it removed. We keep the helper exported
+    // so other callers don't break, but the tab no longer
+    // mounts it.
     const counter = buildPromptCounter({ selEl: styleRow.sel, manualEl: text.input, max: 10000, id: 'speech' });
     root.appendChild(el('div', { class: 'section' }, [
       el('h3', {}, 'Text'),
       styleRow.row,
       text.row,
-      stylePreview,
       counter.wrap,
     ]));
 
@@ -258,6 +256,31 @@ window.TABS.speech = {
       state.genQueueSize.speech = variantsCount;
       state.genQueueDone.speech = 0;
       const cancel = armGenBtnWithCancel(genBtn, 'Generate');
+      // v1.1.15 (reported by user): the "force prefix only"
+      // counter is per-run (NOT per-prefix) so the first
+      // variant of the first item is 000001. We allocate the
+      // counter object here (before the variant loop) and bump
+      // it on every variant so the file numbering is stable
+      // across retries / cancellations.
+      const forceCounter = { n: 0 };
+      // v1.1.15: log the speech generation start so the
+      // structured log pane shows the run (same pattern as
+      // the image tab). Without this the user only saw the
+      // raw mmx stderr stream and couldn't tell at a glance
+      // which run was which.
+      const runGroupId = 'speech-' + Date.now();
+      const txtShort = (txt || '').replace(/\s+/g, ' ').slice(0, 120);
+      addLogEvent({
+        category: 'gen',
+        groupId: runGroupId,
+        headline: `Speech generation started: ${txtShort}${txt && txt.length > 120 ? '…' : ''}`,
+        details: [
+          `Variants: ${variantsCount}`,
+          `Model: ${model.input.getValue() || '(default)'}`,
+          `Voice: ${voice.input.getValue() || '(default)'}`,
+          `Format: ${format.input.value || '(default)'}`,
+        ],
+      });
       let allOk = true;
       let lastPreview = null;
       let lastOutFile = null;
@@ -288,7 +311,14 @@ window.TABS.speech = {
           const ts = timestamp();
           const variantTag = variantsCount > 1 ? `_v${v}` : '';
           const prefix = (state.filePrefix || '').trim();
-          const outFile = uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.${ext}`);
+          // v1.1.15: "force prefix only" mode overrides the
+          // legacy slug+timestamp naming scheme. The user
+          // explicitly asked for `<prefix><6-digit
+          // counter>.<ext>` with the counter starting at
+          // 000001 per Generate click.
+          const outFile = state.filePrefixForceOnly
+            ? uniquePath(outDir, buildForcePrefixFileName(forceCounter, prefix, ext))
+            : uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.${ext}`);
           args.push('--out', outFile);
           lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
           const statusMsg = variantsCount > 1
@@ -342,6 +372,18 @@ window.TABS.speech = {
       if (allOk && lastOutFile) {
         showAudioPreview(preview, lastOutFile, lastPreview);
         bumpGenerationCounter('speech', variantsCount);
+        // v1.1.15: log the success of the speech run so
+        // the structured log pane shows the "Generated N
+        // audio" row with the output files. (The image
+        // tab already does this; the speech tab was
+        // missing it.)
+        addLogEvent({
+          category: 'gen',
+          groupId: runGroupId,
+          result: 'ok',
+          headline: `Generated ${variantsCount} audio file${variantsCount === 1 ? '' : 's'}`,
+          details: [`• ${lastOutFile}`],
+        });
       }
       if (allOk) {
         toast(variantsCount > 1

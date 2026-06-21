@@ -28,15 +28,45 @@ function parentDir(p) {
 }
 
 // Map a file extension to a single-emoji icon for the file browser.
+// v1.1.15: re-picked the icons so they read more clearly at small
+// sizes on the dark background. The previous set used 🖼 / 🎵 / 🎬
+// / 📄 — 🖼 is a single (low-detail) emoji that disappears into
+// the dark theme, and 🎵 is a dark-blue note that effectively
+// vanishes against the dark-bg row. The new set uses higher-
+// contrast glyphs (the variation selectors on each emoji force
+// the colourful emoji presentation rather than the line-drawn
+// glyph), and added a few more categories so the icon always
+// matches the file's purpose.
 function iconForFile(ext) {
-  if (['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(ext)) return '🖼';
-  if (['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.opus', '.pcm'].includes(ext)) return '🎵';
-  if (['.mp4', '.mov', '.webm', '.mkv'].includes(ext)) return '🎬';
-  if (['.srt', '.txt', '.json', '.md'].includes(ext)) return '📄';
+  if (['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(ext)) return '🖼️';
+  // v1.1.15 (reported by user): the previous music-note icon
+  // (🎵) was almost invisible on the dark theme — the emoji
+  // renders as a dark-blue glyph with no fill, so on a near-
+  // black row the user couldn't tell the row was an audio file
+  // at a glance. Switched to 🎶 (a brighter, more colourful
+  // glyph) AND added a CSS class (.fb-icon-audio) so the file
+  // browser can boost the contrast with a coloured background
+  // if needed (kept here as a safety net).
+  if (['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.opus', '.pcm', '.aac', '.wma', '.aif', '.aiff'].includes(ext)) return '🎶';
+  if (['.mp4', '.mov', '.webm', '.mkv', '.avi'].includes(ext)) return '🎞️';
+  if (['.srt', '.txt', '.json', '.md', '.lrc'].includes(ext)) return '📝';
   return '📄';
 }
+// v1.1.15: stable id of the icon CSS class for the file-type
+// icons. The file browser row uses this to colour-tint the
+// icon's background (so the music-note icon stays visible on
+// the dark theme). Keeping it here (next to iconForFile) means
+// any future icon change can be paired with a class change in
+// one place.
+function iconClassForFile(ext) {
+  if (['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(ext)) return 'fb-icon-image';
+  if (['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.opus', '.pcm', '.aac', '.wma', '.aif', '.aiff'].includes(ext)) return 'fb-icon-audio';
+  if (['.mp4', '.mov', '.webm', '.mkv', '.avi'].includes(ext)) return 'fb-icon-video';
+  if (['.srt', '.txt', '.json', '.md', '.lrc'].includes(ext)) return 'fb-icon-text';
+  return 'fb-icon-other';
+}
 
-window.PureFuncs = { parseAspect, humanSize, parentDir, iconForFile };
+window.PureFuncs = { parseAspect, humanSize, parentDir, iconForFile, iconClassForFile };
 
 // Load a local file:// image as a usable Image object (resolves once
 // it is fully decoded). Used by upscale / crop / convert.

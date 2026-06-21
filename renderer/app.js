@@ -524,6 +524,7 @@ async function ensureSubDir(name) {
 // Phase 4 Fix 15: 'window.ensureSubDir = ensureSubDir' so the tab
 // scripts (loaded BEFORE app.js) can see it without crashing.
 window.ensureSubDir = ensureSubDir;
+window.buildForcePrefixFileName = buildForcePrefixFileName;
 
 // ----------------- Generation helpers -----------------
 // Bug-fix (2026-06-20, reported by user): Generate did nothing because
@@ -564,6 +565,30 @@ function uniquePath(dir, name) {
   const ext = dot > 0 ? name.slice(dot) : '';
   const suffix = Math.random().toString(36).slice(2, 6) || 'rndm';
   return dir.replace(/[\\/]+$/, '') + (dir.includes('\\') ? '\\' : '/') + stem + '_' + suffix + ext;
+}
+
+// v1.1.15 (reported by user): helper that builds the
+// "force-prefix-only" filename `<prefix><6-digit counter>.<ext>`.
+// The caller owns the counter object (so two parallel Generate
+// clicks — image + speech at once, for example — don't trample
+// each other) and bumps it on every call. The counter is just
+// a plain object the caller mutates: `{ n: 0 }` to start, then
+// `buildForcePrefixFileName(counter, 'temp', 'jpg')` returns
+// `temp000001.jpg` for the first call, `temp000002.jpg` for
+// the second, etc. The 6-digit pad means the counter tops out
+// at 999999 files per run (which is far more than the user
+// will ever produce in one click); beyond that the pad
+// silently widens to 7 digits so the user doesn't silently
+// overwrite the first 999999 files.
+function buildForcePrefixFileName(counter, prefix, ext) {
+  counter.n = (counter.n | 0) + 1;
+  // Use enough leading zeros for the current value so the
+  // count is always 6 digits minimum. Once the count crosses
+  // 999999, the pad widens to 7 digits, then 8, etc. — so
+  // even an extremely long run can't silently overwrite an
+  // earlier file in the same run.
+  const padded = String(counter.n).padStart(6, '0');
+  return `${prefix || ''}${padded}.${ext}`;
 }
 // Format mmx error: strip the "node.exe :" prefix PowerShell wraps
 // around stderr, then surface the most informative bit. mmx returns
@@ -1279,6 +1304,79 @@ function saveAllStates() {
     window.api.stateSet(snapshot).catch(() => {});
   }
 }
+
+// v1.1.15 (reported by user): the user reported that
+// resizing the tool window takes a "few seconds" for
+// the layout to settle. The main culprit is the
+// file-browser list, which re-runs its CSS grid layout
+// on every resize event (the grid-template-columns
+// string has a `minmax(120px, 1fr)` column that needs
+// to be re-measured against the new width). For
+// folders with hundreds of items, the recalc +
+// repaint can take a few seconds.
+//
+// The fix: a single, debounced resize handler that
+// throttles the re-render to once per 100ms while the
+// user is dragging, then runs a final pass 200ms after
+// the last resize event (when the user has released
+// the mouse). During the drag we DON'T re-render —
+// the CSS handles the column re-flow natively on
+// every frame, which is faster than a JS-driven
+// re-render. We only re-render once at the END of the
+// drag to make sure the scroll positions / selected
+// row are still in sync (they shouldn't have moved, but
+// this is cheap insurance).
+let _resizeFrameId = null;
+let _resizeEndTimer = null;
+window.addEventListener('resize', () => {
+  if (_resizeFrameId != null) {
+    // Already scheduled; just reset the end timer.
+    if (_resizeEndTimer) clearTimeout(_resizeEndTimer);
+  } else {
+    // Mark a frame request so we re-layout once per
+    // animation frame instead of once per resize
+    // event. (Chromium fires resize many times per
+    // second during a drag; rAF coalesces them.)
+    _resizeFrameId = requestAnimationFrame(() => {
+      _resizeFrameId = null;
+    });
+  }
+  _resizeEndTimer = setTimeout(() => {
+    _resizeEndTimer = null;
+    // Final re-render pass: re-apply the file-browser
+    // grid template (so the new column widths line up
+    // with the row's per-row grid-template-columns
+    // style) and re-apply the prompt-character counter
+    // (so it ticks if the user resized past a wrap
+    // point). Both are cheap and only run on the
+    // "real" end of the resize.
+    try {
+      if (typeof applyLayoutSettings === 'function' && window.SplitterDrag) {
+        // The CSS variables are the source of truth;
+        // re-applying the layout settings re-writes
+        // them with the clamped values (which the
+        // user might have changed during the resize
+        // via a splitter drag).
+        window.SplitterDrag.applyLayoutSettings();
+      }
+    } catch (_) { /* best-effort */ }
+    // Re-apply the file-browser grid template so the
+    // header / row column widths line up with the new
+    // pane width.
+    try {
+      const ul = document.getElementById('fb-list');
+      if (ul && typeof buildFbGridTemplate === 'function') {
+        ul.style.gridTemplateColumns = buildFbGridTemplate();
+        // Also re-apply per-row grid-template-columns
+        // so the row contents line up with the new
+        // column widths.
+        for (const li of ul.querySelectorAll('.fb-item')) {
+          li.style.gridTemplateColumns = buildFbGridTemplate();
+        }
+      }
+    } catch (_) { /* best-effort */ }
+  }, 200);
+});
 
 document.addEventListener('DOMContentLoaded', () => {
   init().catch((e) => { console.error(e); toast(String(e), 'err', 8000); });

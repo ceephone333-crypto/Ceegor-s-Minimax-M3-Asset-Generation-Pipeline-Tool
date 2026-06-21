@@ -61,10 +61,44 @@ function buildFilePrefixRow() {
     // (the input listener above does both).
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
+  // v1.1.15 (reported by user): the "force prefix only"
+  // checkbox. When checked, every generated file is named
+  // EXACTLY `<prefix><6-digit counter>.<ext>` — the slugified
+  // prompt + timestamp is NOT prepended. The 6-digit counter
+  // starts at 000001 at the beginning of every Generate click
+  // (so the first file is `<prefix>000001.<ext>`, the second
+  // is `<prefix>000002.<ext>`, …). The counter is per-run
+  // (NOT per-prefix) — switching the prefix mid-session does
+  // NOT pick up where the previous prefix left off. The
+  // checkbox lives ON the file-prefix row (per the user's
+  // spec) so the prefix + the force-only toggle are visually
+  // grouped; the four mirrored instances (one per tab) all
+  // stay in sync via the same event-delegation pattern as
+  // the input itself.
+  const forceOnlyCb = el('input', {
+    type: 'checkbox',
+    class: 'file-prefix-force-only-cb',
+    title: 'When checked, every generated file is named <prefix><6-digit counter>.<ext> (e.g. temp000001.jpg).',
+  });
+  forceOnlyCb.checked = !!state.filePrefixForceOnly;
+  function _syncForceOnly() {
+    forceOnlyCb.checked = !!state.filePrefixForceOnly;
+    for (const other of document.querySelectorAll('input.file-prefix-force-only-cb')) {
+      if (other !== forceOnlyCb) other.checked = state.filePrefixForceOnly;
+    }
+  }
+  forceOnlyCb.addEventListener('change', () => {
+    state.filePrefixForceOnly = !!forceOnlyCb.checked;
+    _syncForceOnly();
+    scheduleStateSave();
+    toast(state.filePrefixForceOnly
+      ? 'Force-prefix-only ON: every generated file will be <prefix>000001.<ext> etc.'
+      : 'Force-prefix-only OFF: filenames use the legacy slugified prompt + timestamp.', 'ok', 2500);
+  });
   // v1.1.11 (reported by user): reorder the children so the +1
   // button sits BETWEEN the "?" help icon and the input field
   // (left of the input). Visually the row now reads:
-  //   "Target file prefix   [?]   [+1]   [____________________]"
+  //   "Target file prefix   [?]   [+1]   [____________________]   [☐ Force prefix only]"
   // which puts the increment affordance right where the user's
   // eye is after reading the help icon, instead of all the way
   // at the far right where it was easy to miss. The flex layout
@@ -81,6 +115,10 @@ function buildFilePrefixRow() {
     ]),
     plusOneBtn,
     input,
+    el('label', {
+      class: 'file-prefix-force-only-label',
+      title: 'When checked, every generated file is named <prefix><6-digit counter>.<ext> (e.g. temp000001.jpg)',
+    }, [forceOnlyCb, ' Force prefix only']),
   ]);
 }
 

@@ -34,6 +34,13 @@ contextBridge.exposeInMainWorld('api', {
   fbMove: (src, destDir) => ipcRenderer.invoke('fb:move', src, destDir),
   fbCopy: (src, destDir) => ipcRenderer.invoke('fb:copy', src, destDir),
   fbReveal: (path) => ipcRenderer.invoke('fb:reveal', path),
+  // v1.1.15: open a NEW Windows Explorer window at the
+  // file's parent folder. Used by the right-click "Open
+  // in Explorer" action. The previous "Reveal in Explorer"
+  // (fbReveal) only highlights the file in an existing
+  // window; this opens a fresh one. Both honour the same
+  // allow-list in the main process.
+  fbOpenInExplorer: (path) => ipcRenderer.invoke('fb:openInExplorer', path),
   fbRead: (path) => ipcRenderer.invoke('fb:read', path),
   // True if the given path exists and is inside the allowed roots.
   // Used by the upscale/crop pipeline to pick a non-clashing

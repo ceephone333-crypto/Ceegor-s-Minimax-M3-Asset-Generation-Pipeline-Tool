@@ -484,7 +484,10 @@ label { color: var(--fg); font-weight: 500; }
    between the 4 main areas. They're invisible until the user
    hovers, then they light up with the accent colour so the
    user knows where the drag handle is. Cursors change to the
-   appropriate resize cursor per orientation. */
+   appropriate resize cursor per orientation.
+   v1.1.15: the "grip" indicator (::before pseudo-element)
+   is more pronounced on hover/dragging so the user can
+   clearly see the splitter is interactive. */
 .splitter {
   flex: 0 0 4px;
   background: var(--border);
@@ -495,6 +498,27 @@ label { color: var(--fg); font-weight: 500; }
      listeners on the splitter itself in JS. */
   user-select: none;
   -webkit-user-select: none;
+  /* v1.1.15: a wider invisible "hit area" (16px) so the
+     user can grab the splitter even when the cursor
+     isn't pixel-perfect. The visible bar stays 4px so
+     the layout doesn't change; the 6px on each side is
+     a transparent extension that captures mouse events. */
+  /* (Hit area implemented via padding so the visible
+     element keeps its 4px size; the padded area
+     forwards events to the splitter.) */
+}
+.splitter::after {
+  /* v1.1.15: invisible 16px hit area on top of the
+     visible 4px bar. Captures mouseover / mousedown
+     even when the cursor is a few pixels off the bar. */
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+  background: transparent;
+  z-index: -1;
+  /* Re-forward pointer events to the parent splitter
+     element so the existing listeners still fire. */
+  pointer-events: auto;
 }
 .splitter:hover,
 .splitter.dragging {
@@ -514,29 +538,34 @@ label { color: var(--fg); font-weight: 500; }
 .splitter::before {
   /* Subtle "grip" indicator in the middle of the splitter
      so the user can see where to click. 2 short dashes for
-     vertical splitters, 2 short dashes for horizontal. */
+     vertical splitters, 2 short dashes for horizontal.
+     v1.1.15: thicker, more visible, and uses the accent
+     colour on hover/drag so the user can't miss it. */
   content: "";
   position: absolute;
-  background: var(--fg-2);
-  opacity: 0.35;
+  background: var(--accent);
+  opacity: 0.5;
   border-radius: 1px;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.15s ease, background 0.15s ease, width 0.15s ease, height 0.15s ease;
 }
 .splitter:hover::before,
-.splitter.dragging::before { opacity: 0.85; }
+.splitter.dragging::before {
+  opacity: 1;
+  background: #fff;
+}
 .splitter-v::before {
   left: 50%; top: 50%;
-  width: 2px; height: 22px;
+  width: 3px; height: 28px;
   transform: translate(-50%, -50%);
   background:
-    linear-gradient(var(--fg-2), var(--fg-2)) center/2px 22px no-repeat;
+    linear-gradient(var(--accent), var(--accent)) center/3px 28px no-repeat;
 }
 .splitter-h::before {
   left: 50%; top: 50%;
-  width: 22px; height: 2px;
+  width: 28px; height: 3px;
   transform: translate(-50%, -50%);
   background:
-    linear-gradient(var(--fg-2), var(--fg-2)) center/22px 2px no-repeat;
+    linear-gradient(var(--accent), var(--accent)) center/28px 3px no-repeat;
 }
 /* Suppress the "grabbed" cursor on the splitters' children
    so the resize cursor stays put. The body has a global
@@ -979,6 +1008,52 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   flex: 0 0 auto;
 }
 .path-label { flex: 1; font-size: 12px; color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* v1.1.15: per-type icon tinting. The previous version
+   showed a single emoji icon for every file type, with no
+   way to visually distinguish "this is a music file" from
+   "this is a video file" beyond the emoji itself. On the
+   dark theme the music-note emoji (🎵) was almost
+   invisible — dark-blue glyph on a near-black row. The
+   new per-type classes (.fb-icon-image, .fb-icon-audio,
+   etc.) tag the icon cell with a subtle coloured
+   background so the user can spot the type at a glance
+   even on the dark theme. The class is set by
+   iconClassForFile() in utils/pureFuncs.js. */
+.fb-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  padding: 1px 2px;
+  min-width: 18px;
+  min-height: 18px;
+  font-size: 14px;
+  line-height: 1;
+}
+.fb-icon.fb-icon-image {
+  /* Image: a soft accent-blue tint that suggests "media". */
+  background: rgba(77, 154, 255, 0.12);
+}
+.fb-icon.fb-icon-audio {
+  /* v1.1.15 (reported by user): the music-note icon
+     needed a brighter background to be visible on the
+     dark theme. Use a soft success-green tint to
+     differentiate it from images. */
+  background: rgba(110, 224, 168, 0.18);
+  /* Slightly bigger to draw attention to the previously-
+     invisible icon. */
+  font-size: 15px;
+}
+.fb-icon.fb-icon-video {
+  background: rgba(248, 196, 122, 0.15);
+}
+.fb-icon.fb-icon-text {
+  background: rgba(184, 184, 192, 0.10);
+}
+.fb-icon.fb-icon-other {
+  background: rgba(184, 184, 192, 0.08);
+}
 /* The folder-browser list is now a CSS grid (not flex) so we
    can have a stable column layout that scrolls horizontally
    when the user enables enough columns to exceed the available
@@ -1002,6 +1077,16 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
    max-content + overflow-x: auto on the parent then makes
    the scroll bar appear. */
   align-content: start;
+  /* v1.1.15 (reported by user): hint to the browser that
+     the contents of this grid are independent of the
+     surrounding layout. The browser can paint the
+     list in a separate compositor layer, so resizing
+     the window (which triggers a full layout pass on
+     the ancestors) doesn't have to re-measure every
+     row. The "layout" containment specifically stops
+     the list from triggering an ancestor layout when
+     it reflows internally. */
+  contain: layout style;
 }
 .fb-item {
   display: grid;
@@ -1419,6 +1504,26 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   padding: 8px;
   min-height: 0;
   gap: 4px;
+  /* v1.1.15 (reported by user): performance — hint to the
+     browser that the preview pane's contents (images,
+     audio widget, video) can be painted in a separate
+     compositor layer. Resizing the tool window then
+     doesn't have to re-paint the image on every frame;
+     only the pane's container layer is re-painted. */
+  contain: layout style paint;
+  /* Same scrollbar style as the log pane so the
+     two panes match. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
+}
+.preview-pane-content::-webkit-scrollbar { width: 10px; }
+.preview-pane-content::-webkit-scrollbar-track { background: transparent; }
+.preview-pane-content::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border-radius: 5px;
+}
+.preview-pane-content::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-3);
 }
 .preview-pane-empty {
   color: var(--fg-3);
@@ -2159,6 +2264,37 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   white-space: normal;       /* per-row overflow is handled in the row */
   user-select: none;         /* individual rows opt back in for text */
   -webkit-user-select: none;
+  /* v1.1.15 (reported by user): the previous version
+     had no overflow-y set, so the rows would overflow
+     out of the pane and the scrollbar would never appear
+     when the log was collapsed or the height was
+     constrained. The outer #log element already had
+     overflow: auto, but as a safety net (and to make the
+     behaviour explicit at the .log-pane level too) we
+     set overflow-y: auto here as well. The scrollbar is
+     styled to match the dark theme. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* v1.1.15: visible-but-subtle scrollbar on Windows so
+     the user can see when more entries are available
+     even when the log is short. The native scrollbar
+     on Chromium is invisible by default in dark mode
+     without this hint. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
+}
+.log-pane::-webkit-scrollbar {
+  width: 10px;
+}
+.log-pane::-webkit-scrollbar-track {
+  background: transparent;
+}
+.log-pane::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border-radius: 5px;
+}
+.log-pane::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-3);
 }
 .log-pane .log-event {
   display: grid;
@@ -2203,6 +2339,43 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
 .log-pane .log-event-res.ok  { color: var(--success); }
 .log-pane .log-event-res.err { color: var(--danger);  }
 .log-pane .log-event-res.none { color: transparent; }
+/* v1.1.15 (reported by user): the user wants the entire
+   log row to be tinted by the result so they can scan
+   the log at a glance and see which lines were
+   successful (green) vs failed (red). The previous
+   version only coloured the small ✓ / ✕ icon at the
+   start of the row, which was easy to miss in a long
+   log. The success / danger / info tints are subtle
+   (the headline stays the main colour, only a thin
+   left-bar + a soft row tint changes) so the log still
+   reads as a normal log but the user can spot failures
+   without scanning every icon. The category colour
+   (gen / upscale / bg / optimize / batch / error /
+   cancel) takes precedence on the left border when the
+   row is NOT marked as success / failure (so plain
+   "info" rows still get the category colour). */
+.log-pane .log-event.log-result-ok {
+  /* Soft success tint on the row background, plus a
+     green left border that's bolder than the
+     category-tint border. The headline stays the
+     regular fg colour so the text reads normally. */
+  background: rgba(110, 224, 168, 0.08);
+  border-left-color: var(--success);
+  border-left-width: 3px;
+}
+.log-pane .log-event.log-result-ok .log-event-headline {
+  color: var(--success);
+  font-weight: 500;
+}
+.log-pane .log-event.log-result-err {
+  background: rgba(255, 138, 138, 0.10);
+  border-left-color: var(--danger);
+  border-left-width: 3px;
+}
+.log-pane .log-event.log-result-err .log-event-headline {
+  color: var(--danger);
+  font-weight: 500;
+}
 .log-pane .log-event-headline {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2574,6 +2747,114 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
   pointer-events: none;
   font-weight: 400;
+}
+
+/* ========== File-browser right-click context menu ==========
+   v1.1.15: redesigned the right-click modal so it has a
+   2-column body. The left column holds the action list
+   (Open / Preview, Open in Explorer, image pipeline, file
+   ops). The right column holds an image preview (when the
+   file is an image) or a small "no preview" placeholder. */
+.fb-context-menu-modal {
+  /* Override the default 720px modal width so the two
+     columns have room to breathe. 680px gives the left
+     column enough space for the action list and the
+     right column ~260px for the preview thumbnail. */
+  width: min(680px, 96vw);
+}
+.fb-context-menu-body {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) 260px;
+  gap: 14px;
+  align-items: start;
+  margin-top: 6px;
+}
+.fb-context-menu-left {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.fb-context-menu-left .row {
+  margin-bottom: 6px;
+}
+.fb-context-menu-right {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  min-height: 200px;
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+}
+.fb-context-menu-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-height: 100%;
+}
+.fb-context-menu-thumb {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  cursor: zoom-in;
+  background: var(--bg-3);
+  border-radius: var(--radius-sm);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.fb-context-menu-thumb-caption {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-2);
+  text-align: center;
+  word-break: break-all;
+  max-width: 100%;
+  /* Don't grow the caption — the image owns the flex
+     growth so a tall image can fill the right column. */
+  flex: 0 0 auto;
+}
+.fb-context-menu-preview-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 100%;
+  color: var(--fg-3);
+  font-size: 12px;
+  text-align: center;
+}
+.fb-context-menu-preview-icon {
+  font-size: 56px;
+  line-height: 1;
+  opacity: 0.5;
+}
+.fb-context-menu-preview-label {
+  font-style: italic;
+  color: var(--fg-3);
+  font-size: 12px;
+}
+
+/* v1.1.15: file-prefix row — the "force prefix only" label
+   sits to the right of the input. Compact styling so the
+   row doesn't get noticeably wider than before. */
+.file-prefix-force-only-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-2);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.file-prefix-force-only-cb {
+  margin: 0;
+  cursor: pointer;
 }
 
 /* ========== Keyboard shortcuts box (inside modal) ========== */

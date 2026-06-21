@@ -136,9 +136,39 @@ async function removeBackgroundFile(srcPath, opts = {}) {
   const r = await window.api.isnetbgRun(srcPath, target, { useGpu });
   if (!r || !r.ok) {
     const msg = (r && r.stderr) || (r && ('isnetbg exited with code ' + r.code)) || 'isnetbg failed';
+    // v1.1.15: log the failure to the structured log pane
+    // so the user can see what went wrong (and copy the
+    // error from the log for support).
+    if (typeof window.addLogEvent === 'function') {
+      try {
+        window.addLogEvent({
+          category: 'error',
+          result: 'err',
+          headline: `Background removal failed: ${msg.split('\n')[0]}`,
+          details: [`Source: ${srcPath}`, `Stderr: ${(r && r.stderr) || '(empty)'}`],
+        });
+      } catch (_) { /* best-effort */ }
+    }
     throw new Error(msg);
   }
-  return r.outputPath || target;
+  const outPath = r.outputPath || target;
+  // v1.1.15: log the success. (The post-process chain
+  // also logs it with extra context, so a duplicate entry
+  // may appear in the post-process path — that's
+  // intentional, the user wants the chain to log the
+  // result regardless of which entry point ran the
+  // operation.)
+  if (typeof window.addLogEvent === 'function') {
+    try {
+      window.addLogEvent({
+        category: 'bg',
+        result: 'ok',
+        headline: `Background removed → ${(outPath || '').split(/[\\/]/).pop()}`,
+        details: [`Source: ${srcPath}`, `Output: ${outPath}`],
+      });
+    } catch (_) { /* best-effort */ }
+  }
+  return outPath;
 }
 
 // Upscale an image to multiplier× its original size. If the
@@ -155,6 +185,26 @@ async function removeBackgroundFile(srcPath, opts = {}) {
 async function upscaleImageFile(srcPath, multiplier) {
   multiplier = Math.max(1, Math.min(8, Math.floor(Number(multiplier) || 2)));
 
+  // v1.1.15 (reported by user): the previous version
+  // never logged upscale actions. The user wanted every
+  // pipeline step to appear in the structured log pane so
+  // they can see at a glance what ran. We log the start
+  // here and the success/failure at the end of the
+  // function (with a groupId so the start + end cluster
+  // visually).
+  const upGroup = 'up-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+  const addLog = (opts) => {
+    if (typeof window.addLogEvent === 'function') {
+      try { window.addLogEvent(opts); } catch (_) { /* best-effort */ }
+    }
+  };
+  addLog({
+    category: 'upscale',
+    groupId: upGroup,
+    headline: `Upscale started: ${multiplier}× → ${(srcPath || '').split(/[\\/]/).pop() || 'image'}`,
+    details: [`Source: ${srcPath}`, `Multiplier: ${multiplier}×`],
+  });
+
   // Probe Real-ESRGAN availability. Cheap IPC (just a `which` /
   // bundled-file stat); the result is cached in the main process.
   let reStatus = null;
@@ -162,13 +212,26 @@ async function upscaleImageFile(srcPath, multiplier) {
 
   if (reStatus && reStatus.available) {
     try {
-      return await upscaleImageFileRealesrgan(srcPath, multiplier, reStatus);
+      const outPath = await upscaleImageFileRealesrgan(srcPath, multiplier, reStatus);
+      addLog({
+        category: 'upscale',
+        groupId: upGroup,
+        result: 'ok',
+        headline: `Upscale complete (Real-ESRGAN ${multiplier}×)`,
+        details: [`Output: ${outPath}`],
+      });
+      return outPath;
     } catch (e) {
       // Real-ESRGAN is available but failed (corrupt model, GPU OOM,
       // etc.). Log the error and fall back to the built-in pipeline
       // so the user still gets a result.
       console.error('Real-ESRGAN upscale failed, falling back to built-in:', e);
       toast('Real-ESRGAN upscale failed (' + (e.message || e) + '). Using built-in upscale.', 'warn', 4000);
+      addLog({
+        category: 'upscale',
+        groupId: upGroup,
+        headline: `Real-ESRGAN failed, falling back to built-in: ${e.message || e}`,
+      });
       // fall through to built-in
     }
   } else if (!_reEsrganNotified) {
@@ -212,7 +275,26 @@ async function upscaleImageFile(srcPath, multiplier) {
   // overwrite the previous output.
   const outPath = await uniqueOutputPath(derivedOutputPath(srcPath, `_${multiplier}x`));
   const r = await window.api.fbWrite(outPath, b64);
-  if (!r.ok) throw new Error(r.error || 'fbWrite failed');
+  if (!r.ok) {
+    addLog({
+      category: 'upscale',
+      groupId: upGroup,
+      result: 'err',
+      headline: `Upscale failed: ${r.error || 'fbWrite failed'}`,
+    });
+    throw new Error(r.error || 'fbWrite failed');
+  }
+  // v1.1.15: log the success of the built-in upscale
+  // path so the structured log pane shows every pipeline
+  // step the user ran. (The Real-ESRGAN path logs its
+  // own success above.)
+  addLog({
+    category: 'upscale',
+    groupId: upGroup,
+    result: 'ok',
+    headline: `Upscale complete (built-in ${multiplier}×, ${targetW}×${targetH})`,
+    details: [`Output: ${r.path}`],
+  });
   return r.path;
 }
 
@@ -331,6 +413,23 @@ async function cropImageFile(srcPath, x, y, w, h) {
   // silently overwriting the previous output.
   const out = await uniqueOutputPath(derivedOutputPath(srcPath, `_cropped_${w}x${h}`));
   const r = await window.api.fbWrite(out, b64);
+  // v1.1.15: log the crop action to the structured log pane
+  // so the user can see every pipeline step at a glance.
+  // (Same pattern as upscale / background-removal / optimize.)
+  if (typeof window.addLogEvent === 'function') {
+    try {
+      window.addLogEvent({
+        category: r.ok ? 'upscale' : 'error',
+        result: r.ok ? 'ok' : 'err',
+        headline: r.ok
+          ? `Cropped to ${w}×${h} → ${(out || '').split(/[\\/]/).pop()}`
+          : `Crop failed: ${r.error || 'fbWrite failed'}`,
+        details: r.ok
+          ? [`Source: ${srcPath}`, `Region: ${x},${y} ${w}×${h}`, `Output: ${out}`]
+          : [`Source: ${srcPath}`, `Region: ${x},${y} ${w}×${h}`],
+      });
+    } catch (_) { /* best-effort */ }
+  }
   if (!r.ok) throw new Error(r.error || 'fbWrite failed');
   return r.path;
 }
@@ -361,6 +460,23 @@ async function convertImageFile(srcPath, targetFormat) {
   const stem = lastDot > lastSep ? srcPath.slice(0, lastDot) : srcPath;
   const out = `${dir}${sep}${stem.split(sep).pop()}_converted.${ext}`;
   const r = await window.api.fbWrite(out, b64);
+  // v1.1.15: log the convert action to the structured log
+  // pane. The user wants every pipeline step to be
+  // visible at a glance.
+  if (typeof window.addLogEvent === 'function') {
+    try {
+      window.addLogEvent({
+        category: r.ok ? 'upscale' : 'error',
+        result: r.ok ? 'ok' : 'err',
+        headline: r.ok
+          ? `Converted to ${targetFormat} → ${(out || '').split(/[\\/]/).pop()}`
+          : `Convert failed: ${r.error || 'fbWrite failed'}`,
+        details: r.ok
+          ? [`Source: ${srcPath}`, `Format: ${targetFormat}`, `Output: ${out}`]
+          : [`Source: ${srcPath}`, `Format: ${targetFormat}`],
+      });
+    } catch (_) { /* best-effort */ }
+  }
   if (!r.ok) throw new Error(r.error || 'fbWrite failed');
   return r.path;
 }

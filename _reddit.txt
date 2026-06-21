@@ -1,0 +1,56 @@
+I built a free Windows tool for people using the Minimax APIs and thought some of you here might find it useful.
+
+I originally built it for my own workflow because working directly with the Minimax APIs was more painful than it needed to be. The API is essentially terminal-only, many parameter combinations aren't well documented, some combinations simply don't work together, and sometimes assets fail to generate despite seemingly correct settings.
+
+Managing generated assets afterwards is also tedious: finding files again, comparing versions, upscaling, removing backgrounds, cropping to required aspect ratios, moving assets between tools, etc.
+
+The goal of this project is to provide a complete GUI and asset pipeline around the Minimax APIs. It supports all currently available Minimax models and only exposes parameters that are actually supported by the selected model.
+
+Some features:
+
+GUI-based generation instead of terminal commands
+Support for all Minimax API models
+Asset browsing and management
+Automatic upscaling
+Background removal
+Cropping/trimming to target aspect ratios
+Reusable style, mood and asset presets
+Batch generation and queue management
+Pause/resume support
+Automatic retry and recovery for failed API calls
+
+The feature I'm happiest with is the asset pipeline workflow.
+
+The tool can export an example handoff document describing all supported asset types and settings. You can give that document plus a GDD to an AI and ask it to create a complete asset specification file. Import that file back into the tool and it automatically creates generation jobs for images, music, speech, videos and other assets with the correct settings already applied.
+
+A typical workflow becomes:
+
+GDD → AI-generated handoff document → import → overnight generation run.
+
+The generated assets automatically follow requirements from the handoff, such as aspect ratios and other settings, which removes a lot of manual work.
+
+For context, I've already generated well over 1,000 production-ready assets this way. Images, speech, music and videos have all worked surprisingly well. Sound effects are currently the weak spot, but that's also the area I'm planning to work on next.
+
+One experiment that has shown some promise is generating songs with very specific prompts and then extracting, editing and reusing suitable sounds from intros or other sections. I'm already sketching out ideas for what a dedicated sound-effect workflow could look like, but that will be a fairly large project and probably take quite some time.
+
+Another reason I built this is that the Minimax token subscription feels surprisingly generous. Hundreds of 2048x2048 images seem to consume only a small fraction of the weekly limits. Some weeks I actually struggle to spend the entire allowance before it resets. Having a structured asset pipeline and batch generation system makes it much easier to convert the remaining quota into useful project assets.
+
+A common question might be: why not just use a Minimax web interface?
+
+At least as far as I've been able to find, there doesn't seem to be an official GUI available for subscription-plan API users. Most solutions I found were terminal-based, required additional payments, or didn't accept my subscription credentials at all.
+
+The tool should also work with the pay-as-you-go API, but it was only developed and tested against a token subscription plan. If anyone here uses PAYG, I'd be very interested in hearing whether everything works as expected.
+
+Privacy-wise, everything runs locally except for the actual API requests sent to Minimax. Assets stay on your machine, API keys are not sent anywhere else, and there is even a mode that avoids storing API keys between sessions. The project is fully open source if you want to verify any of that yourself.
+
+As a side note, roughly 80% of the application was actually written using Minimax M3 itself, which worked far better than I expected. A few stubborn problems eventually required Claude Opus, but overall I was genuinely impressed by how much of the project M3 was able to build.
+
+I haven't spent much time with tools like ComfyUI, InvokeAI or Stability Matrix, so I can't make a fair feature comparison. My focus wasn't image generation itself, but building a practical asset production pipeline around the Minimax APIs. If you've used those tools extensively, I'd actually be interested in hearing what workflow features they have that you'd miss here.
+
+The project is open source and available on GitHub.
+
+The main reason I'm posting this is feedback. The tool already does everything I personally need and the core workflows feel pretty complete. What I'd really like to learn is how other people approach AI asset generation at scale, what workflow bottlenecks still annoy them, and what features or improvements they would consider genuinely useful.
+
+I've attached a screenshot/GIF of the workflow below.
+
+GitHub: [link]

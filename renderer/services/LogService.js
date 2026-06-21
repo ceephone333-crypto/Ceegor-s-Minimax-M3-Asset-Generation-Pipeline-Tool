@@ -127,9 +127,18 @@ function renderLogEvent(ev) {
   // belong to which generated picture / generation run. The
   // group class is resolved to one of 12 stable hues (see
   // _groupClass above) and cycled for new IDs.
+  // v1.1.15: also tag the row with a result class so the
+  // CSS can colour the WHOLE row (not just the small icon)
+  // based on the result. Green for ok, red for err, no class
+  // for info. The user reported that the small icon at the
+  // start of the row was easy to miss in a long log, so the
+  // row-level tint makes the success/failure status obvious
+  // at a glance.
   const groupCls = _groupClass(ev.groupId);
+  const resultCls = ev.result === 'ok' ? ' log-result-ok'
+    : ev.result === 'err' ? ' log-result-err' : '';
   const row = el('div', {
-    class: 'log-event' + (groupCls ? ' ' + groupCls : ''),
+    class: 'log-event' + (groupCls ? ' ' + groupCls : '') + resultCls,
     'data-log-id': ev.id,
     'data-log-cat': ev.category,
     'data-log-group': ev.groupId || '',

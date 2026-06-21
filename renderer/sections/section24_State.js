@@ -19,11 +19,12 @@
 // `tabs` is special-cased (the renderer holds it as state.tabSettings)
 // and is added to the snapshot before sending.
 window.STATE_PERSIST_KEYS = [
-  'currentTab', 'fbDirs', 'filePrefix', 'realesrganModel',
+  'currentTab', 'fbDirs', 'filePrefix', 'filePrefixForceOnly',
+  'realesrganModel',
   'realesrganFirstRunDismissed', 'upscaleEnabled', 'upscaleSettings',
   'removeBackgroundEnabled', 'removeBackgroundUseGpu',
   'optimizeSettings', 'layoutSettings', 'fbSort', 'fbColumns',
-  'fbThumbnails', 'lastSeenVersion', 'popupPolicy', 'seenPopups',
+  'fbThumbnails', 'fbShowAllFiles', 'lastSeenVersion', 'popupPolicy', 'seenPopups',
 ];
 window.state = {
   config: { api_key: '', output_dir: '', region: 'global', theme: 'dark', styles: [] },
@@ -49,6 +50,19 @@ window.state = {
   // name. Mirrored on all 4 tabs (one input on each) so the user can
   // tweak it without switching tabs. Persisted to state.json.
   filePrefix: '',
+  // v1.1.15 (reported by user): when true, every generated
+  // file is named ONLY `<prefix><6-digit number>.<ext>` (e.g.
+  // `temp000001.jpg`, `temp000002.png`, …). The "6-digit
+  // number, starting at 000001" is the user's spec — the
+  // counter is per-run, NOT per-prefix, so a user who switches
+  // from "temp" to "out" gets `out000001.jpg`, not
+  // `out000006.jpg`. The counter is reset to 0 at the start
+  // of every Generate click (i.e. the FIRST click of a new
+  // run starts at 000001) so the user can predict the next
+  // filename without having to count by hand. Persisted to
+  // state.json so the user's "force prefix only" preference
+  // survives a restart.
+  filePrefixForceOnly: false,
   // Real-ESRGAN model name (passed to the ncnn-vulkan binary via
   // `-n <model>`). The default is the general-purpose 4× BSD-3 model.
   // Users pick a different one in ⚙ Settings → Image upscaling →
@@ -243,6 +257,17 @@ window.state = {
   // read like a normal Explorer list instead of a centred
   // badge). Persisted to state.json.
   fbThumbnails: false,
+  // v1.1.15 (reported by user): the user wanted the file
+  // browser to default to "only show supported asset types" so
+  // .exe, .md, .json helpers, temp files etc. don't clutter
+  // the list. When false (the default), the renderer filters
+  // the list down to image / audio / video / text assets +
+  // folders (see SUPPORTED_FILE_EXTS in fileBrowser1.js). The
+  // user can flip this off in the Folder options dialog to
+  // see every file (useful for debugging / inspecting the
+  // folder). Persisted to state.json so the choice survives a
+  // restart.
+  fbShowAllFiles: false,
   // Structured event log. Each entry is one line in the
   // bottom-left log pane. Replaces the old <pre id="log">
   // raw-text approach (which didn't support selection / expand

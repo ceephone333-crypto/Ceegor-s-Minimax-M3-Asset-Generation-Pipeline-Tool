@@ -154,10 +154,36 @@ function reveal(p) {
   try { shell.showItemInFolder(p); } catch (_) { /* ignore */ }
 }
 
+// v1.1.15 (reported by user): open a NEW Windows Explorer
+// window at the file's parent folder. This is the standard
+// "explore" shell verb — `shell.showItemInFolder` (above) only
+// highlights the file in an existing window, whereas
+// `shell.openPath(parentDir)` opens a fresh Explorer window.
+// The caller passes a file path; we resolve the parent dir
+// here so the renderer doesn't have to know the platform-
+// specific separator logic.
+function openInExplorer(p) {
+  if (!p || typeof p !== 'string') {
+    throw new Error('Path is required.');
+  }
+  const path = require('path');
+  // `path.dirname` returns the parent dir for a file path,
+  // and the path itself for a directory path. We want the
+  // "containing" folder either way, so the resulting
+  // Explorer window always lands on a folder.
+  const parent = path.dirname(p);
+  // shell.openPath returns a Promise<string> ('' on success,
+  // an error string on failure). We wrap it so the IPC
+  // handler gets a clean {ok, error} shape.
+  return shell.openPath(parent).then((err) => {
+    if (err) throw new Error(String(err));
+  });
+}
+
 async function readFile(p, maxBytes = 2 * 1024 * 1024) {
   const st = await fs.stat(p);
   if (st.size > maxBytes) throw new Error(`File too large to preview (${st.size} bytes).`);
   return fs.readFile(p);
 }
 
-module.exports = { list, mkdir, rename, moveTo, copyTo, deletePath, reveal, readFile, validateName };
+module.exports = { list, mkdir, rename, moveTo, copyTo, deletePath, reveal, openInExplorer, readFile, validateName };

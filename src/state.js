@@ -84,6 +84,14 @@ function write(s) {
     filePrefix: (typeof s?.filePrefix === 'string')
       ? s.filePrefix.slice(0, 64)
       : '',
+    // v1.1.15 (reported by user): when true, every generated
+    // file is named only `<prefix><6-digit number>.<ext>`.
+    // The "6-digit number, starting at 000001" is the user's
+    // spec; the counter is per-run, NOT per-prefix, so a user
+    // who switches from "temp" to "out" gets `out000001.jpg`,
+    // not `out000006.jpg`. Default: false (legacy slugified
+    // filenames).
+    filePrefixForceOnly: s?.filePrefixForceOnly === true,
     // First-run prompt for the optional Real-ESRGAN binary. The
     // built-in multi-step canvas pipeline is always available, so the
     // prompt is informational only — but if the user dismisses it
@@ -172,6 +180,13 @@ function write(s) {
     // round-trip the boolean here so a corrupted state.json can't
     // sneak a string through.
     fbThumbnails: !!(s && s.fbThumbnails),
+    // v1.1.15 (reported by user): the file browser used to
+    // show every file in the folder (.exe, .md, .json helpers,
+    // etc.) which cluttered the list. Default: false — the
+    // renderer filters down to image / audio / video / text
+    // assets + folders. The user can opt out via the Folder
+    // options dialog to see every file.
+    fbShowAllFiles: s?.fbShowAllFiles === true,
     // v1.1.1 polish: the package.json version the user last
     // dismissed the "What's new" toast for. The renderer
     // shows the toast only when the current version is

@@ -11,22 +11,19 @@ window.TABS.image = {
     const prompt = buildParamRow('Prompt (prefilled, editable)',
       { kind: 'textarea', value: this.prefilled, help: 'The description of the image to generate. Sent as --prompt. Max 1500 characters.' });
     const styleRow = buildStyleRow('image', 'Select a style preset. Its value is prepended (with a comma) to your manual prompt before the request is sent.');
-    const stylePreview = buildStylePreviewBlock();
-    const tabState = { previewEl: stylePreview._previewEl, selEl: styleRow.sel, manualEl: prompt.input };
-    const updatePreview = () => updateStylePreview(tabState);
-    styleRow.sel.addEventListener('change', updatePreview);
-    prompt.input.addEventListener('input', updatePreview);
-    updatePreview();
-    // mmx image API hard limit is 1500 chars on --prompt, but the
-    // user explicitly asked for a 2000-char cap on the textarea
-    // (room to draft longer prompts and trim them down). The counter
-    // turns red above 2000.
+    // v1.1.15 (reported by user): the previous version also
+    // rendered a `buildStylePreviewBlock()` element under
+    // the prompt, which showed the final composed prompt
+    // (style + manual + extra prefix). The user found it
+    // empty-looking and wanted it removed. We keep the
+    // helper exported so other callers don't break, but
+    // the tab no longer mounts it.
+    const tabState = { selEl: styleRow.sel, manualEl: prompt.input };
     const counter = buildPromptCounter({ selEl: styleRow.sel, manualEl: prompt.input, max: 2000, id: 'image' });
     root.appendChild(el('div', { class: 'section' }, [
       el('h3', {}, 'Prompt'),
       styleRow.row,
       prompt.row,
-      stylePreview,
       counter.wrap,
     ]));
 
@@ -348,11 +345,27 @@ window.TABS.image = {
         return args;
       }
       // Returns the resolved outFile for this variant (or outDir when --out-dir).
+      // v1.1.15 (reported by user): when the "force prefix only"
+      // checkbox is on, every generated file is named
+      // `<prefix><6-digit counter>.png` (e.g. `temp000001.png`).
+      // The counter is per-run (NOT per-prefix) and resets to 0
+      // at the start of every Generate click so the first file
+      // is `<prefix>000001.<ext>`, the second is
+      // `<prefix>000002.<ext>`, and so on.
+      const forceCounter = { n: 0 };
       function makeOutPath(v) {
         if (useOutDir) return outDir;
         const ts = timestamp();
         const variantTag = variantsCount > 1 ? `_v${v}` : '';
         const prefix = (state.filePrefix || '').trim();
+        if (state.filePrefixForceOnly) {
+          // Force-prefix-only: counter is per-run, so the
+          // first variant of the first item is 000001. The
+          // _v tag is dropped because the user explicitly
+          // asked for the counter alone (no slug, no
+          // timestamp, no variant tag).
+          return uniquePath(outDir, buildForcePrefixFileName(forceCounter, prefix, 'png'));
+        }
         return uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.png`);
       }
       try {

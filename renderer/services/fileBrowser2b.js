@@ -99,12 +99,20 @@ async function startGenPolling() {
       const r = await window.api.fbList(state.fbDir);
       if (!r || !r.ok) return;
       const newItems = r.items || [];
+      // v1.1.15: filter the polled list down to supported
+      // asset types (see isItemVisibleInList in fileBrowser1.js)
+      // so the per-tick re-render matches the user's "show all
+      // files" toggle. The fresh-detection below still walks the
+      // full newItems list (we want to highlight every newly-
+      // created file as a thumbnail, even if it's currently
+      // hidden by the type filter).
+      const visibleItems = newItems.filter(isItemVisibleInList);
       const newPaths = newItems.map((it) => it.path);
       const prev = new Set((state._lastPolledItems || []).map((p) => p.toLowerCase()));
       const fresh = newPaths.filter((p) => !prev.has(p.toLowerCase()));
       // 1. Re-render the file-browser list so the new file is
       //    visible + get the new state._fbItems snapshot.
-      const sorted = sortFbItems(newItems, state.fbSort);
+      const sorted = sortFbItems(visibleItems, state.fbSort);
       renderFbList(sorted);
       applyFileSearch();
       state._lastPolledItems = newPaths;
@@ -403,20 +411,56 @@ async function fbClipboardPaste(destDir) {
 }
 
 function showItemContextMenu(it, x, y) {
+  // v1.1.15 (reported by user): redesigned the right-click
+  // context menu so it has TWO columns:
+  //   - LEFT: the action list (Open / Preview, Open in
+  //     Explorer, image-pipeline, file-level actions). The
+  //     same options as before, just better organized.
+  //   - RIGHT: an image preview (a thumbnail of the actual
+  //     file) when the item is an image; otherwise an empty
+  //     space. The preview is the same one the user sees in
+  //     the picture-preview pane, but a click on it opens
+  //     the full-size image overlay (same behaviour as the
+  //     main preview pane).
+  //
+  // Also added an "Open in Explorer" action that opens a
+  // new Windows Explorer window AT the file's folder
+  // (selecting the file). This is the standard Windows
+  // shell verb "explore" — the previous "Reveal in Explorer"
+  // only highlighted the file in an existing window.
+  //
+  // The help icons in the action list are now
+  // hover-tooltips (data-help), not click-to-open modals.
+  // This matches the generation screens (e.g. the --model
+  // row's help icon) where the user can hover for a
+  // quick explanation without having to manually close
+  // a modal afterwards.
   showModal((m, close) => {
+    m.classList.add('fb-context-menu-modal');
     m.appendChild(el('h2', {}, it.name));
     m.appendChild(el('div', { class: 'meta', style: 'margin-bottom: 8px; color: var(--fg-2);' }, it.path));
 
-    // File-info block. Always shown. Lists the type, size, modified
-    // time, and (for images) the natural resolution. Resolution
-    // has to be decoded from the file, so we render a "detecting…"
-    // placeholder first and fill it in once loadImageFromFile
-    // resolves.
+    // The two-column body. The right column (preview) is
+    // hidden for non-image files via CSS (display: none on
+    // .fb-context-menu-preview-empty). The left column
+    // always shows.
+    const body = el('div', { class: 'fb-context-menu-body' });
+    const leftCol = el('div', { class: 'fb-context-menu-left' });
+    const rightCol = el('div', { class: 'fb-context-menu-right' });
+    body.appendChild(leftCol);
+    body.appendChild(rightCol);
+    m.appendChild(body);
+
+    // File-info block. Always shown. Lists the type, size,
+    // modified time, and (for images) the natural
+    // resolution. Resolution has to be decoded from the
+    // file, so we render a "detecting…" placeholder first
+    // and fill it in once loadImageFromFile resolves.
     const isImage = !it.isDir && ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(it.ext);
-    // Same set the audio-cutter dialog + audio preview accept. The
-    // list is duplicated on purpose so a future change here doesn't
-    // silently drop a format the cutter would still handle (or vice
-    // versa).
+    // Same set the audio-cutter dialog + audio preview
+    // accept. The list is duplicated on purpose so a
+    // future change here doesn't silently drop a format
+    // the cutter would still handle (or vice versa).
     const isAudio = !it.isDir && ['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.opus', '.aac', '.wma', '.aif', '.aiff'].includes(it.ext);
     const info = el('div', { class: 'fb-item-info' });
     if (it.isDir) {
@@ -458,55 +502,62 @@ function showItemContextMenu(it, x, y) {
         });
       }
     }
-    m.appendChild(info);
+    leftCol.appendChild(info);
 
-    const row1 = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => { close(); await openItem(it); } }, 'Open / Preview'))]);
-    const row2 = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => { close(); await window.api.fbReveal(it.path); } }, 'Reveal in Explorer'))]);
+    // The first two action rows: Open / Preview + Open in
+    // Explorer. The user explicitly asked for "Open in
+    // Explorer" to open a new Explorer window (not just
+    // reveal in an existing one). We add an "fb:openInExplorer"
+    // IPC handler in the main process that calls
+    // `shell.openPath(parentDir)` — see registerFileBrowserIpc.js
+    // and src/fileBrowser.js.
+    const rowOpenPreview = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => { close(); await openItem(it); } }, 'Open / Preview'))]);
+    const rowOpenExplorer = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => {
+      close();
+      try {
+        const r = await window.api.fbOpenInExplorer(it.path);
+        if (!r || !r.ok) toast('Open in Explorer failed: ' + ((r && r.error) || 'unknown error'), 'err', 4000);
+      } catch (e) {
+        toast('Open in Explorer failed: ' + (e && e.message || e), 'err', 4000);
+      }
+    } }, 'Open in Explorer'))]);
+    const rowReveal = el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => { close(); await window.api.fbReveal(it.path); } }, 'Reveal in Explorer'))]);
+
     // Image-pipeline items: Upscale / Crop / Convert / Remove
     // background. Only show for supported image types, in the order
     // the user expects (transform first, then format, then the
     // transparency tool). The "Remove background" action is always
     // shown when the binary is available, and surfaces a precise
     // install hint when it isn't (no silent no-op).
-    let nextRow = 3;
+    //
+    // v1.1.15: replaced the click-to-open helpButton with
+    // hover-tooltips (data-help). The "?" is rendered as a
+    // <span> with class "help" and the topic key as a
+    // data-help attribute; the existing
+    // setupHoverHelpTooltips() picks it up and shows a
+    // tooltip on hover. The tooltip disappears when the
+    // user moves the cursor away — no modal to close.
     const rows = [];
     if (isImage) {
-      // Each row gets a small help "?" button next to the
-      // action button so the user can read a longer
-      // explanation of what each pipeline step does before
-      // they trigger it. This is the same helpButton factory
-      // the form labels use — clicking the "?" opens the
-      // help modal for the topic; the action button itself
-      // still runs the action.
       const rU = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
         el('button', { class: 'btn-mini', onclick: () => { close(); showUpscaleDirect(it.path); } }, '🔍 Upscale…'),
-        helpButton('ctx.upscale'),
+        el('span', { class: 'help', 'data-help': 'Make the image bigger (2×, 3×, or 4×) using the built-in canvas pipeline, or the higher-quality Real-ESRGAN binary if installed. The new file is written next to the original with a "_2x" / "_3x" / "_4x" suffix in the filename.', title: 'Upscale' }, '?'),
       ])]);
       const rC = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
         el('button', { class: 'btn-mini', onclick: () => { close(); showCropOverlay(it.path); } }, '✂ Crop…'),
-        helpButton('ctx.crop'),
+        el('span', { class: 'help', 'data-help': 'Crop the image to a specific rectangle. Drag the crop frame with the mouse, or type exact W × H values. The cropped file is written next to the original with a "_cropped_WxH" suffix.', title: 'Crop' }, '?'),
       ])]);
       const rF = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
         el('button', { class: 'btn-mini', onclick: () => { close(); showConvertOverlay(it.path); } }, '⇄ Convert format…'),
-        helpButton('ctx.convert'),
+        el('span', { class: 'help', 'data-help': 'Re-encode the image to a different format. PNG is lossless (good for screenshots / illustrations, supports transparency). JPEG is much smaller (good for photos, no transparency). WebP is a modern middle ground (smaller than JPEG, supports transparency, but less universal).', title: 'Convert format' }, '?'),
       ])]);
-      // "Optimize / Compress" — re-encodes the image to shrink its
-      // file size with Sharp / libvips while preserving the best-
-      // possible visual quality. Sits between "Convert format" and
-      // "Remove background" in the menu order because it's a
-      // quality / size operation (similar to convert) and the user
-      // typically runs the size-shrink BEFORE the more expensive
-      // background-removal step. The dialog is always available
-      // (no binary / model check needed) because Sharp is a hard
-      // dep of the project — if it isn't installed the IPC will
-      // return a precise "sharp is not installed" error.
       const rO = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
         el('button', { class: 'btn-mini', onclick: () => { close(); showOptimizeOverlay(it.path); } }, '🗜 Optimize / Compress…'),
-        helpButton('ctx.optimize'),
+        el('span', { class: 'help', 'data-help': 'Shrink the file size while keeping the image looking (almost) the same. The default quality of 82 is the "perceptually lossless" sweet spot for photos. You can also re-encode to WebP / AVIF for further size savings, and strip non-essential EXIF data (camera model, GPS, software tag) while keeping the colour profile.', title: 'Optimize / Compress' }, '?'),
       ])]);
       const rB = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
         el('button', { class: 'btn-mini', onclick: () => { close(); runRemoveBackgroundOnItem(it); } }, '✨ Remove background'),
-        helpButton('ctx.removeBackground'),
+        el('span', { class: 'help', 'data-help': 'Replace the background of the image with transparency. Uses the optional IS-Net model (a state-of-the-art segmentation model) — the tool walks you through the one-time install on first use. The result is a transparent PNG written next to the original.', title: 'Remove background' }, '?'),
       ])]);
       rows.push(rU, rC, rF, rO, rB);
     }
@@ -528,17 +579,69 @@ function showItemContextMenu(it, x, y) {
             toast('Audio cutter failed: ' + (e && e.message || e), 'err', 5000);
           }
         } }, '✂ Audio cut…'),
-        helpButton('ctx.audioCut'),
+        el('span', { class: 'help', 'data-help': 'Open the audio in a waveform editor. Drag the two markers to set the selection, or use the time inputs for millisecond precision. Quality-of-life helpers: "Auto-trim silence" removes leading/trailing silence, "Snap to zero-crossing" prevents clicks at the cut edges, and a configurable micro-fade (5 ms by default) buries any residual click. Pick a different output format (MP3 / WAV / OGG / Opus / FLAC / M4A) from the dropdown, then "Export" writes the trimmed file next to the original.', title: 'Audio cut' }, '?'),
       ])]);
       rows.push(rA);
     }
+    rows.push(rowOpenPreview, rowOpenExplorer, rowReveal);
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); fbClipboardCopy([it.path]); } }, 'Copy'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); fbClipboardCut([it.path]); } }, 'Cut'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); promptRename(it); } }, 'Rename…'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: () => { close(); promptMove(it); } }, 'Move to…'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini', onclick: async () => { close(); await fbClipboardPaste(state.fbDir); } }, 'Paste here'))]));
     rows.push(el('div', { class: 'row' }, [el('div', {}, el('button', { class: 'btn-mini danger', onclick: () => { close(); confirmDelete(it); } }, 'Delete'))]));
-    m.append(...rows);
+    leftCol.append(...rows);
+
+    // Right column: image preview. For image files, show
+    // a centered thumbnail of the actual file with a
+    // "click for full-size" hint. For non-image files, show
+    // a small "no preview" placeholder. The thumbnail
+    // itself is the same DOM as the picture-preview pane
+    // (img with file:// URL); clicking it opens the
+    // full-size image overlay (same overlay used by the
+    // preview pane, so the user gets the same zoom / arrow-
+    // key behaviour).
+    if (isImage) {
+      const previewWrap = el('div', { class: 'fb-context-menu-preview' });
+      const filename = it.name || 'image';
+      const url = fileUrl(it.path);
+      const img = el('img', {
+        src: url,
+        alt: filename,
+        class: 'fb-context-menu-thumb',
+        title: 'Click to open full-size preview',
+      });
+      let clickBound = false;
+      const bindClick = (w, h) => {
+        if (clickBound) return;
+        clickBound = true;
+        img.addEventListener('click', () => {
+          close();
+          openImageOverlay(url, filename, w, h, it.path);
+        });
+      };
+      // Pre-load to get the natural size for the overlay.
+      const probe = new Image();
+      probe.onload = () => bindClick(probe.naturalWidth, probe.naturalHeight);
+      probe.onerror = () => bindClick(0, 0);
+      probe.src = url;
+      // Fallback: if the probe never resolves, still allow
+      // a click so the user isn't locked out of the overlay.
+      setTimeout(() => bindClick(0, 0), 3000);
+      previewWrap.appendChild(img);
+      previewWrap.appendChild(el('div', { class: 'fb-context-menu-thumb-caption' }, filename));
+      rightCol.appendChild(previewWrap);
+    } else {
+      // Non-image file: show a small placeholder so the
+      // right column doesn't look broken (it just has
+      // nothing useful to display).
+      const empty = el('div', { class: 'fb-context-menu-preview-empty' }, [
+        el('div', { class: 'fb-context-menu-preview-icon' }, it.isDir ? '📁' : (window.iconClassForFile ? '' : '')),
+        el('div', { class: 'fb-context-menu-preview-label' }, it.isDir ? 'Folder' : 'No preview'),
+      ]);
+      rightCol.appendChild(empty);
+    }
+
     const footer = el('div', { class: 'footer' }, el('button', { class: 'btn-mini', onclick: close }, 'Close'));
     m.appendChild(footer);
   });

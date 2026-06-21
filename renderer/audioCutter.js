@@ -343,6 +343,31 @@
         const dstPath = joinPath(dirName(srcPath), baseName(outName));
         exportBtn.disabled = true; exportBtn.textContent = 'Exporting…';
         stopPlay();
+        // v1.1.15 (reported by user): the previous version
+        // never logged audio trim actions. Log the start
+        // here so the user can see the trim ran, and the
+        // success/failure at the end (with a groupId so
+        // they cluster visually). Same pattern as the
+        // image pipeline (upscale / crop / convert /
+        // optimize).
+        const cutGroup = 'cut-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+        const addLog = (opts) => {
+          if (typeof window.addLogEvent === 'function') {
+            try { window.addLogEvent(opts); } catch (_) { /* best-effort */ }
+          }
+        };
+        addLog({
+          category: 'gen',
+          groupId: cutGroup,
+          headline: `Audio trim started: ${baseName(srcPath)}`,
+          details: [
+            `Source: ${srcPath}`,
+            `Selection: ${fmtTime(startSec)} → ${fmtTime(endSec)} (${(endSec - startSec).toFixed(2)}s)`,
+            `Fade: ${fadeCb.checked ? Math.max(0, parseInt(fadeMsInp.value, 10) || 0) + 'ms' : 'off'}`,
+            `Lossless: ${!!losslessCb.checked}`,
+            `Output: ${baseName(outName)}`,
+          ],
+        });
         try {
           const r = await window.api.audioCut(srcPath, dstPath, {
             startSec, endSec,
@@ -351,13 +376,32 @@
             copy: !!losslessCb.checked,
           });
           if (r && r.ok) {
+            addLog({
+              category: 'gen',
+              groupId: cutGroup,
+              result: 'ok',
+              headline: `Audio trim complete: ${baseName(r.outputPath || dstPath)}`,
+              details: [`Output: ${r.outputPath || dstPath}`],
+            });
             toast(`Saved trimmed clip: ${baseName(r.outputPath || dstPath)}`, 'ok', 4000);
             if (typeof refreshBrowser === 'function') { try { await refreshBrowser(); } catch (_) {} }
             close();
           } else {
+            addLog({
+              category: 'error',
+              groupId: cutGroup,
+              result: 'err',
+              headline: `Audio trim failed: ${(r && r.error) || 'unknown error'}`,
+            });
             showErr('Export failed: ' + ((r && r.error) || 'unknown error'));
           }
         } catch (e) {
+          addLog({
+            category: 'error',
+            groupId: cutGroup,
+            result: 'err',
+            headline: `Audio trim failed: ${(e && e.message) || e}`,
+          });
           showErr('Export error: ' + (e && e.message || e));
         }
         exportBtn.disabled = false; exportBtn.textContent = '✂ Export trimmed clip';

@@ -11,6 +11,59 @@ var state = window.state || {};
 var refreshBrowser; // forward-declaration, definition weiter unten
 var applyFileSearch; // forward-declaration
 
+// v1.1.15 (reported by user): the file browser used to show
+// every file in the folder — including .exe, .md, .json
+// helpers, temporary files, etc. — which cluttered the list
+// with stuff the tool has no use for. We now filter the items
+// the renderer receives down to the supported asset types
+// (images, audio, video, text/lrc) PLUS directories, and
+// silently drop anything else. Folders are ALWAYS shown (a
+// folder might contain a "generated" subfolder the user
+// wants to navigate into) so the ".." parent row + every
+// subdir stays visible. The user can opt out of the filter
+// via a new "Show all files" toggle in the Folder options
+// dialog (default: OFF — only the supported types show).
+//
+// One global list, kept in sync with the iconForFile / openItem
+// / type-filter dropdowns so a future change to a single source
+// (e.g. "we now also preview .heic") flips the behaviour in
+// every consumer. Directories always pass (their "type" is
+// "folder", no extension).
+const SUPPORTED_FILE_EXTS = [
+  // Images (preview + image-pipeline + thumbnails)
+  '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp',
+  // Audio (preview + audio cutter)
+  '.mp3', '.wav', '.flac', '.ogg', '.m4a', '.opus',
+  '.pcm', '.aac', '.wma', '.aif', '.aiff',
+  // Video (preview)
+  '.mp4', '.webm', '.mov', '.mkv', '.avi',
+  // Text (subtitles / lyrics / notes)
+  '.txt', '.srt', '.json', '.md', '.lrc',
+];
+const _supportedExtSet = new Set(SUPPORTED_FILE_EXTS);
+function isSupportedAssetFile(it) {
+  if (!it) return false;
+  if (it.isDir) return true;
+  const ext = (it.ext || '').toLowerCase();
+  return _supportedExtSet.has(ext);
+}
+
+// v1.1.15: when the user enables "Show all files" in the
+// Folder options, this is the live filter. The function is a
+// one-liner (used both by refreshBrowser to drop items at the
+// list-source and by applyFileSearch to double-check the
+// typeFilter dropdown), so the two paths stay in lock-step.
+function isItemVisibleInList(it) {
+  if (!it) return false;
+  if (it.isDir) return true;
+  // When the user wants to see everything, skip the supported-
+  // types check. We still respect the typeFilter dropdown below
+  // (so a user who set "Images only" doesn't suddenly see
+  // .exes too).
+  if (state.fbShowAllFiles) return true;
+  return _supportedExtSet.has((it.ext || '').toLowerCase());
+}
+
 // Phase 4 Fix 19: explizites window-Exposing der wichtigsten
 // Functions damit sie auch dann definiert sind wenn die Datei
 // spaeter abbricht (z.B. weil 'state' nicht verfuegbar).
@@ -71,7 +124,16 @@ async function refreshBrowser(opts = {}) {
   // flicker of "server-side default" → "user's sort" on every
   // refresh). sortFbItems never mutates the input array.
   const sorted = sortFbItems(target.items, state.fbSort);
-  renderFbList(sorted);
+  // v1.1.15 (reported by user): drop any items that the tool
+  // can't do anything with. The previous version showed every
+  // file in the folder (including .exe, .md, .json helpers,
+  // .DS_Store, etc.) which cluttered the list with stuff the
+  // tool has no use for. Directories always pass; for files
+  // we use isItemVisibleInList() so the user's "Show all
+  // files" option in the Folder options dialog is honoured
+  // (default: OFF — only supported asset types show).
+  const visible = sorted.filter(isItemVisibleInList);
+  renderFbList(visible);
   // Apply current search filter if any
   applyFileSearch();
 }
@@ -126,12 +188,24 @@ function _buildFbIconCell(it) {
       wrap.classList.remove('fb-thumb');
       wrap.classList.add('fb-icon');
       wrap.textContent = iconForFile(it.ext);
+      // v1.1.15: also tag the fallback with the per-type CSS
+      // class so the audio icon (the dark note that prompted
+      // this report) is colour-tinted on the dark theme and
+      // stays visible at a glance.
+      const ic = iconClassForFile(it.ext);
+      if (ic) wrap.classList.add(ic);
       wrap.title = it.name;
     });
     wrap.appendChild(img);
     return wrap;
   }
-  return el('span', { class: 'icon fb-icon', title: '' }, it.isDir ? '📁' : iconForFile(it.ext));
+  // v1.1.15: also apply the per-type icon class on the plain
+  // icon path. The class lets styles.css colour-tint the
+  // icon's background (so the music-note icon stays visible on
+  // the dark theme). Without this the music-note icon is
+  // effectively invisible on the dark-bg row.
+  const iconCls = 'icon fb-icon' + (it.isDir ? '' : ' ' + (iconClassForFile(it.ext) || ''));
+  return el('span', { class: iconCls, title: '' }, it.isDir ? '📁' : iconForFile(it.ext));
 }
 
 // Open the folder-options overlay. Lists every optional column
@@ -169,6 +243,31 @@ function openFolderOptions() {
       el('span', {}, 'Show image thumbnails in the folder list'),
     ]);
     m.appendChild(thumbLabel);
+
+    // v1.1.15 (reported by user): the previous version
+    // showed every file in the folder (.exe, .md, .json
+    // helpers, temp files) which cluttered the list with
+    // stuff the tool has no use for. The new default hides
+    // any non-supported extension; the user can flip the
+    // switch back to "show all" if they want to see the
+    // other files (e.g. a custom binary helper they dropped
+    // into the output folder).
+    const showAllCb = el('input', { type: 'checkbox', class: 'folder-options-show-all-cb' });
+    showAllCb.checked = !!state.fbShowAllFiles;
+    showAllCb.addEventListener('change', () => {
+      state.fbShowAllFiles = !!showAllCb.checked;
+      scheduleStateSave();
+      // Re-fetch + re-render the list so the filter is
+      // applied (or lifted) immediately.
+      if (typeof refreshBrowser === 'function') {
+        refreshBrowser();
+      }
+    });
+    const showAllLabel = el('label', { class: 'folder-options-show-all-label' }, [
+      showAllCb,
+      el('span', {}, 'Show all files (including unsupported types like .exe / .md)'),
+    ]);
+    m.appendChild(showAllLabel);
 
     // Column checkboxes
     const cols = normalizeFbColumns(state.fbColumns);
@@ -255,6 +354,9 @@ function applyFileSearch() {
 // wenn spaeter eine Zeile in dieser Datei crasht.
 window.applyFileSearch = applyFileSearch;
 window.refreshBrowser = refreshBrowser;
+window.isItemVisibleInList = isItemVisibleInList;
+window.isSupportedAssetFile = isSupportedAssetFile;
+window.SUPPORTED_FILE_EXTS = SUPPORTED_FILE_EXTS;
 // Bare-Name-Aliase (zusaetzlich zu window.X) damit jeder
 // Lookup-Pfad funktioniert.
 var applyFileSearch = window.applyFileSearch;
