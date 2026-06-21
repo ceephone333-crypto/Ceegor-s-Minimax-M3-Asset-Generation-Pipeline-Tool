@@ -93,3 +93,4 @@ pnpm-lock.yaml
 .env.*.local
 *.pem
 *.key
+dist-verify/

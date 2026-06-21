@@ -57,16 +57,16 @@
       "preload.js",
       "src/**/*",
       "renderer/**/*",
-      "voices.json",
-      "node_modules/onnxruntime-node/**/*",
-      "node_modules/sharp/**/*",
-      "node_modules/ffmpeg-static/**/*"
+      "voices.json"
     ],
     "asarUnpack": [
-      "node_modules/onnxruntime-node/bin/native/onnxruntime_binding.node",
-      "node_modules/sharp/build/Release/*.node",
-      "node_modules/@img/**/*",
+      "**/*.node",
+      "**/*.dll",
+      "node_modules/@img/**",
       "node_modules/ffmpeg-static/ffmpeg.exe"
+    ],
+    "extraResources": [
+      { "from": "bin", "to": "bin", "filter": ["**/*", "!input*.jpg", "!*_demo.mp4"] }
     ],
     "win": {
       "target": [
