@@ -61,6 +61,7 @@ function openSettings() {
       { id: 'batchgen', label: '📦 BatchGen',     build: () => buildSettingsBatchgenPane() },
       { id: 'styles',   label: '🎨 Style presets', build: () => buildSettingsStylesPane() },
       { id: 'popups',   label: '💬 Popups',        build: () => buildSettingsPopupsPane() },
+      { id: 'history',  label: '↻ History',         build: () => buildSettingsHistoryPane() },
       { id: 'shortcuts',label: '⌨ Shortcuts',      build: () => buildSettingsShortcutsPane() },
     ];
     const panes = {};

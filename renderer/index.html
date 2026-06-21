@@ -170,6 +170,16 @@
        events and renders a small list in the bottom-right of the
        content area. Pure projection of state.jobs. -->
   <script src="widgets/ActiveJobsWidget.js"></script>
+  <!-- Phase C: batch summary emission helper. Called by
+       batchManager.js (or any other multi-child orchestrator) when
+       a batch finishes; renders the "Batch finished: 18/20 ok, 2
+       failed" line in the log pane. -->
+  <script src="jobs/JobSummary.js"></script>
+  <!-- Phase C: on-demand archive viewer. Loaded eagerly (it's
+       tiny) so the ⚙ Settings → History → Open archive button
+       can open it instantly. -->
+  <link rel="stylesheet" href="widgets/archiveViewer.css">
+  <script src="widgets/ArchiveViewer.js"></script>
   <script src="utils/dropTarget.js"></script>
   <script src="utils/tinyUtils.js"></script>
   <script src="utils/pureFuncs.js"></script>

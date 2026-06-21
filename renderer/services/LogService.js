@@ -74,6 +74,88 @@ function _groupClass(gid) {
 // addLogEvent / renderLogEvent, pruned when the buffer is trimmed.
 const _logJobIndex = new Map();
 
+// Phase C: per-job LRU log cap. A "secondary" event is any row that
+// belongs to a jobId (i.e. an stderr chunk). Each job gets its own
+// cap (default 500) of secondary events; primary rows (no jobId)
+// are NOT capped here — they're capped by the global LOG_MAX_EVENTS.
+//
+// LRU eviction: when a job would exceed its cap, we drop oldest
+// secondary events of the LEAST-RECENTLY-VIEWED job (i.e. the
+// job whose primary row the user expanded last the longest ago).
+// "Viewed" = the last time the user clicked the row's chevron /
+// expanded it. We track this with _jobViewedAt (jobId → ms).
+const _JOB_SECONDARY_CAP = 500;
+const _jobSecondaryCounts = new Map();  // jobId → secondary count
+const _jobSecondaryFirstIds = new Map(); // jobId → first secondary logId
+const _jobViewedAt = new Map();          // jobId → ms timestamp
+
+function _noteJobViewed(jobId) {
+  if (!jobId) return;
+  _jobViewedAt.set(jobId, Date.now());
+}
+
+function _leastRecentlyViewedJob() {
+  let lru = null;
+  let lruTs = Infinity;
+  for (const [jobId, ts] of _jobViewedAt.entries()) {
+    if (ts < lruTs) { lru = jobId; lruTs = ts; }
+  }
+  return lru;
+}
+
+// Drop the oldest secondary event of the given job. The event
+// is removed from state._logEvents (by id) AND from the DOM row.
+// Returns the removed logId, or null if the job has no secondaries.
+function _dropOldestSecondaryOfJob(jobId) {
+  if (!jobId) return null;
+  const firstId = _jobSecondaryFirstIds.get(jobId);
+  if (firstId == null) return null;
+  const idx = window.state._logEvents.findIndex((e) => e.id === firstId);
+  if (idx === -1) return null;
+  const ev = window.state._logEvents[idx];
+  // Only drop if it's still a secondary of this job (defensive:
+  // the firstId map could be stale if the array was reordered).
+  if (ev.jobId !== jobId) {
+    _jobSecondaryFirstIds.set(jobId, _findFirstSecondaryId(jobId));
+    return _dropOldestSecondaryOfJob(jobId);
+  }
+  window.state._logEvents.splice(idx, 1);
+  _logJobIndex.delete(ev.id);
+  // Update the cap counter and the first-secondary pointer.
+  _jobSecondaryCounts.set(jobId, Math.max(0, (_jobSecondaryCounts.get(jobId) || 1) - 1));
+  _jobSecondaryFirstIds.set(jobId, _findFirstSecondaryId(jobId));
+  // Remove the DOM row.
+  const row = document.querySelector(`.log-event[data-log-id="${ev.id}"]`);
+  if (row && row.parentNode) row.parentNode.removeChild(row);
+  return ev.id;
+}
+
+function _findFirstSecondaryId(jobId) {
+  for (const e of window.state._logEvents) {
+    if (e.jobId === jobId && e.id !== e.jobId /* not a primary */) return e.id;
+  }
+  return null;
+}
+
+// Maybe-evict: if a job's secondary count exceeds the per-job cap,
+// drop the oldest secondary of the LEAST-RECENTLY-VIEWED job until
+// we're under cap. The active job is excluded — the user is
+// actively watching it; silently dropping its events would feel
+// like a bug.
+function _maybeEvictJobSecondaries(activeJobId) {
+  const ids = Array.from(_jobSecondaryCounts.keys()).filter((id) => id !== activeJobId);
+  for (const id of ids) {
+    const n = _jobSecondaryCounts.get(id) || 0;
+    if (n > _JOB_SECONDARY_CAP) {
+      const lru = _leastRecentlyViewedJob();
+      if (!lru) break;
+      _dropOldestSecondaryOfJob(lru);
+      return true; // one drop per call; caller re-checks on next event
+    }
+  }
+  return false;
+}
+
 // ----- autoscroll state (persisted via state.json by app.js if desired) -----
 let _autoscroll = true;
 function getAutoscroll() { return _autoscroll; }
@@ -234,6 +316,24 @@ function _appendEvent(ev, opts) {
   var { LOG_MAX_EVENTS } = window.LogCategories;
   window.state._logEvents.push(ev);
   _logJobIndex.set(ev.id, ev.jobId);
+  // Phase C: per-job LRU cap. If this event is a secondary of a
+  // job, increment that job's count and record its first id. The
+  // first id is updated lazily (when we drop something) — for
+  // appends we just track the head as "first", which is fine
+  // because the array is FIFO-ordered by insertion.
+  if (ev.jobId && ev._internal) {
+    // _internal === true means we got here via JobRunner's
+    // _addLogSecondary (a stderr chunk). Track the secondary count.
+    const n = (_jobSecondaryCounts.get(ev.jobId) || 0) + 1;
+    _jobSecondaryCounts.set(ev.jobId, n);
+    if (!_jobSecondaryFirstIds.has(ev.jobId)) {
+      _jobSecondaryFirstIds.set(ev.jobId, ev.id);
+    }
+    // Evict LRU'd job secondaries until everyone's under cap.
+    // The active job is excluded — see _maybeEvictJobSecondaries.
+    let evicted = true;
+    while (evicted) evicted = _maybeEvictJobSecondaries(ev.jobId);
+  }
   // Cap the buffer. Drop the oldest events (FIFO) so the visible
   // scroll position stays near the bottom (newest event). The user
   // can still scroll up to see what's left of the dropped events.
@@ -586,6 +686,10 @@ function setupLogClicks() {
         if (det) det.style.display = ev.expanded ? '' : 'none';
         const chev = row.querySelector('.log-event-chev');
         if (chev) chev.textContent = ev.expanded ? '▾' : '▸';
+        // Phase C: track LRU for the per-job log cap. Expanding
+        // a row counts as "viewed"; we use this signal to evict
+        // events of the LEAST-recently-viewed job first.
+        if (ev.expanded && ev.jobId) _noteJobViewed(ev.jobId);
       }
       window.state._logLastClickedId = id;
     }
@@ -716,5 +820,75 @@ window.LogService = {
   attachSecondaryToJob,
   updateLogStatus, appendLogDetails,
   scrollToJob,
+  renderPersistedL2,
   SECONDARY_PER_JOB_CAP,
 };
+
+// Phase C: render the persisted L2 list (state.jobs.snapshot) as
+// collapsed, non-interactive rows at the bottom of the log pane.
+// Called once at app boot. The rows are visually distinct (greyed
+// out, ↻ icon = "from previous session") and CANNOT be clicked
+// for re-run — re-running requires parameter round-tripping, which
+// is a deliberate non-goal in Phase C.
+//
+// Each entry is the JobSummary shape persisted by src/state.js:
+// { id, type, title, subtitle, status, startedAt, finishedAt,
+//   outputPaths, groupId }.
+function renderPersistedL2(entries) {
+  if (!Array.isArray(entries) || !entries.length) return 0;
+  const root = document.getElementById('log');
+  if (!root) return 0;
+  let added = 0;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const row = document.createElement('div');
+    row.className = 'log-event log-event-persisted log-state-' + (entry.status || 'ok');
+    row.setAttribute('data-log-id', 'persisted-' + (entry.id || ''));
+    row.setAttribute('data-persisted', '1');
+    const statusCls = entry.status === 'err' ? 'log-result-err'
+      : entry.status === 'warn' ? 'log-result-warn'
+      : entry.status === 'cancel' ? 'log-result-cancel'
+      : 'log-result-ok';
+    row.classList.add(statusCls);
+    const head = document.createElement('div');
+    head.className = 'log-event-head';
+    const icon = document.createElement('span');
+    icon.className = 'log-persisted-icon';
+    icon.textContent = '↻';
+    icon.title = 'From previous session';
+    const headline = document.createElement('span');
+    headline.className = 'log-event-headline';
+    headline.textContent = (entry.title || entry.type || 'Job')
+      + '  ·  '
+      + (entry.status || 'ok')
+      + '  ·  '
+      + (entry.finishedAt ? new Date(entry.finishedAt).toLocaleString() : '');
+    const details = document.createElement('div');
+    details.className = 'log-event-details';
+    details.style.display = 'block';
+    const sub = document.createElement('div');
+    sub.className = 'log-event-meta';
+    if (entry.subtitle) {
+      const subEl = document.createElement('div');
+      subEl.textContent = entry.subtitle;
+      details.appendChild(subEl);
+    }
+    if (Array.isArray(entry.outputPaths) && entry.outputPaths.length) {
+      for (const p of entry.outputPaths.slice(0, 8)) {
+        const pathEl = document.createElement('div');
+        pathEl.textContent = '  ↳ ' + p;
+        details.appendChild(pathEl);
+      }
+      if (entry.outputPaths.length > 8) {
+        const moreEl = document.createElement('div');
+        moreEl.textContent = `  ↳ … and ${entry.outputPaths.length - 8} more`;
+        details.appendChild(moreEl);
+      }
+    }
+    head.append(icon, headline);
+    row.append(head, details);
+    root.appendChild(row);
+    added++;
+  }
+  return added;
+}

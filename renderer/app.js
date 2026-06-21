@@ -408,6 +408,24 @@ async function init() {
     window.LogService.setupLogToolbar();
   }
 
+  // Phase C: graceful shutdown. When the main process emits
+  // `app:before-quit`, flush any in-flight job summaries to the
+  // L2 list + persist state.json synchronously (best-effort —
+  // we don't block the quit). The renderer doesn't ack; the
+  // main process gives us `graceMs` ms then proceeds anyway.
+  if (window.api && typeof window.api.onBeforeQuit === 'function') {
+    window.api.onBeforeQuit(() => {
+      try {
+        if (window.JobRunner && typeof window.JobRunner.flushBatchSummaries === 'function') {
+          window.JobRunner.flushBatchSummaries();
+        }
+      } catch (_) { /* best-effort */ }
+      try {
+        if (typeof scheduleStateSave === 'function') scheduleStateSave();
+      } catch (_) { /* best-effort */ }
+    });
+  }
+
   // First quota fetch
   refreshQuota().catch(() => {});
 }

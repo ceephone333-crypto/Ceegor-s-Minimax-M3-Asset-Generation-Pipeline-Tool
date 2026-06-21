@@ -504,6 +504,96 @@ function buildSettingsBatchgenPane() {
   };
 }
 
+// Phase C: History pane. Manages the L2 (state.jobs.snapshot) +
+// L3 (state.jobs.archive.jsonl) lifecycle. Exposes:
+//   - lastFinishedCap: 20..1000, default 200
+//   - Clear archive button (with confirm)
+//   - Archive size label (live-updates)
+//   - Open archive button → ArchiveViewer widget
+function buildSettingsHistoryPane() {
+  const root = el('div', {});
+  root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin-top: 0;' },
+    'Job history is split across two tiers. The recent list (L2) shows up to N finished jobs in this app session and survives restarts. The archive (L3) holds the long-tail history and is read on demand.'));
+  root.appendChild(el('h4', {}, 'Recent (L2 — in state.json)'));
+  const capBox = el('div', { class: 'settings-row' });
+  const capLabel = el('label', {}, 'Max recent jobs (20–1000):');
+  capLabel.htmlFor = 'history-cap-input';
+  const capInput = el('input', { type: 'number', min: 20, max: 1000, step: 10, value: (state.jobsArchiveCap || 200), id: 'history-cap-input', style: 'width: 100px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-2); color: var(--fg);' });
+  capBox.append(capLabel, capInput);
+  root.appendChild(capBox);
+  capInput.addEventListener('change', () => {
+    const v = Math.max(20, Math.min(1000, Math.round(Number(capInput.value) || 200)));
+    capInput.value = v;
+    state.jobsArchiveCap = v;
+    if (typeof scheduleStateSave === 'function') scheduleStateSave();
+    if (typeof toast === 'function') toast(`Recent job cap set to ${v}. Existing overflow will be moved to the archive on the next save.`, 'info', 4000);
+  });
+
+  root.appendChild(el('h4', { style: 'margin-top: 16px;' }, 'Archive (L3 — JSONL)'));
+  const archiveBox = el('div', { class: 'settings-row', style: 'display: flex; align-items: center; gap: 8px;' });
+  const sizeLabel = el('span', {}, 'Size: …');
+  sizeLabel.id = 'history-archive-size';
+  const clearBtn = el('button', { class: 'btn-mini danger' }, 'Clear archive');
+  clearBtn.addEventListener('click', async () => {
+    if (!confirm('Clear the entire history archive? This cannot be undone.')) return;
+    try {
+      const r = await window.api.stateArchiveClear();
+      if (r && r.ok) {
+        if (typeof toast === 'function') toast('Archive cleared.', 'ok', 2500);
+        await _refreshSize();
+      } else {
+        alert('Clear failed: ' + ((r && r.error) || 'unknown'));
+      }
+    } catch (e) {
+      alert('Clear failed: ' + (e && e.message ? e.message : String(e)));
+    }
+  });
+  const openBtn = el('button', { class: 'btn-mini' }, 'Open archive…');
+  openBtn.addEventListener('click', async () => {
+    if (window.ArchiveViewer && typeof window.ArchiveViewer.open === 'function') {
+      window.ArchiveViewer.open();
+    } else {
+      alert('Archive viewer not loaded. Try again after restarting the app.');
+    }
+  });
+  archiveBox.append(sizeLabel, openBtn, clearBtn);
+  root.appendChild(archiveBox);
+
+  async function _refreshSize() {
+    if (!window.api || typeof window.api.stateArchiveSize !== 'function') return;
+    try {
+      const r = await window.api.stateArchiveSize();
+      if (r && r.ok) {
+        sizeLabel.textContent = 'Size: ' + _humanBytes(r.bytes) + (r.bytes > 0 ? ` (${r.bytes} B)` : '');
+      }
+    } catch (_) { /* best-effort */ }
+  }
+  _refreshSize();
+
+  return {
+    root,
+    instance: {
+      collect() {
+        // L2 cap is persisted to state.json via scheduleStateSave
+        // on the change event. We don't need to return anything
+        // here; the Save handler reads state.jobsArchiveCap.
+        return {};
+      },
+      onShow() {
+        // Re-read the size every time the user opens this pane.
+        _refreshSize();
+      },
+    },
+  };
+}
+
+function _humanBytes(n) {
+  if (typeof n !== 'number' || n < 0) return '0 B';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+
 function buildSettingsShortcutsPane() {
   // Read-only keyboard shortcut reference. Lives in the
   // settings dialog so the user doesn't have to dig through

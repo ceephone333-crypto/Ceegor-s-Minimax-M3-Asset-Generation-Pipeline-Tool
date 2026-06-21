@@ -171,6 +171,15 @@ contextBridge.exposeInMainWorld('api', {
   stateArchiveClear: () => ipcRenderer.invoke('state:archiveClear'),
   stateArchiveSize: () => ipcRenderer.invoke('state:archiveSize'),
   stateArchiveDelete: (id) => ipcRenderer.invoke('state:archiveDelete', { id }),
+  // Phase C: graceful shutdown signal from main → renderer. The
+  // main process emits this on `before-quit`; the renderer has
+  // `graceMs` (default 500) to flush in-flight state. We do not
+  // ack the main process — the quit proceeds regardless.
+  onBeforeQuit: (cb) => {
+    const fn = (_e, payload) => { try { cb(payload); } catch (_) {} };
+    ipcRenderer.on('app:before-quit', fn);
+    return () => ipcRenderer.removeListener('app:before-quit', fn);
+  },
   batchesGenerateExamples: () => ipcRenderer.invoke('batches:generateExamples'),
 
   // ---- events ----

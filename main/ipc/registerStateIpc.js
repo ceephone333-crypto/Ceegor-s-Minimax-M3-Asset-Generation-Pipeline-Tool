@@ -7,7 +7,7 @@ const { ipcMain } = require('electron');
 const path = require('path');
 const stateMod = require('../../src/state');
 const { configDir } = require('../../src/config');
-const archive = require('../services/ArchiveService');
+const archive = require('../../src/services/ArchiveService');
 
 /**
  * @param {{ appRoot: string }} deps

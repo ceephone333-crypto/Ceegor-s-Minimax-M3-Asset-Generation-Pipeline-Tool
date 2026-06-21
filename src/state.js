@@ -9,6 +9,20 @@ const path = require('path');
 // next to the exe (or cwd if no electron app), which split storage
 // when a launcher set the override.
 const { configDir } = require('./config');
+// Phase C: append-only archive for trimmed L2 entries. We require it
+// lazily so this file remains usable from unit tests that don't have
+// the ArchiveService on the classpath (the test harness uses a stub).
+let _archiveService = null;
+function _archive() {
+  if (_archiveService) return _archiveService;
+  try {
+    // eslint-disable-next-line global-require
+    _archiveService = require('./services/ArchiveService');
+  } catch (_) {
+    _archiveService = null;
+  }
+  return _archiveService;
+}
 
 function statePath() {
   return path.join(configDir(), 'state.json');
@@ -21,6 +35,23 @@ function read() {
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
     if (!raw || typeof raw !== 'object') return { tabs: {} };
     if (!raw.tabs) raw.tabs = {};
+    // Phase C: clamp the L2 cap on read so a corrupted state.json
+    // (e.g. `jobsArchiveCap: 5000`) never lands in the renderer.
+    // We clamp on read AND on write — the write-side clamp is the
+    // authoritative one (it gets persisted), the read-side clamp
+    // is defensive in case a future writer skips the clamp.
+    //
+    // Any invalid value (negative, zero, NaN, non-numeric, out of
+    // range) falls back to the default (200). The clamp [20, 1000]
+    // is a separate defensive layer.
+    if (raw.jobsArchiveCap != null) {
+      const n = Number(raw.jobsArchiveCap);
+      if (Number.isFinite(n) && n > 0) {
+        raw.jobsArchiveCap = Math.max(20, Math.min(1000, Math.round(n)));
+      } else {
+        raw.jobsArchiveCap = 200;
+      }
+    }
     return raw;
   } catch {
     return { tabs: {} };
@@ -237,8 +268,37 @@ function write(s) {
     jobsSnapshot: (s && Array.isArray(s.jobsSnapshot) ? s.jobsSnapshot : null),
     // L2 cap. Clamped to [20, 1000] so a corrupted state.json
     // cannot make the cap insanely high.
-    jobsArchiveCap: Math.max(20, Math.min(1000, Math.round(Number(s && s.jobsArchiveCap) || 200))),
+    jobsArchiveCap: (() => {
+      const n = Number(s && s.jobsArchiveCap);
+      if (!Number.isFinite(n) || n <= 0) return 200;
+      return Math.max(20, Math.min(1000, Math.round(n)));
+    })(),
   };
+  // Phase C: enforce the L2 cap and move the overflow to L3
+  // (the JSONL archive). The move is best-effort: a failing
+  // archive write (disk full, permission error) does NOT block
+  // the main state save — we still persist the trimmed L2
+  // list. The trimmed entries are lost from L2 but the
+  // user-visible "the file was saved" toast is honest.
+  if (Array.isArray(clean.jobsSnapshot) && clean.jobsSnapshot.length > clean.jobsArchiveCap) {
+    fs.appendFileSync(require('os').tmpdir() + '/state-trace.log',
+      'TRIM: ' + clean.jobsSnapshot.length + ' cap=' + clean.jobsArchiveCap + ' dir=' + configDir() + '\n');
+    const overflow = clean.jobsSnapshot.slice(0, clean.jobsSnapshot.length - clean.jobsArchiveCap);
+    clean.jobsSnapshot = clean.jobsSnapshot.slice(-clean.jobsArchiveCap);
+    const archive = _archive();
+    if (archive) {
+      try {
+        for (const entry of overflow) {
+          archive.append(configDir(), entry);
+        }
+      } catch (_) {
+        // Best-effort: a failing archive write (disk full,
+        // permission error) does NOT block the main state save.
+        // The trimmed entries are lost from L2 but the
+        // user-visible "the file was saved" toast is honest.
+      }
+    }
+  }
   // Atomic write: write to a temp file then rename. Avoids a corrupt
   // state.json if the process is killed mid-write.
   const tmp = p + '.tmp-' + process.pid + '-' + Date.now();

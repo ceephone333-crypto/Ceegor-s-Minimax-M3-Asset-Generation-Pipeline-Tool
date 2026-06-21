@@ -202,6 +202,7 @@ test('preload bridge exposes every tool function and maps to the expected channe
     'stateArchiveClear',
     'stateArchiveSize',
     'stateArchiveDelete',
+    'onBeforeQuit',
     'batchesGenerateExamples',
     'onLog',
     'onLogRich',

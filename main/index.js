@@ -165,3 +165,32 @@ app.on('window-all-closed', () => {
   // Audio-Spawns / Voices-Cache sind nicht persistent → kein expliziter Cleanup nötig.
   if (process.platform !== 'darwin') app.quit();
 });
+
+// Phase C: graceful shutdown. On `before-quit` we ask the
+// renderer to flush any in-flight job summaries synchronously,
+// then we cancel every active mmx proc (best-effort) and wait
+// up to 1.5 s before letting the app exit. This is best-effort:
+// if the renderer doesn't respond in 500 ms or the procs don't
+// exit in 1.5 s, the app exits anyway. We do NOT await — we
+// just start the work and let Electron's quit proceed.
+let _shuttingDown = false;
+app.on('before-quit', () => {
+  if (_shuttingDown) return;
+  _shuttingDown = true;
+  try {
+    const win = mainWindow;
+    if (win && !win.isDestroyed()) {
+      // 1. Ask the renderer to flush job summaries. 500 ms
+      //    grace period; if the renderer is hung, we still
+      //    exit.
+      try { win.webContents.send('app:before-quit', { graceMs: 500 }); } catch (_) {}
+    }
+  } catch (_) { /* best-effort */ }
+  try {
+    // 2. Cancel every active mmx proc. We do NOT await the
+    //    proc-close; the existing 1.5 s grace in runMmx.js
+    //    handles the SIGTERM-to-SIGKILL fallback.
+    const { cancelAll } = require('../src/mmx');
+    cancelAll();
+  } catch (_) { /* best-effort */ }
+});

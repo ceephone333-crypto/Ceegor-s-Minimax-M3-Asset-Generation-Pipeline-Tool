@@ -47,4 +47,17 @@
       window.ActiveJobsWidget.init();
     }
   } catch (e) { console.warn('ActiveJobsWidget.init failed:', e); }
+  // Phase C: render the persisted L2 list (state.jobs.snapshot) as
+  // collapsed, non-interactive rows at the bottom of the log. This
+  // gives the user context ("here's what you did in the previous
+  // session") without requiring them to open the History pane.
+  // Rendered rows are visually muted (lower opacity, ↻ icon) and
+  // CANNOT be clicked for re-run in Phase C — re-running requires
+  // parameter round-tripping, which is a deliberate non-goal.
+  try {
+    if (window.LogService && typeof window.LogService.renderPersistedL2 === 'function'
+        && window.state && Array.isArray(window.state.jobsSnapshot)) {
+      window.LogService.renderPersistedL2(window.state.jobsSnapshot);
+    }
+  } catch (e) { console.warn('renderPersistedL2 failed:', e); }
 })();

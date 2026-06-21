@@ -21,7 +21,7 @@ const os = require('os');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
-const archive = require(path.join(ROOT, 'main', 'services', 'ArchiveService.js'));
+const archive = require(path.join(ROOT, 'src', 'services', 'ArchiveService.js'));
 
 function makeTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'archive-test-'));
