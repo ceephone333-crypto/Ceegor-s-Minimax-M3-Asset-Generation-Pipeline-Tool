@@ -18,4 +18,25 @@
       if (el) el.textContent = 'v' + v;
     }).catch(() => {});
   }
+  // v1.1.15 (reported by user): the hover-help tooltip
+  // (`data-help` icons) and the click-delegation for topic-
+  // keyed help (`data-help-topic`) were both defined but
+  // NEVER WIRED UP — the renderer loaded the modules but
+  // bootstrap.js never called their setup functions, so a
+  // hover over any `data-help` icon did nothing AND clicking
+  // a `data-help-topic` element did nothing. Wire them up
+  // here (after the modules have loaded) so the hover
+  // tooltips and topic-keyed help actually fire. Both are
+  // event-delegation-based so calling setup once is
+  // sufficient for the whole lifetime of the renderer.
+  try {
+    if (window.HelpTooltip && typeof window.HelpTooltip.setupHoverHelpTooltips === 'function') {
+      window.HelpTooltip.setupHoverHelpTooltips();
+    }
+  } catch (e) { console.warn('setupHoverHelpTooltips failed:', e); }
+  try {
+    if (window.HelpDelegation && typeof window.HelpDelegation.setupHelpDelegation === 'function') {
+      window.HelpDelegation.setupHelpDelegation();
+    }
+  } catch (e) { console.warn('setupHelpDelegation failed:', e); }
 })();

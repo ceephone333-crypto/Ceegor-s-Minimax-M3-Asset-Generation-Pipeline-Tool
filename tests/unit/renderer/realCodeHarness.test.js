@@ -1118,4 +1118,28 @@ test('HARNESS 10: every v1.1.15-round-2 bug fix is present in the source', () =>
   const imageTabSrc2 = src('renderer/tabs/imageTab.js');
   assert.ok(/const postProcessEach = state\.upscaleEnabled\s*\|\|\s*state\.removeBackgroundEnabled\s*\|\|\s*\([\s\S]*?optimizeSettings/.test(imageTabSrc2),
     'imageTab must guard the post-process chain with `postProcessEach = state.upscaleEnabled || state.removeBackgroundEnabled || (state.optimizeSettings && state.optimizeSettings.enabled)`');
+  // Bug 9 — openAllBatchDashboard interval leak: the 1s
+  // refresh interval must be cleared on ANY dismissal path
+  // (Close button, Esc key, outside-click), not just the
+  // Close button. The previous version only cleared the
+  // interval when the user clicked the explicit Close button
+  // (via a wrapped close function), so dismissing via Esc or
+  // outside-click left the setInterval running until the
+  // modal was rebuilt, which leaked a renderBody call per
+  // second per open. The fix routes the cleanup through
+  // showModal's `onClose` option, which runs on every path.
+  assert.ok(/let tick = null;/.test(appJsSrc2) && /tick = setInterval\(renderBody, 1000\)/.test(appJsSrc2) && /onClose: \(\) => \{[\s\S]*?clearInterval\(tick\)/.test(appJsSrc2),
+    'openAllBatchDashboard must declare `let tick = null` in the outer closure, assign it inside the modal builder, and clear it from showModal `onClose` (so Esc / outside-click also clear the interval)');
+  // Bug 10 — hover help tooltip never wired up: HelpTooltip and
+  // HelpDelegation both define setup functions on `window.*`
+  // but bootstrap.js never called them, so every `data-help`
+  // icon (including the ones the v1.1.15 round-1 context-menu
+  // rewrite rendered) was dead — hovering did nothing. The fix
+  // calls both setups from bootstrap.js so the event-delegation
+  // listeners attach before any user interaction.
+  const bootstrapSrc = src('renderer/bootstrap.js');
+  assert.ok(/HelpTooltip\.setupHoverHelpTooltips\(\)/.test(bootstrapSrc),
+    'bootstrap.js must call window.HelpTooltip.setupHoverHelpTooltips() (otherwise data-help hover tooltips never fire — the context-menu rewrite relied on this)');
+  assert.ok(/HelpDelegation\.setupHelpDelegation\(\)/.test(bootstrapSrc),
+    'bootstrap.js must call window.HelpDelegation.setupHelpDelegation() (otherwise clicking data-help-topic elements does nothing)');
 });

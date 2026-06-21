@@ -929,6 +929,12 @@ function openAllBatchDashboard() {
   if (typeof showModal !== 'function') return;
   const tabs = ['image', 'speech', 'music', 'video'];
   const tabLabels = { image: '🖼 Image', speech: '🗣 Speech', music: '🎵 Music', video: '🎬 Video' };
+  // The 1s refresh interval is created inside the modal builder
+  // but cleared from `opts.onClose` so it runs no matter how the
+  // modal was dismissed (Close button, Esc, outside-click). The
+  // variable lives in the outer function's closure so the onClose
+  // hook (defined at the same level) can see it.
+  let tick = null;
   // Per-tab avg lookup, with sensible defaults so the first
   // run still shows an estimate instead of "...".
   function avgFor(tabKey) {
@@ -1119,32 +1125,13 @@ function openAllBatchDashboard() {
     m.appendChild(body);
     renderBody();
     // Refresh every second while the modal is open so the
-    // countdown ticks down live.
-    const tick = setInterval(renderBody, 1000);
-    // Clear the interval when the modal is closed (the
-    // showModal primitive calls close() on Esc / outside-click).
-    m.dataset.dashboardInterval = String(setInterval(() => {}, 0));
-    // The cleanest cleanup hook: register a one-shot onClose.
-    // showModal() doesn't pass opts here, so we add the
-    // interval id to the modal element and clean up via the
-    // document-level modal-close observer.
-    const origClose = close;
-    const wrappedClose = () => {
-      clearInterval(tick);
-      origClose();
-    };
-    // Replace the close function on all the close buttons we
-    // created above. (Esc / outside-click is handled by
-    // showModal internally, but those go through the same
-    // `close` callback we passed — which we wrapped above
-    // implicitly by re-binding below.)
-    for (const btn of m.querySelectorAll('button')) {
-      // Close buttons we wired in the modal call `close()`
-      // from the showModal closure; rewire them to the
-      // wrapped version so the interval is cleared.
-      if (btn.onclick && btn.textContent.includes('Close')) btn.onclick = (e) => { e && e.preventDefault && e.preventDefault(); wrappedClose(); };
-    }
-  }, { onClose: () => { /* the wrappedClose inside the closure already cleared the interval */ } });
+    // countdown ticks down live. The interval is cleared in
+    // the `onClose` hook below so the cleanup runs no matter
+    // how the modal was dismissed (Close button, Esc key,
+    // outside-click — showModal routes them all through the
+    // onClose callback).
+    tick = setInterval(renderBody, 1000);
+  }, { onClose: () => { if (tick) { clearInterval(tick); tick = null; } } });
 }
 
 function openStyleSettings(returnToTab) {
