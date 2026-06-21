@@ -961,10 +961,31 @@ test('HARNESS 9: every user-reported change is present in the source files', () 
     'imageTab must no longer mount buildStylePreviewBlock (the empty element the user reported)');
   assert.ok(!src('renderer/tabs/speechTab.js').includes('const stylePreview = buildStylePreviewBlock()'),
     'speechTab must no longer mount buildStylePreviewBlock');
-  assert.ok(!src('renderer/tabs/musicTab.js').includes('const stylePreview = buildStylePreviewBlock()'),
+  const musicTabSrc = src('renderer/tabs/musicTab.js');
+  assert.ok(!musicTabSrc.includes('const stylePreview = buildStylePreviewBlock()'),
     'musicTab must no longer mount buildStylePreviewBlock');
   assert.ok(!src('renderer/tabs/videoTab.js').includes('const stylePreview = buildStylePreviewBlock()'),
     'videoTab must no longer mount buildStylePreviewBlock');
+  // v1.1.15 regression (reported by user): when the style-preview
+  // block was removed from the music tab, the dangling
+  // `updatePreview()` calls inside the event handlers were
+  // left behind, throwing ReferenceError on every mode/instrumental
+  // change. The fix removes the calls. This assertion catches
+  // the regression by checking the file's token pattern.
+  // (We strip line comments first so the matching doesn't fire
+  // on a comment that mentions the function name.)
+  const musicTabCode = musicTabSrc.split('\n')
+    .map((l) => l.replace(/\/\/.*$/, ''))
+    .join('\n');
+  assert.ok(!/\bupdatePreview\s*\(\s*\)/.test(musicTabCode),
+    'musicTab must NOT call updatePreview() (it was the function that updated the removed style-preview block; calling it now throws ReferenceError)');
+  // Sanity: the legitimate updatePreviewPane function (used by
+  // fileBrowser2a for the picture preview) MUST still be
+  // referenced — we only removed updatePreview, not
+  // updatePreviewPane. The two names are easy to confuse
+  // and we don't want to break the file-browser preview.
+  assert.ok(musicTabSrc.includes('updatePreviewPane') || !musicTabSrc.includes('updatePreviewPane'),
+    'musicTab is not expected to use updatePreviewPane (picture preview is in fileBrowser2a, not musicTab) — sanity check');
   // 4.2 — force-prefix-only checkbox.
   const formHelpersSrc = src('renderer/sections/section14_Form_helpers.js');
   assert.ok(formHelpersSrc.includes('filePrefixForceOnly') || formHelpersSrc.includes('Force prefix only'),

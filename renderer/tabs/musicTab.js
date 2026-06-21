@@ -100,12 +100,13 @@ window.TABS.music = {
       }
       instrBanner.style.display = instrumental.input.value === 'on' ? '' : 'none';
       counter.update();
-      updatePreview();
     };
     instrumental.input.addEventListener('change', onInstrumentalChange);
-    mode.input.addEventListener('change', () => { counter.update(); updatePreview(); });
-    // Re-render once now that the prefix logic is in place
-    updatePreview();
+    mode.input.addEventListener('change', () => { counter.update(); });
+    // Re-render the prompt counter now that the prefix logic
+    // is in place. The old `updatePreview()` call updated the
+    // style-preview block, which we removed in v1.1.15 (it
+    // was an empty element the user reported).
     counter.update();
     const lyrics = buildParamRow('Custom lyrics', {
       kind: 'textarea', value: '', help: 'Used when "Use my custom lyrics" is selected. Supports structure tags: [Verse], [Chorus], [Bridge], [Intro], [Outro], [Pre Chorus], [Interlude], [Post Chorus], [Transition], [Break], [Hook], [Build Up], [Inst], [Solo]. Max 3500 chars.\nNote: only music-2.5+ and music-2.6 reliably support --lyrics. If the output ignores the lyrics, switch the model in the dropdown below.',
