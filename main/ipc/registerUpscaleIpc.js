@@ -27,17 +27,25 @@ function register({ getMainWindow, appRoot }) {
     if (!pathUtils.isPathUnderAny(dstPath, pathSecurity.getAllowedRoots())) {
       return { ok: false, code: -1, stderr: 'Destination path is outside the allowed directories.', outputPath: null };
     }
-    return reEsrgan.run(srcPath, dstPath, opts || {});
+    try {
+      return await reEsrgan.run(srcPath, dstPath, opts || {});
+    } catch (e) {
+      return { ok: false, code: -1, stderr: String((e && e.message) || e), outputPath: null };
+    }
   });
 
   ipcMain.handle('upscale:realesrgan:download', async (event) => {
-    const win = event.sender;
-    const send = (data) => { try { win.send('upscale:realesrgan:download:progress', data); } catch (_) {} };
-    const r = await downloadRealesrgan(appRoot, send);
-    // Reset the binary detector cache so the next probe sees the
-    // newly-extracted binary.
-    try { reEsrgan.resetCache && reEsrgan.resetCache(); } catch (_) {}
-    return r;
+    try {
+      const win = event.sender;
+      const send = (data) => { try { win.send('upscale:realesrgan:download:progress', data); } catch (_) {} };
+      const r = await downloadRealesrgan(appRoot, send);
+      // Reset the binary detector cache so the next probe sees the
+      // newly-extracted binary.
+      try { reEsrgan.resetCache && reEsrgan.resetCache(); } catch (_) {}
+      return r;
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
   });
 }
 

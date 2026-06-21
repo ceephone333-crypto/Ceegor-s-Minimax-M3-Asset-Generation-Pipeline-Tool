@@ -36,7 +36,11 @@ function register(_deps) {
     if (!pathUtils.isPathUnderAny(dstPath, pathSecurity.getAllowedRoots())) {
       return { ok: false, code: -1, stderr: 'Destination path is outside the allowed directories.', outputPath: null };
     }
-    return isNetBg.run(srcPath, dstPath, opts || {});
+    try {
+      return await isNetBg.run(srcPath, dstPath, opts || {});
+    } catch (e) {
+      return { ok: false, code: -1, stderr: String((e && e.message) || e), outputPath: null };
+    }
   });
 }
 

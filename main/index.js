@@ -8,6 +8,72 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 
 const APP_ROOT = __dirname;
 const PARENT_ROOT = path.resolve(APP_ROOT, '..'); // __dirname = main/, parent = project root
+const DEBUG_ENV_PATH = path.join(PARENT_ROOT, '.dbg', 'full-tool-sweep.env');
+
+let debugServerUrl = '';
+let debugSessionId = '';
+function reportIpcDebugEvent(runId, hypothesisId, location, msg, data) {
+  if (debugServerUrl === '') {
+    debugServerUrl = null;
+    debugSessionId = 'full-tool-sweep';
+    try {
+      const envText = fs.readFileSync(DEBUG_ENV_PATH, 'utf8');
+      debugServerUrl = envText.match(/DEBUG_SERVER_URL=(.+)/)?.[1]?.trim() || null;
+      debugSessionId = envText.match(/DEBUG_SESSION_ID=(.+)/)?.[1]?.trim() || debugSessionId;
+    } catch {
+      debugServerUrl = null;
+    }
+  }
+  if (!debugServerUrl || typeof fetch !== 'function') return;
+  fetch(debugServerUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: debugSessionId,
+      runId,
+      hypothesisId,
+      location,
+      msg,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+}
+
+const originalIpcHandle = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = (channel, handler) => {
+  // #region debug-point A:ipc-registration
+  reportIpcDebugEvent('pre-fix', 'A', 'main/index.js:ipcMain.handle', `[DEBUG] register ${channel}`, { channel });
+  // #endregion
+  return originalIpcHandle(channel, async (event, ...args) => {
+    // #region debug-point B:ipc-invoke
+    reportIpcDebugEvent('pre-fix', 'B', `ipc:${channel}:enter`, `[DEBUG] invoke ${channel}`, {
+      channel,
+      argc: args.length,
+      senderId: event?.sender?.id ?? null,
+    });
+    // #endregion
+    try {
+      const result = await handler(event, ...args);
+      // #region debug-point C:ipc-result
+      reportIpcDebugEvent('pre-fix', 'C', `ipc:${channel}:result`, `[DEBUG] result ${channel}`, {
+        channel,
+        ok: result?.ok ?? null,
+        keys: result && typeof result === 'object' ? Object.keys(result).slice(0, 12) : [],
+      });
+      // #endregion
+      return result;
+    } catch (error) {
+      // #region debug-point D:ipc-throw
+      reportIpcDebugEvent('pre-fix', 'D', `ipc:${channel}:throw`, `[DEBUG] throw ${channel}`, {
+        channel,
+        error: String((error && error.message) || error),
+      });
+      // #endregion
+      throw error;
+    }
+  });
+};
 
 // Phase 4 Fix 21: renderer-error.log Handler. Schreibt alle
 // Errors aus dem Renderer in eine Datei im Projekt-Root, damit

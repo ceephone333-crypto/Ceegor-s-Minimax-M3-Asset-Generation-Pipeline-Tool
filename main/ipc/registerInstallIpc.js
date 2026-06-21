@@ -24,15 +24,19 @@ function register({ getMainWindow, appRoot }) {
   });
 
   ipcMain.handle('install:pickAndCopy', async (event, kind) => {
-    const win = event.sender;
-    const showOpenDialog = (opts) => dialog.showOpenDialog(win, opts);
-    const r = await pickAndCopy(kind, showOpenDialog, appRoot);
-    // Reset detector cache so the next probe sees the new file.
-    if (r && r.ok) {
-      try { reEsrgan.resetCache && reEsrgan.resetCache(); } catch (_) {}
-      try { isNetBg.resetCache && isNetBg.resetCache(); } catch (_) {}
+    try {
+      const win = event.sender;
+      const showOpenDialog = (opts) => dialog.showOpenDialog(win, opts);
+      const r = await pickAndCopy(kind, showOpenDialog, appRoot);
+      // Reset detector cache so the next probe sees the new file.
+      if (r && r.ok) {
+        try { reEsrgan.resetCache && reEsrgan.resetCache(); } catch (_) {}
+        try { isNetBg.resetCache && isNetBg.resetCache(); } catch (_) {}
+      }
+      return r;
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
     }
-    return r;
   });
 }
 

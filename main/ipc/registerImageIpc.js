@@ -28,7 +28,11 @@ function register(_deps) {
         && !pathUtils.isPathUnderAny(opts.outputPath, pathSecurity.getAllowedRoots())) {
       return { ...empty, error: 'Destination path is outside the allowed directories.' };
     }
-    return imageOptimizer.optimize(srcPath, opts || {});
+    try {
+      return await imageOptimizer.optimize(srcPath, opts || {});
+    } catch (e) {
+      return { ...empty, error: String((e && e.message) || e) };
+    }
   });
 }
 
