@@ -8,16 +8,45 @@ const fs = require('fs');
 
 let cachedBinaryPath = null;
 
+// In packaged Electron apps the `ffmpeg-static` package lives
+// inside `app.asar`, which Electron exposes as a virtual read-only
+// filesystem. spawn() cannot execute a binary from inside the
+// asar (Windows returns ENOENT / EACCES). electron-builder
+// transparently extracts these binaries to `app.asar.unpacked`
+// (see the `asarUnpack` config in package.json). This helper
+// resolves the asar-internal path to its real on-disk twin.
+function resolveAsarPath(p) {
+  if (!p) return p;
+  // Replace the LAST occurrence of `.asar` with `.asar.unpacked`.
+  // We use a regex that matches `app.asar` (or any `.asar`) at
+  // any position in the path. The `g` flag would match all, but
+  // we only want the asar segment nearest the binary.
+  const m = p.match(/^(.*\.asar)[\\/](.+)$/);
+  if (!m) return p;
+  return path.join(m[1] + '.unpacked', m[2]);
+}
+
 function findBinary() {
   if (cachedBinaryPath && fs.existsSync(cachedBinaryPath)) return cachedBinaryPath;
 
   // 1. Bundled binary from `ffmpeg-static`. The package returns the
   // absolute path to the prebuilt exe on the current platform.
+  // In a packaged build that path lives inside `app.asar` — Electron
+  // fakes the read-only mount, so fs.existsSync returns true, but
+  // spawn() cannot execute a binary that is not on disk. We therefore
+  // prefer the unpacked twin before falling back to the asar path.
   try {
     const bundled = require('ffmpeg-static');
-    if (bundled && fs.existsSync(bundled)) {
-      cachedBinaryPath = bundled;
-      return bundled;
+    if (bundled) {
+      const unpacked = resolveAsarPath(bundled);
+      if (unpacked !== bundled && fs.existsSync(unpacked)) {
+        cachedBinaryPath = unpacked;
+        return unpacked;
+      }
+      if (fs.existsSync(bundled)) {
+        cachedBinaryPath = bundled;
+        return bundled;
+      }
     }
   } catch (_) { /* not installed */ }
 
@@ -59,4 +88,4 @@ function resetCache() {
   cachedBinaryPath = null;
 }
 
-module.exports = { findBinary, isAvailable, resetCache };
+module.exports = { findBinary, isAvailable, resetCache, resolveAsarPath };
