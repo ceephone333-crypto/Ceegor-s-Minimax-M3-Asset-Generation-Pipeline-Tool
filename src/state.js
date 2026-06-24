@@ -28,6 +28,99 @@ function statePath() {
   return path.join(configDir(), 'state.json');
 }
 
+// v1.1 (audit AUDIT-01 + AUDIT-05): the pipelineAdvancedSettings
+// sanitiser. Extracted from the inline write() expression so the
+// same logic runs on BOTH the write path and the read path
+// (hand-edited state.json / a future writer that bypasses
+// sanitisation). Also fixes the AUDIT-01 falsy-fallback bug:
+// `Math.round(Number(x)) || <default>` rejected 0 for the seven
+// zero-valid fields (mp3Quality 0 = highest quality, webpEffort 0
+// = fastest, pngCompressionLevel 0 = fastest, etc.). The new
+// helper uses `Number.isFinite(n = Number(x)) ? Math.round(n) :
+// <default>` so 0 is accepted as long as it is in range.
+function sanitisePipelineAdvancedSettings(input) {
+  if (!input || typeof input !== 'object') {
+    return {
+      realesrgan: { tileSize: 0, ttaMode: false, gpuId: 'auto' },
+      isnetbg: { intraOpNumThreads: 0, interOpNumThreads: 0, executionMode: 'sequential' },
+      optimize: {
+        jpegChromaSubsampling: '4:2:0', jpegMozjpeg: true,
+        pngCompressionLevel: 9, pngPalette: true,
+        webpMode: 'lossy', webpEffort: 6,
+        avifEffort: 9, avifChromaSubsampling: '4:4:4',
+      },
+      audio: {
+        silenceThresholdDb: -50, minSilenceMs: 50,
+        mp3Quality: 2, oggQuality: 6, opusBitrate: '128k', m4aBitrate: '192k',
+      },
+    };
+  }
+  // Helper: parse a number from any input, returning `fallback`
+  // when the result is non-finite OR falls outside [min, max].
+  // The previous `Number(x) || default` rejected 0 (the falsy
+  // case) — `Number.isFinite(n = Number(x))` correctly accepts
+  // 0 and only rejects NaN / Infinity / non-numeric strings.
+  //
+  // We additionally treat null / undefined / '' as "missing"
+  // (not "the value 0") so the documented default kicks in.
+  // Without this, a hand-edited state.json with `mp3Quality: null`
+  // would persist as 0 instead of the documented default 2.
+  // The pre-v1.1 `Number(null) || default` was the right
+  // intuition; we just fixed the 0-acceptance problem in the
+  // cases where the user explicitly types 0.
+  function nOr(value, min, max, fallback) {
+    if (value == null || value === '') return fallback;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    const r = Math.round(n);
+    if (r < min || r > max) return fallback;
+    return r;
+  }
+  const r = input.realesrgan && typeof input.realesrgan === 'object' ? input.realesrgan : {};
+  const i = input.isnetbg && typeof input.isnetbg === 'object' ? input.isnetbg : {};
+  const o = input.optimize && typeof input.optimize === 'object' ? input.optimize : {};
+  const a = input.audio && typeof input.audio === 'object' ? input.audio : {};
+  // v1.1 (audit AUDIT-07): opusBitrate / m4aBitrate whitelist. The
+  // overlay only offers the renderer's documented set, so accepting
+  // any `/^\d+k$/` value lets a corrupted write sneak in 500k (or
+  // 1k, 9999k) which the AudioCutter would happily forward to
+  // ffmpeg. We narrow the regex to the union of the overlay's
+  // options to keep the persisted value in lock-step with what the
+  // UI can re-select.
+  const ALLOWED_OPUS_BITRATES = ['64k', '96k', '128k', '160k', '192k', '256k'];
+  const ALLOWED_M4A_BITRATES = ['96k', '128k', '160k', '192k', '256k', '320k'];
+  return {
+    realesrgan: {
+      tileSize: nOr(r.tileSize, 0, 2048, 0),
+      ttaMode: r.ttaMode === true,
+      gpuId: ['auto', '0', '1', '2', '3'].includes(r.gpuId) ? r.gpuId : 'auto',
+    },
+    isnetbg: {
+      intraOpNumThreads: nOr(i.intraOpNumThreads, 0, 64, 0),
+      interOpNumThreads: nOr(i.interOpNumThreads, 0, 64, 0),
+      executionMode: ['sequential', 'parallel'].includes(i.executionMode) ? i.executionMode : 'sequential',
+    },
+    optimize: {
+      jpegChromaSubsampling: ['4:2:0', '4:4:4'].includes(o.jpegChromaSubsampling) ? o.jpegChromaSubsampling : '4:2:0',
+      jpegMozjpeg: o.jpegMozjpeg !== false,
+      pngCompressionLevel: nOr(o.pngCompressionLevel, 0, 9, 9),
+      pngPalette: o.pngPalette !== false,
+      webpMode: ['lossy', 'lossless', 'nearLossless'].includes(o.webpMode) ? o.webpMode : 'lossy',
+      webpEffort: nOr(o.webpEffort, 0, 6, 6),
+      avifEffort: nOr(o.avifEffort, 0, 9, 9),
+      avifChromaSubsampling: ['4:4:4', '4:2:0'].includes(o.avifChromaSubsampling) ? o.avifChromaSubsampling : '4:4:4',
+    },
+    audio: {
+      silenceThresholdDb: nOr(a.silenceThresholdDb, -100, 0, -50),
+      minSilenceMs: nOr(a.minSilenceMs, 0, 10000, 50),
+      mp3Quality: nOr(a.mp3Quality, 0, 9, 2),
+      oggQuality: nOr(a.oggQuality, 0, 10, 6),
+      opusBitrate: ALLOWED_OPUS_BITRATES.includes(a.opusBitrate) ? a.opusBitrate : '128k',
+      m4aBitrate: ALLOWED_M4A_BITRATES.includes(a.m4aBitrate) ? a.m4aBitrate : '192k',
+    },
+  };
+}
+
 function read() {
   const p = statePath();
   if (!fs.existsSync(p)) return { tabs: {} };
@@ -52,6 +145,16 @@ function read() {
         raw.jobsArchiveCap = 200;
       }
     }
+    // v1.1 (audit AUDIT-05): read-side sanitisation of
+    // pipelineAdvancedSettings. Without this, a hand-edited state.json
+    // (or a future writer that bypasses the write-side sanitiser)
+    // can land bogus values in the renderer (e.g. tileSize=99999
+    // would silently become the binary's default, OR a future bug
+    // would crash a write). We use the SAME sanitise helper as
+    // write() so the two paths can never drift.
+    if (raw.pipelineAdvancedSettings && typeof raw.pipelineAdvancedSettings === 'object') {
+      raw.pipelineAdvancedSettings = sanitisePipelineAdvancedSettings(raw.pipelineAdvancedSettings);
+    }
     return raw;
   } catch {
     return { tabs: {} };
@@ -65,6 +168,25 @@ function write(s) {
   // toggle + settings. The previous version only persisted `tabs`, which
   // silently dropped the per-tab folder map and the last-active-tab on
   // every save.
+  // v1.1.23 (reported by user — "we still see lots of popups,
+  // even though they are turned off"): pre-v1.1.18 the default
+  // popup policy was 'once-fresh', which fires every gated popup
+  // until the user dismisses it. Users who upgraded in-place from
+  // v1.1.0 still have `popupPolicy: 'once-fresh'` (and an empty
+  // `seenPopups`) in their state.json, so the "popups off by
+  // default" change in v1.1.18 silently had no effect for them.
+  // Migration: if the persisted value is 'once-fresh' AND the
+  // user never confirmed a v1.1.18+ build (lastSeenVersion is
+  // empty or < '1.1.18'), downgrade to 'never'. Users who
+  // actively chose 'once-fresh' in the Settings dialog after
+  // the v1.1.18 change have lastSeenVersion ≥ '1.1.18' so
+  // their choice is preserved.
+  const _POLICY_WHITELIST = ['once-fresh', 'per-session', 'never', 'always'];
+  const _lastSeenV = (typeof s?.lastSeenVersion === 'string') ? s.lastSeenVersion : '';
+  const _persistedPolicy = _POLICY_WHITELIST.includes(s?.popupPolicy) ? s.popupPolicy : 'never';
+  const _legacyOnceFresh = s?.popupPolicy === 'once-fresh'
+    && (!_lastSeenV || _lastSeenV < '1.1.18');
+  const _resolvedPolicy = _legacyOnceFresh ? 'never' : _persistedPolicy;
   const clean = {
     tabs: (s && s.tabs && typeof s.tabs === 'object') ? s.tabs : {},
     currentTab: (s && typeof s.currentTab === 'string') ? s.currentTab : null,
@@ -230,20 +352,24 @@ function write(s) {
       : '',
     // Popup display policy. Controls how the optional "first run"
     // / "tab intro" popups behave:
-    //   'once-fresh'   — default. Show each popup until the user
-    //                    dismisses it; then never show it again
-    //                    (across restarts).
+    //   'once-fresh'   — Show each popup until the user dismisses it;
+    //                    then never show it again (across restarts).
     //   'per-session'  — Show each popup the first time it's
     //                    triggered after each app start; reset on
     //                    every launch.
-    //   'never'        — Never show these popups.
+    //   'never'        — default. Never show these informational popups
+    //                    (welcome / tab-intro / optional add-ons).
     //   'always'       — Always show these popups (ignoring any
     //                    prior dismissal).
+    // Bug-fix (reported by user — "make popups off default off"): the
+    // default is now 'never' so a fresh install shows none of the
+    // informational popups. The required first-time setup (API key +
+    // output folder) is NOT one of these — it shows whenever the config
+    // is incomplete, independent of this policy (see openFirstTimeSetup).
     // Whitelisted so a corrupted state.json can't inject an
-    // arbitrary value.
-    popupPolicy: ['once-fresh', 'per-session', 'never', 'always'].includes(s?.popupPolicy)
-      ? s.popupPolicy
-      : 'once-fresh',
+    // arbitrary value. The legacy-default migration (see top of
+    // write()) is applied here via _resolvedPolicy.
+    popupPolicy: _resolvedPolicy,
     // Map of popup-id → ISO timestamp of when the user dismissed
     // it. Used by the 'once-fresh' policy to decide whether the
     // popup should still fire. Capped to a small set (popups a
@@ -273,6 +399,48 @@ function write(s) {
       if (!Number.isFinite(n) || n <= 0) return 200;
       return Math.max(20, Math.min(1000, Math.round(n)));
     })(),
+    // Bug-fix B5 (_temp5.md): the four settings below were
+    // documented "Persisted to state.json" but were absent from
+    // BOTH the renderer's STATE_PERSIST_KEYS and this whitelist,
+    // so they silently reset on every restart. Each is sanitised
+    // the same way its neighbours are (boolean coercion / string
+    // whitelist) so a corrupted state.json can't sneak a bad
+    // value through.
+    // "Don't save my API key" checkbox state (v1.1.13).
+    apiKeyNoSave: s?.apiKeyNoSave === true,
+    // File-browser type filter (v1.1.11). Empty string = "All
+    // types". Capped at 256 chars (the comma-separated extension
+    // list is short in practice) so a corrupted write can't bloat
+    // state.json.
+    fbTypeFilter: (typeof s?.fbTypeFilter === 'string')
+      ? s.fbTypeFilter.slice(0, 256)
+      : '',
+    // BatchGen "keep completed items" toggle (v1.1.14). Default
+    // true matches the original behaviour (the user explicitly
+    // asked for auto-remove, so the default IS auto-remove).
+    batchesAutoRemove: s?.batchesAutoRemove !== false,
+    // BatchGen example-export format (v1.1.13). Whitelisted to
+    // the two formats the export button actually emits.
+    batchesExportFormat: ['md', 'txt'].includes(s?.batchesExportFormat)
+      ? s.batchesExportFormat
+      : 'md',
+    // v1.1 (advanced pipeline settings overlay): per-feature
+    // advanced parameters that the user can tune in ⚙ Settings →
+    // Image → "Advanced pipeline settings…". Each sub-object is
+    // sanitised independently so a corrupted state.json can't
+    // inject an out-of-range number / a non-whitelisted string
+    // into a CLI arg or a sharp encoder option. The defaults
+    // match the previous hard-coded behaviour so existing flows
+    // produce identical output until the user explicitly changes
+    // something.
+    //
+    // v1.1 (audit AUDIT-01 + AUDIT-05): the sanitisation is now
+    // delegated to the shared sanitisePipelineAdvancedSettings
+    // helper so the read path uses the same logic. The previous
+    // inline expression had a `Number(x) || default` falsy-fallback
+    // bug that silently rejected 0 (so a user could never select
+    // "highest quality mp3", "no filter", or "fastest encode").
+    pipelineAdvancedSettings: sanitisePipelineAdvancedSettings(s && s.pipelineAdvancedSettings),
   };
   // Phase C: enforce the L2 cap and move the overflow to L3
   // (the JSONL archive). The move is best-effort: a failing
@@ -281,8 +449,10 @@ function write(s) {
   // list. The trimmed entries are lost from L2 but the
   // user-visible "the file was saved" toast is honest.
   if (Array.isArray(clean.jobsSnapshot) && clean.jobsSnapshot.length > clean.jobsArchiveCap) {
-    fs.appendFileSync(require('os').tmpdir() + '/state-trace.log',
-      'TRIM: ' + clean.jobsSnapshot.length + ' cap=' + clean.jobsArchiveCap + ' dir=' + configDir() + '\n');
+    // Bug-fix B3 (_temp5.md): removed a leftover debug
+    // `fs.appendFileSync(%TEMP%/state-trace.log, ...)` here. It was
+    // dormant only while B1 kept jobsSnapshot null, and would have
+    // started growing a temp file on every save once B1 was fixed.
     const overflow = clean.jobsSnapshot.slice(0, clean.jobsSnapshot.length - clean.jobsArchiveCap);
     clean.jobsSnapshot = clean.jobsSnapshot.slice(-clean.jobsArchiveCap);
     const archive = _archive();
