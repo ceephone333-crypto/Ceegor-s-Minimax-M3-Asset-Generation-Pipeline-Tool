@@ -2,7 +2,7 @@
 
 A desktop interface and automated asset pipeline for Windows designed to streamline workflows with the Minimax APIs. 
 
-This project provides a complete graphical user interface (GUI) and structural wrapper around all currently available Minimax models. It eliminates the need for terminal-only operations, prevents the use of incompatible parameter combinations by dynamically exposing only supported settings, and automates downstream asset management tasks.
+This project provides a complete graphical user interface (GUI) and structural wrapper around all currently available Minimax models (June 2026). It eliminates the need for terminal-only operations, prevents the use of incompatible parameter combinations by dynamically exposing only supported settings, and automates downstream asset management tasks.
 
 ---
 
