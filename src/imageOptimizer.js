@@ -19,9 +19,11 @@ const {
   DEFAULT_QUALITY,
   SUPPORTED_INPUT,
   SUPPORTED_OUTPUT,
+  EXT_FOR_FORMAT,
   normaliseFormat,
   normaliseQuality,
   inferFormatFromPath,
+  detectRealFormat,
   ensureSharp,
   emptyResult,
 } = require('./imageOptimizer/formatUtils');
@@ -56,9 +58,22 @@ async function optimize(srcPath, opts) {
   }
 
   // --- Format / quality normalisation ------------------------------------
-  const inputFormat = inferFormatFromPath(srcPath);
+  // bug-fix M6 (_temp4.md): sniff the real format from file content
+  // first — mmx writes the CDN's actual bytes verbatim regardless of
+  // the --out extension (e.g. a JPEG written to "foo.png"), so trusting
+  // the extension here used to silently re-encode photographic JPEGs
+  // as PNG (large size bloat) whenever opts.format asked to "keep" the
+  // source format. Fall back to the extension only if content
+  // detection is unavailable/inconclusive.
+  const sniffedFormat = await detectRealFormat(srcPath);
+  const inputFormat = SUPPORTED_INPUT.has(sniffedFormat) ? sniffedFormat : inferFormatFromPath(srcPath);
   if (!inputFormat) {
-    return { ...emptyResult('Unsupported input format. Supported: JPEG, PNG, WebP.'),
+    // v1.1 (audit AUDIT-02): include AVIF in the supported list.
+    // sharp reports AVIF as 'heif' (HEIF container with AV1
+    // codec) and SUPPORTED_INPUT now includes 'heif', so a
+    // real AVIF file no longer lands here. The error message
+    // reflects the full supported set.
+    return { ...emptyResult('Unsupported input format. Supported: JPEG, PNG, WebP, AVIF.'),
              inputSize: inputStat.size };
   }
   let targetFormat = normaliseFormat(opts.format);
@@ -91,30 +106,76 @@ async function optimize(srcPath, opts) {
   }
 
   if (stripMetadata) {
-    pipeline = pipeline.withMetadata({ orientation: undefined });
+    // Bug-fix (v1.1 audit): the previous version called
+    // `.withMetadata({ orientation: undefined }).keepIccProfile()`
+    // here, which actually PRESERVES all metadata (withMetadata is
+    // the OPPOSITE of stripping in sharp — by default sharp strips
+    // everything). The user-facing label says "Strip non-essential
+    // EXIF (keeps ICC colour profile)" — to honour that, we keep
+    // ONLY the ICC profile and let sharp strip EXIF/XMP/IPTC plus
+    // the orientation tag. `keepIccProfile()` alone (without
+    // withMetadata) does exactly that.
     pipeline = pipeline.keepIccProfile();
   } else {
+    // User explicitly asked to keep all metadata. withMetadata({})
+    // preserves EXIF/XMP/IPTC and attaches a web-friendly sRGB ICC
+    // profile when appropriate.
     pipeline = pipeline.withMetadata({});
   }
 
-  // Format-specific encoders
+  // Format-specific encoders. The advanced settings overlay
+  // (renderer/sections/section25_*.js) can pass per-format knobs:
+  //   jpeg: chromaSubsampling ('4:2:0' | '4:4:4'), mozjpeg (bool)
+  //   png:  compressionLevel (1..9), palette (bool)
+  //   webp: mode ('lossy' | 'lossless' | 'nearLossless'), effort (0..6)
+  //   avif: effort (0..9), chromaSubsampling ('4:4:4' | '4:2:0')
+  // When the caller doesn't pass any of these, the defaults below
+  // match the previous hard-coded behaviour so existing flows
+  // (post-generation chain, right-click Optimise overlay) keep
+  // producing identical bytes.
+  const enc = opts.encoders || {};
   switch (targetFormat) {
     case 'jpeg':
       pipeline = pipeline.jpeg({
-        quality, mozjpeg: true, progressive: true, chromaSubsampling: '4:2:0',
+        quality,
+        mozjpeg: enc.jpegMozjpeg !== false,
+        progressive: true,
+        chromaSubsampling: enc.jpegChromaSubsampling === '4:4:4' ? '4:4:4' : '4:2:0',
       });
       break;
-    case 'png':
-      pipeline = pipeline.png({
-        quality, compressionLevel: 9, palette: true, effort: 10,
-      });
+    case 'png': {
+      // v1.1 (audit L4): sharp silently ignores `quality` for PNG
+      // (PNG is lossless). We omit it so the encoder doesn't see a
+      // confusing knob, and so a future sharp version that DOES
+      // honour `quality` for PNG (e.g. palette-quantisation quality)
+      // doesn't silently change behaviour.
+      const pngOpts = {
+        compressionLevel: Math.max(1, Math.min(9, Math.round(enc.pngCompressionLevel) || 9)),
+        palette: enc.pngPalette !== false,
+        effort: 10,
+      };
+      pipeline = pipeline.png(pngOpts);
       break;
-    case 'webp':
-      pipeline = pipeline.webp({ quality, effort: 6, lossless: false });
+    }
+    case 'webp': {
+      // webpMode: 'lossy' (default, smallest) | 'lossless' (for
+      // screenshots / line art) | 'nearLossless' (middle ground).
+      const mode = enc.webpMode || 'lossy';
+      if (mode === 'lossless') {
+        pipeline = pipeline.webp({ quality, effort: Math.max(0, Math.min(6, Math.round(enc.webpEffort) || 6)), lossless: true });
+      } else if (mode === 'nearLossless') {
+        pipeline = pipeline.webp({ quality, effort: Math.max(0, Math.min(6, Math.round(enc.webpEffort) || 6)), nearLossless: true });
+      } else {
+        pipeline = pipeline.webp({ quality, effort: Math.max(0, Math.min(6, Math.round(enc.webpEffort) || 6)), lossless: false });
+      }
       break;
+    }
     case 'avif':
       pipeline = pipeline.avif({
-        quality, effort: 9, lossless: false, chromaSubsampling: '4:2:0',
+        quality,
+        effort: Math.max(0, Math.min(9, Math.round(enc.avifEffort) || 9)),
+        lossless: false,
+        chromaSubsampling: enc.avifChromaSubsampling === '4:2:0' ? '4:2:0' : '4:4:4',
       });
       break;
   }
@@ -145,9 +206,14 @@ async function optimize(srcPath, opts) {
   }
 
   // --- Metadata for the UI ----------------------------------------------
+  // Read from the in-memory outBuf (the exact bytes just written) rather
+  // than re-opening outputPath from disk: sharp/libvips can hold a file
+  // handle open briefly after a path-based read (observed with the webp
+  // decoder), which then races a caller that immediately tries to
+  // rename/delete the file on Windows.
   let width = 0, height = 0;
   try {
-    const meta = await sharp(outputPath).metadata();
+    const meta = await sharp(outBuf).metadata();
     width = meta.width || 0;
     height = meta.height || 0;
   } catch (_) { /* best-effort */ }
@@ -170,8 +236,59 @@ async function optimize(srcPath, opts) {
   };
 }
 
+/**
+ * bug-fix M6 (_temp4.md): mmx downloads the CDN's actual image bytes
+ * and writes them verbatim to --out — but the renderer hardcodes the
+ * file's extension (always .png for the image tab) because the mmx
+ * image API has no output-format parameter. The CDN sometimes returns
+ * JPEG bytes, producing a "name.png" file that is actually a JPEG.
+ * Sniff the real format from content and rename the file to match
+ * when they disagree, so the on-disk name always reflects the real
+ * bytes (force-prefix's "exact name" promise, and imageOptimizer's
+ * own format inference, both depend on this).
+ *
+ * @param {string} filePath Absolute path to a just-written image file.
+ * @returns {Promise<{ ok: boolean, path: string, renamed: boolean, error?: string }>}
+ */
+async function fixExtensionToMatchContent(filePath) {
+  if (!filePath || typeof filePath !== 'string') {
+    return { ok: false, path: filePath, renamed: false, error: 'Path is required.' };
+  }
+  const sharpErr = ensureSharp();
+  if (sharpErr) return { ok: false, path: filePath, renamed: false, error: sharpErr };
+
+  const realFormat = await detectRealFormat(filePath);
+  const realExt = realFormat && EXT_FOR_FORMAT[realFormat];
+  if (!realExt) {
+    // Undetectable / not a format we know how to name — leave the
+    // file alone rather than guess.
+    return { ok: true, path: filePath, renamed: false };
+  }
+  const currentExtRaw = (path.extname(filePath) || '').replace(/^\./, '').toLowerCase();
+  const currentFormat = currentExtRaw === 'jpg' ? 'jpeg' : currentExtRaw;
+  if (currentFormat === realFormat) {
+    return { ok: true, path: filePath, renamed: false };
+  }
+
+  const dir = path.dirname(filePath);
+  const stem = path.basename(filePath, path.extname(filePath));
+  let newPath = path.join(dir, `${stem}.${realExt}`);
+  try {
+    let n = 1;
+    while (await fsp.access(newPath).then(() => true, () => false)) {
+      newPath = path.join(dir, `${stem}_${n}.${realExt}`);
+      n += 1;
+    }
+    await fsp.rename(filePath, newPath);
+    return { ok: true, path: newPath, renamed: true, fromExt: currentExtRaw, toExt: realExt };
+  } catch (e) {
+    return { ok: false, path: filePath, renamed: false, error: String((e && e.message) || e) };
+  }
+}
+
 module.exports = {
   optimize,
+  fixExtensionToMatchContent,
   DEFAULT_QUALITY,
   SUPPORTED_INPUT: Array.from(SUPPORTED_INPUT),
   SUPPORTED_OUTPUT: Array.from(SUPPORTED_OUTPUT),

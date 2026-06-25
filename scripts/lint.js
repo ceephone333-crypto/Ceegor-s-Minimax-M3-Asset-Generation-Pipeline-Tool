@@ -37,6 +37,9 @@ const LEGACY_OVERSIZE = new Set([
   'section03_Settings_tab_panes.js',  // 534 Z. — General + Image + BatchGen + Styles + Popups + Shortcuts panes (Phase 3 + v1.1.14)
   'LogService.js',       // Phase A of _plan3.md: row layout + selection + keyboard + autoscroll + JobRunner integration (one of two planned split targets; split in Phase B/C)
   'batchManager.js',     // Phase 4 Fix 2 + Phase A: per-tab re-entrancy check uses _isTabRunningNow (no behaviour change); the underlying god-function is unchanged
+  'batchImportHelper.js', // 508 Z. — bug-fix H6 (_temp5.md 360° audit) added the combo-select-enum branch to getTabInputValue/setTabInputValue, pushing it past the 500 limit. Decomposition is a separate task; the fix is a necessary behavior addition mirroring the existing combo-select-number branch.
+  'JobRunner.js',         // BUG-9-07 (user-reported, 2026-06-25): _addLogSecondary grew when we added the primary-row vs suppressLogRow branching (appendLogDetails vs addLogEvent fallback). Decomposition is a separate task; the fix is necessary to make mmx stderr lines land in the correct log row instead of duplicating.
+  'modelSpecs.js',        // BUG-9-08 (user-reported, 2026-06-25): validateToolCombos + extended mmxPreflightConfirm signature pushed past 300 lines. The added function is pure validation with no DOM/log side effects — safe to keep co-located with the API spec data it validates against.
 ]);
 
 // "God Words" — Dateien mit diesen Suffixen werden abgelehnt.

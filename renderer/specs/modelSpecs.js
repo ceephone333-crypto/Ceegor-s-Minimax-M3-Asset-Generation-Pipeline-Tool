@@ -383,18 +383,86 @@ function validateValues(tabKey, values, opts) {
   return { errors };
 }
 
-// Live pre-generation guard. Runs validateValues and, if anything looks
-// invalid, warns the user with the specific reasons and lets them decide
-// (OK = generate anyway, Cancel = stop). We deliberately do NOT hard-block
-// — a false positive must never lock the user out of generating. Returns
-// true when generation should proceed.
-function mmxPreflightConfirm(tabKey, values) {
+// Tool-level combo validator. Checks things the MiniMax API itself
+// accepts (so they wouldn't show up in validateValues) but that the
+// GUI warns the user about because they tend to surprise or cost API
+// quota. Currently:
+//   • image: --n (per-call count) combined with the Variants dropdown
+//     (re-spawns mmx N times) multiplies the image count and the
+//     mmx-call count. A user who sets --n=2 + Variants=2 expects 2
+//     images and instead burns 4 API calls (and may hit rate limits
+//     on the rapid back-to-back requests — observed by the user
+//     2026-06-25 as a silent "mmx exited with code -1" on the 2nd
+//     variant). Warn, don't block.
+//   • all tabs: a high Variants value (>3) is allowed but burns quota
+//     and increases the chance of a rate-limit failure mid-batch.
+//
+// `toolCtx` carries GUI state that validateValues() doesn't see
+// (variantsCount). Passing {} keeps this safe to call from older
+// call sites that only have the mmx-API values.
+function validateToolCombos(tabKey, values, toolCtx) {
+  const errors = [];
+  toolCtx = toolCtx || {};
+  const v = _mmxNorm(values || {});
+  if (tabKey === 'image') {
+    const n = _mmxNum(v.n);
+    const variants = Math.max(1, Math.floor(Number(toolCtx.variantsCount) || 1));
+    if (n != null && !Number.isNaN(n) && n > 1 && variants > 1) {
+      const total = n * variants;
+      errors.push(
+        `--n=${n} combined with Variants=${variants} will spawn ${variants} ` +
+        `mmx calls, each requesting ${n} images, for a total of ${total} ` +
+        `images. Multiple rapid mmx calls can trigger rate limits (observed: ` +
+        `silent "mmx exited with code -1" on the 2nd variant). Consider using ` +
+        `just one of --n or Variants.`
+      );
+    }
+    // Total-image budget: anything beyond 9 images (the per-call
+    // maximum) is technically allowed by the API but is a strong
+    // signal the user misread the controls. Warn so they can
+    // adjust before burning quota.
+    if (variants > 1) {
+      const total = (n != null && !Number.isNaN(n) ? n : 1) * variants;
+      if (total > 9) {
+        errors.push(
+          `Total images (--n × Variants = ${total}) exceeds the API's ` +
+          `per-call maximum of 9 and will consume ${total} API credits.`
+        );
+      }
+    }
+  } else if (tabKey === 'speech' || tabKey === 'music' || tabKey === 'video') {
+    const variants = Math.max(1, Math.floor(Number(toolCtx.variantsCount) || 1));
+    if (variants > 3) {
+      errors.push(
+        `Variants is set to ${variants}. This will spawn ${variants} ` +
+        `${tabKey} generation calls in rapid succession and may trigger ` +
+        `API rate limits.`
+      );
+    }
+  }
+  return { errors };
+}
+
+// Live pre-generation guard. Runs validateValues AND validateToolCombos
+// (if a toolCtx is provided) and, if anything looks problematic, warns
+// the user with the specific reasons and lets them decide (OK = generate
+// anyway, Cancel = stop). We deliberately do NOT hard-block — a false
+// positive must never lock the user out of generating. Returns true when
+// generation should proceed.
+function mmxPreflightConfirm(tabKey, values, toolCtx) {
   try {
-    const { errors } = validateValues(tabKey, values);
-    if (errors && errors.length) {
+    const apiErrors = (validateValues(tabKey, values) || {}).errors || [];
+    const toolErrors = (validateToolCombos(tabKey, values, toolCtx) || {}).errors || [];
+    const all = apiErrors.concat(toolErrors);
+    if (all.length) {
+      const lead = apiErrors.length && toolErrors.length
+        ? 'These settings may cause issues (mix of API-level and tool-level warnings):'
+        : apiErrors.length
+          ? 'These settings will likely be rejected by the MiniMax API:'
+          : 'Heads up — these settings may produce unexpected results:';
       return window.confirm(
-        'These settings will likely be rejected by the MiniMax API:\n\n• ' +
-        errors.join('\n• ') +
+        lead + '\n\n• ' +
+        all.join('\n• ') +
         '\n\nGenerate anyway?'
       );
     }
@@ -402,4 +470,4 @@ function mmxPreflightConfirm(tabKey, values) {
   return true;
 }
 
-window.ModelSpecs = { MODEL_SPECS, MMX_ALLOWED, getRowSpec, validateTabAgainstSpec, validateValues, mmxPreflightConfirm };
+window.ModelSpecs = { MODEL_SPECS, MMX_ALLOWED, getRowSpec, validateTabAgainstSpec, validateValues, validateToolCombos, mmxPreflightConfirm };

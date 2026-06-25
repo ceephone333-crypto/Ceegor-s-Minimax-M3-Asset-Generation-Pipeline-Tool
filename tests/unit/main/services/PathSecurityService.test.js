@@ -65,10 +65,24 @@ test('getAllowedRoots uses the configured output_dir when set', () => {
 
 test('addTrusted adds a non-output_dir path to the allow-list', () => {
   withConfig({ output_dir: '', api_key: '', region: 'global', theme: 'dark', styles: [], raw: '' }, () => {
-    pathSecurity.addTrusted('C:/user/picked/folder');
+    // BUG-9-04: addTrusted now normalises the path through
+    // path.resolve() so the same path string is used everywhere
+    // (forward slashes get converted to the OS native separator
+    // on Windows, then `isPathUnderAny` does a case-insensitive
+    // comparison that ignores the separator). The test asserts
+    // the BEHAVIOUR (the picked folder is reachable for writes
+    // and its subfolders are too), not the exact string in the
+    // set.
+    const picked = 'C:/user/picked/folder';
+    pathSecurity.addTrusted(picked);
     const roots = pathSecurity.getAllowedRoots();
-    assert.ok(roots.includes('C:/user/picked/folder'));
-    assert.equal(pathSecurity.isPathUnderAny('C:/user/picked/folder/x.png'), true);
+    // The picked path (in either form) must appear in the roots.
+    const norm = path.resolve(picked);
+    assert.ok(roots.some((r) => r && r.toLowerCase() === norm.toLowerCase()),
+      `addTrusted should normalise and add the picked path; roots = ${JSON.stringify(roots)}`);
+    // Subfolders of the picked path are reachable for writes.
+    assert.equal(pathSecurity.isPathUnderAny(path.join(norm, 'x.png')), true,
+      'a file under the picked folder must be reachable');
   });
 });
 

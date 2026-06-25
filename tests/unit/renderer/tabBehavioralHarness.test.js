@@ -153,11 +153,19 @@ function makeEl(tag) {
     },
     getBoundingClientRect() { return { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }; },
     set textContent(v) { this._text = v; this.children = []; },
-    get textContent() { return this._text != null ? this._text : this.children.map((c) => c.textContent || '').join(''); },
+    // textContent must reflect children when _text is unset (the
+      // common case for <button>Save</button>). The previous
+      // 'this._text != null ? this._text : ...' returned '' whenever
+      // _text was the initial '' (the makeEl default), even if the
+      // element had a SPAN child with text.
+      get textContent() { return this._text || this.children.map((c) => c.textContent || '').join(''); },
     set innerHTML(v) { this._innerHTML = v; this.children = []; },
     get innerHTML() { return this._innerHTML || ''; },
     get value() { return this._value; },
     set value(v) { this._value = v; },
+    // Mirror real DOM: inp.type = 'text' reflects in attributes.type.
+    get type() { return this.attributes.type; },
+    set type(v) { this.attributes.type = v; },
   };
   return el;
 }
@@ -427,7 +435,7 @@ function loadTabInSandbox(tabKey) {
   const sandbox = buildSandbox();
   const context = vm.createContext(sandbox);
   sandbox.setInterval = () => 0;
-  sandbox.setTimeout = (fn) => { try { fn(); } catch (_) {} return 0; };
+  sandbox.setTimeout = () => 0;
   sandbox.clearInterval = () => {};
   sandbox.clearTimeout = () => {};
   sandbox.queueMicrotask = (fn) => { try { fn(); } catch (_) {} };

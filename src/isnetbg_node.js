@@ -72,17 +72,31 @@ function findModelPath() {
 // the C# binary, with positional fallbacks so the same args
 // work for either backend. Mirrors src/isnetbg.js' argv parsing
 // (the wrapper calls us with the exact same flags).
+//
+// v1.1 (advanced pipeline settings overlay): also accepts
+//   --intra-op <n>      intra-op thread count (CPU EP only)
+//   --inter-op <n>      inter-op thread count (CPU EP only)
+//   --execution-mode <sequential|parallel>
+// These map directly to onnxruntime-node SessionOptions fields
+// (see src/isnetbg.js runNode for the spawn side).
 function parseArgs(argv) {
   let input = null, output = null, useGpu = false;
+  let intraOpNumThreads = 0, interOpNumThreads = 0, executionMode = 'sequential';
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--input' || a === '-i') input = argv[++i];
     else if (a === '--output' || a === '-o') output = argv[++i];
     else if (a === '--use-gpu') useGpu = (argv[++i] || '1') !== '0';
+    else if (a === '--intra-op') intraOpNumThreads = Math.max(0, Math.min(64, Math.round(Number(argv[++i]) || 0)));
+    else if (a === '--inter-op') interOpNumThreads = Math.max(0, Math.min(64, Math.round(Number(argv[++i]) || 0)));
+    else if (a === '--execution-mode') {
+      const v = argv[++i];
+      executionMode = (v === 'parallel') ? 'parallel' : 'sequential';
+    }
     else if (!input && /\.(png|jpg|jpeg|webp)$/i.test(a)) input = a;
     else if (!output && /\.(png|jpg|jpeg|webp)$/i.test(a)) output = a;
   }
-  return { input, output, useGpu };
+  return { input, output, useGpu, intraOpNumThreads, interOpNumThreads, executionMode };
 }
 
 // Bicubic interpolation kernel (Catmull-Rom variant) used for
@@ -180,7 +194,7 @@ async function infer(session, inputNchw) {
 
 async function main() {
   const argv = process.argv.slice(2);
-  const { input, output, useGpu } = parseArgs(argv);
+  const { input, output, useGpu, intraOpNumThreads, interOpNumThreads, executionMode } = parseArgs(argv);
   if (!input || !output) {
     process.stderr.write('Usage: node isnetbg_node.js --input <path> --output <path> [--use-gpu <0|1>]\n');
     process.exit(2);
@@ -218,6 +232,14 @@ async function main() {
     // accidentally pull a GPU EP that happens to be installed.
     sessionOpts.executionProviders = [{ name: 'cpu' }];
   }
+  // v1.1 (advanced pipeline settings overlay): apply the
+  // user-tuned thread / execution-mode knobs. Only the CPU EP
+  // honours thread counts; GPU EPs ignore them, but they're
+  // harmless to set so we forward them unconditionally (the
+  // user explicitly chose these values).
+  if (intraOpNumThreads > 0) sessionOpts.intraOpNumThreads = intraOpNumThreads;
+  if (interOpNumThreads > 0) sessionOpts.interOpNumThreads = interOpNumThreads;
+  if (executionMode === 'parallel') sessionOpts.executionMode = 'parallel';
 
   const session = await ort.InferenceSession.create(modelPath, sessionOpts);
 

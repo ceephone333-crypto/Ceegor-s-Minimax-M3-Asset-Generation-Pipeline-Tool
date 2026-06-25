@@ -63,10 +63,25 @@ async function init() {
   // bottom state (level 4) close that gap.
   const FB_DRIVES_SENTINEL = '__DRIVES__';
   function isDrivesList() { return state.fbDir === FB_DRIVES_SENTINEL; }
+  // BUG-9-01a fix (_temp9.md): the renderer is a browser
+  // (contextIsolation:true, nodeIntegration:false) — `process` does
+  // NOT exist there. The previous `process.platform === 'win32'`
+  // branch threw `ReferenceError: process is not defined` on EVERY
+  // Up click from a subfolder or a drive root, and the click's
+  // try/catch swallowed the throw → the button silently did
+  // nothing. We now detect a drive root by SHAPE (the path itself),
+  // which is platform-agnostic: Windows drive roots look like
+  // `C:\`, `C:/`, `C:`; POSIX roots look like `/`; UNC roots are
+  // already handled by the `\\server\share` shape which isn't a
+  // drive root. This is the same idea the audit suggested — drop
+  // the platform check entirely.
   function isDriveRoot(p) {
     if (!p) return false;
-    if (process.platform === 'win32') return /^[A-Z]:[\\\/]?$/i.test(p);
-    return p === '/';
+    const s = String(p).replace(/[\\/]+$/, '');
+    if (!s) return false;
+    if (/^[A-Za-z]:[\\\/]?$/.test(s)) return true;     // Windows: C:\, D:/, C:
+    if (s === '/') return true;                          // POSIX root
+    return false;
   }
   function updateFbUpButton() {
     const btn = $('#fb-up');
@@ -424,10 +439,19 @@ async function init() {
   // the <details> collapse (same pattern as the other log buttons).
   const logHelpBtn = $('#log-help');
   if (logHelpBtn) {
+    // BUG-9-05 (user-reported, 2026-06-25): the log-bar `?`
+    // button used to open the help modal on click. Per the
+    // user's "the ones relating to ? buttons [should] only
+    // [be] shown while hovering over them" — the `?` icon is
+    // now hover-only. The `data-help` attribute is set in
+    // index.html on #log-help, so HelpTooltip shows the help
+    // text on mouseover. No click handler, no modal.
+    // (We keep a no-op listener that calls preventDefault so
+    // the button doesn't behave like a submit button if it
+    // ever ends up inside a <form> by accident.)
     logHelpBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (typeof showHelp === 'function') showHelp('log.structured');
     });
   }
   function _syncLogToggleLabel() {
@@ -640,10 +664,35 @@ async function init() {
   // builds still work — see preload.js onLogRich. We prefer onLogRich
   // (new payload) and fall back to onLog (legacy string) if the
   // preload doesn't expose it (e.g. older dev build).
+  // BUG-9-07 (user-reported, 2026-06-25): de-dup consecutive identical
+  // lines. The main process used to send each mmx line twice (once via
+  // onLog, once via onChunk — see main/ipc/registerMmxIpc.js), and we
+  // previously had no de-dup here, so every mmx line appeared twice in
+  // the log pane. The main-process fix (drop onLog from the job-aware
+  // path) removes the duplicate at the source, but a wide de-dup window
+  // HERE is a cheap safety net for any future regression in the main
+  // process, and for the observed behaviour where the user sees one
+  // log line per *variant* — a 250ms window was too tight because mmx
+  // can emit a duplicate two events later. 5 seconds is generous but
+  // still short enough that a real second occurrence of the same line
+  // would be intentional. mmx does not legitimately repeat a line
+  // within 5s. Hoisted so both the onLogRich and onLog paths share
+  // the same window.
+  const DEDUP_WINDOW_MS = 5000;
   if (window.api.onLogRich) {
+    let _lastLogLine = '';
+    let _lastLogAt = 0;
     window.api.onLogRich((payload) => {
       // payload = { line, jobId?, kind? }
       if (!payload) return;
+      const now = Date.now();
+      if (payload.line && payload.line === _lastLogLine && (now - _lastLogAt) < DEDUP_WINDOW_MS) {
+        // De-dup. Don't touch _lastLogAt so a third identical
+        // event also gets dropped, regardless of timing.
+        return;
+      }
+      _lastLogLine = payload.line || '';
+      _lastLogAt = now;
       if (payload.jobId) {
         // Attach to the job's primary row instead of adding a new
         // row. Free-form lines (no jobId) still get their own row
@@ -653,10 +702,18 @@ async function init() {
         }
         return;
       }
-      log(payload.line);
+      if (typeof log === 'function') log(payload.line);
     });
   } else {
-    window.api.onLog((line) => log(line));
+    let _lastLogLine2 = '';
+    let _lastLogAt2 = 0;
+    window.api.onLog((line) => {
+      const now = Date.now();
+      if (line === _lastLogLine2 && (now - _lastLogAt2) < DEDUP_WINDOW_MS) return;
+      _lastLogLine2 = line;
+      _lastLogAt2 = now;
+      if (typeof log === 'function') log(line);
+    });
   }
   // Wire the new log toolbar (jump, expand/collapse all, autoscroll chip).
   if (window.LogService && window.LogService.setupLogToolbar) {
@@ -1035,8 +1092,18 @@ function formatMmxError(r) {
 }
 // Classify an mmx error so the image tab's error UI can show targeted
 // troubleshooting tips (auth / rate / quota / network / server /
-// unknown). Matches a deliberately small set of substrings; the
+// silent / unknown). Matches a deliberately small set of substrings; the
 // patterns are case-insensitive on the combined stderr/stdout/msg blob.
+// 'silent' is the new bucket added for BUG-9-08 (reported 2026-06-25):
+// mmx exited with code -1 AND produced no stderr AND no stdout — the
+// main process's `proc.on('error')` path fires when the Node child
+// cannot be spawned OR dies before reaching mmx's own error handler.
+// mmx's own handler always prints "Error: <msg>" to stderr before
+// exiting, so a missing stderr with code -1 is the smoking gun for
+// "mmx crashed before it could print anything" — usually a rate-limit
+// crash on a rapid 2nd request, an out-of-memory kill, or a Node-level
+// spawn failure on a stale mmx-cli install. Detected BEFORE 'unknown'
+// so the tips + toast can be specific.
 function classifyMmxError(r, msg) {
   const combined = ((msg || '') + ' ' + (r.stderr || '') + ' ' + (r.stdout || '')).toLowerCase();
   if (/401|403|unauthor|forbidden|invalid.api.key|api.key.*invalid|auth.*fail/.test(combined)) return 'auth';
@@ -1051,17 +1118,28 @@ function classifyMmxError(r, msg) {
   if (/quota|not.in.plan|exhaust|insufficient/.test(combined)) return 'quota';
   if (/enotfound|econnrefused|econnreset|etimedout|network|dns/.test(combined)) return 'network';
   if (/500|502|503|504|server.error|system.error|internal/.test(combined)) return 'server';
+  // Silent failure: code -1 (proc.on('error') path) + empty stderr + empty stdout.
+  // mmx normally writes "Error: <msg>" to stderr before exit, so a true blank
+  // stderr is meaningful — it means mmx died before any error handler ran.
+  const codeIsNeg = (r && (r.code === -1 || r.code === null || r.code === undefined));
+  const stderrEmpty = !(r && r.stderr && String(r.stderr).trim());
+  const stdoutEmpty = !(r && r.stdout && String(r.stdout).trim());
+  const msgEmpty = !msg || !String(msg).trim() || /mmx exited with code -1/i.test(String(msg));
+  if (codeIsNeg && stderrEmpty && stdoutEmpty && msgEmpty) return 'silent';
   return 'unknown';
 }
 // Whether an mmx failure is worth retrying. Permanent failures (bad
-// credentials, exhausted quota, a missing input file) will fail
-// identically on every retry — retrying just wastes the user's time and,
-// for a missing reference image, hammers the same non-existent path 4×
-// (reported by user). Only the transient classes (rate-limit, network
-// blip, 5xx / "system error (HTTP 200)") are retried.
+// credentials, exhausted quota, a missing input file, silent mmx crash)
+// will fail identically on every retry — retrying just wastes the user's
+// time and, for a missing reference image, hammers the same non-existent
+// path 4× (reported by user). Only the transient classes (rate-limit,
+// network blip, 5xx / "system error (HTTP 200)") are retried. 'silent'
+// is treated as non-retryable because the cause is typically an
+// out-of-band rate-limit / OOM / spawn failure that won't clear in <1s
+// — the user should wait before retrying (BUG-9-08).
 function isRetryableMmxError(r, msg) {
   const cls = classifyMmxError(r, msg);
-  return !(cls === 'auth' || cls === 'quota' || cls === 'input');
+  return !(cls === 'auth' || cls === 'quota' || cls === 'input' || cls === 'silent');
 }
 // Bump the in-session "N generations this session" counter shown in
 // the status bar. Called from every gen handler's success path (image /

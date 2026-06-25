@@ -189,6 +189,14 @@ test('preload bridge exposes every tool function and maps to the expected channe
     // process rejects any dir that's not already a descendant
     // of a trusted root.
     'fbTrustAncestors',
+    // BUG-9-04 (user-reported, 2026-06-25): fbSetActiveDir is
+    // the new IPC the renderer uses to push its current
+    // `state.fbDir` to the main process on every navigation.
+    // The main process uses the pushed value as the single
+    // explicit gate for every write IPC — matching the user's
+    // "the generated image may always only be written in the
+    // folder shown in the folder explorer" requirement.
+    'fbSetActiveDir',
     'fbMkdir',
     'fbEnsureDir',
     'fbRename',
@@ -251,6 +259,7 @@ test('preload bridge exposes every tool function and maps to the expected channe
     ['mmxCancel', [], 'mmx:cancel'],
     ['fbList', ['C:\\work'], 'fb:list'],
     ['fbTrustAncestors', ['C:\\work\\sub'], 'fb:trust-ancestors'],
+    ['fbSetActiveDir', ['C:\\work\\sub'], 'fb:set-active-dir'],
     ['fbMkdir', ['C:\\work', 'sub'], 'fb:mkdir'],
     ['fbEnsureDir', ['C:\\work\\newdir'], 'fb:ensureDir'],
     ['fbRename', ['C:\\work\\a.txt', 'b.txt'], 'fb:rename'],

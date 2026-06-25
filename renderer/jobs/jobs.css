@@ -265,18 +265,14 @@
 /* ========== Persisted L2 rows (Phase C) ==========
    The bottom-of-log rows for jobs finished in a previous
    session. They're status-coloured but visually muted
-   (lower opacity) and not clickable. The ↻ icon signals
-   "from previous session". */
+   (lower opacity) and not clickable. The ↻ icon (rendered via the
+   shared .log-type-icon class — see renderPersistedL2, bug-fix M2)
+   signals "from previous session"; row opacity below already mutes
+   it along with the rest of the row, so it needs no icon-specific
+   rule of its own. */
 .log-event-persisted {
   opacity: 0.72;
   cursor: default;
   border-left: 2px solid var(--fg-3);
 }
 .log-event-persisted:hover { background: transparent; }
-.log-event-persisted .log-persisted-icon {
-  display: inline-block;
-  margin-right: 6px;
-  color: var(--fg-3);
-  font-size: 14px;
-  vertical-align: -2px;
-}

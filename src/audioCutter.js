@@ -17,7 +17,7 @@ const { runFFmpeg } = require('./audio/AudioRunner'); // re-exported for tests
 const { probe } = require('./audio/AudioMetadata');
 const { decodePeaks } = require('./audio/AudioWaveform');
 const { findZeroCrossing } = require('./audio/AudioMath');
-const { trimSilence, cut } = require('./audio/AudioTrimCut');
+const { trimSilence, cut, codecArgsFor, CODEC_BY_EXT } = require('./audio/AudioTrimCut');
 
 module.exports = {
   // Binary
@@ -31,6 +31,10 @@ module.exports = {
   // High-level
   trimSilence,
   cut,
+  // Codec map + per-ext argv builder (re-exported for tests +
+  // so the audio cutter modal can introspect defaults).
+  codecArgsFor,
+  CODEC_BY_EXT,
   // Internals (re-exported for tests + future use)
   runFFmpeg,
 };

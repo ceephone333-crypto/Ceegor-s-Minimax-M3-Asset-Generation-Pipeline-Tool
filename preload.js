@@ -42,6 +42,13 @@ contextBridge.exposeInMainWorld('api', {
 
   // ---- file browser ----
   fbList: (dir) => ipcRenderer.invoke('fb:list', dir),
+  // BUG-9-04 (user-reported, 2026-06-25): the renderer pushes
+  // its current `state.fbDir` to the main process on every
+  // navigation. The main process uses this as the single
+  // explicit gate for every write IPC ("you can only write in
+  // the folder you're looking at"). The IPC mirrors
+  // setActiveDir() in main/services/PathSecurityService.js.
+  fbSetActiveDir: (dir) => ipcRenderer.invoke('fb:set-active-dir', dir),
   // v1.1.28: trust a path + its ancestors so the Up button can
   // climb out of output_dir without forcing the user through the
   // file picker. Only walks up from an already-trusted root.

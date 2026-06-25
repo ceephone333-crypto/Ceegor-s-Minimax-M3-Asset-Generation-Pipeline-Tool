@@ -25,6 +25,22 @@ window.STATE_PERSIST_KEYS = [
   'removeBackgroundEnabled', 'removeBackgroundUseGpu',
   'optimizeSettings', 'layoutSettings', 'fbSort', 'fbColumns',
   'fbThumbnails', 'fbShowAllFiles', 'lastSeenVersion', 'popupPolicy', 'seenPopups',
+  // Phase C (bug-fix B1, _temp5.md): the L2 jobs snapshot + its cap
+  // MUST be in the persist list, otherwise saveAllStates() never sends
+  // them and init()'s load loop never reads them back — so the entire
+  // "previous session" log rows + the L3 JSONL archive + the History
+  // pane's cap input silently reset on every restart.
+  'jobsSnapshot', 'jobsArchiveCap',
+  // Bug-fix B5 (_temp5.md): four settings documented as "persisted to
+  // state.json" were missing from this list AND from src/state.js
+  // write()'s whitelist, so they reset to default on every restart.
+  'apiKeyNoSave', 'fbTypeFilter', 'batchesAutoRemove', 'batchesExportFormat',
+  // v1.1 (advanced pipeline settings): the per-feature advanced
+  // parameter object (Real-ESRGAN tile/tta/gpu, IS-Net threads,
+  // Sharp encoder knobs, ffmpeg silence threshold + codec bitrate).
+  // Sanitised at the src/state.js write() boundary; the renderer
+  // treats it as opaque except for the overlay that edits it.
+  'pipelineAdvancedSettings',
 ];
 window.state = {
   config: { api_key: '', output_dir: '', region: 'global', theme: 'dark', styles: [] },
@@ -294,7 +310,11 @@ window.state = {
   //   'always'       — Always show these popups (ignoring any
   //                    prior dismissal).
   // The user can change this in ⚙ Settings → Popups.
-  popupPolicy: 'once-fresh',
+  // Bug-fix (reported by user — "make popups off default off"): default
+  // 'never' so a fresh install shows no informational popups. Required
+  // first-time setup still shows when the config is incomplete (it is not
+  // gated by this policy — see openFirstTimeSetup / showStartupPopup).
+  popupPolicy: 'never',
   // Map of popup-id → ISO timestamp of the user's last dismissal.
   // Used by the 'once-fresh' policy to decide whether the popup
   // should still fire. We also keep an in-memory per-session set
@@ -309,6 +329,19 @@ window.state = {
   // assignment — and the autosave in saveAllStates never included
   // it either.
   lastSeenVersion: '',
+  // Phase C (bug-fix B1, _temp5.md): L2 list of finished-job
+  // summaries. `null` (not `[]`) until the first job finishes so
+  // a fresh state.json doesn't carry an empty array. Declared here
+  // so the shape is greppable and the first read isn't `undefined`
+  // (which would make the `Array.isArray` guard in bootstrap/init
+  // silently skip the persisted-row render).
+  jobsSnapshot: null,
+  // Phase C: cap on the L2 list (20..1000, default 200). The cap
+  // is enforced on every write in src/state.js write(); overflow
+  // entries are appended to the L3 JSONL archive. Declared here
+  // so the History pane's cap input has a known initial value
+  // even before the disk state loads.
+  jobsArchiveCap: 200,
 };
 // Phase 4 Fix 15: backward-compat alias. 'const state' am Top-Level
 // eines <script>-Tags ist NICHT global. Aeltere Dateien (imageTab,

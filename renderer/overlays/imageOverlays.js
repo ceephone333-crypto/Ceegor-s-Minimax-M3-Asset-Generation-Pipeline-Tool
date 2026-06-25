@@ -6,7 +6,14 @@
 // supported targets (PNG, JPEG, WebP). Output file uses the new
 // extension; quality is fixed at 0.95.
 function showConvertOverlay(srcPath) {
-  const ext = (srcPath.split('.').pop() || '').toLowerCase();
+  // v1.1 (audit M11): use path-based extension extraction, NOT
+  // split('.').pop(). The pre-v1.1 code returned the WHOLE filename
+  // for an extension-less source, which then failed to match any
+  // format and pre-selected ALL THREE format options, leaving the
+  // <select> on whichever was last (webp) regardless of source.
+  const lastDot = Math.max(srcPath.lastIndexOf('.'), srcPath.lastIndexOf('/'), srcPath.lastIndexOf('\\'));
+  const hasExt = lastDot >= 0 && srcPath.indexOf('.', lastDot) === lastDot && srcPath.slice(lastDot + 1).length > 0;
+  const ext = hasExt ? srcPath.slice(lastDot + 1).toLowerCase() : '';
   const srcFmt = ext.toUpperCase() || '?';
   showModal((m, close) => {
     m.appendChild(el('h2', {}, '⇄ Convert image format'));
@@ -41,7 +48,12 @@ function showConvertOverlay(srcPath) {
         const out = await convertImageFile(srcPath, target);
         toast(`Converted to ${target.toUpperCase()} → ${out}`, 'ok', 4000);
         await refreshBrowser();
-        if (typeof updatePreviewPane === 'function') {
+        // v1.1 (audit M3): guard + invoke the SAME function. The
+        // pre-v1.1 code tested `typeof updatePreviewPane` then
+        // called `previewImageFromFile` — a latent ReferenceError
+        // hidden by the surrounding try/catch. We now check the
+        // function we actually call.
+        if (typeof previewImageFromFile === 'function') {
           try { previewImageFromFile(out); } catch (_) {}
         }
         close();
@@ -129,7 +141,18 @@ function showCropOverlay(srcPath) {
 
     // Load the image. Once decoded, show it and pre-fill W/H with the
     // natural size so the user can immediately Apply.
+    // v1.1 (audit M2): the previous version unconditionally mutated
+    // the modal DOM on resolve and called close() on reject. If the
+    // user pressed Esc while a huge image was still decoding, the
+    // .then callback ran on a detached modal (no-op at best, throws
+    // at worst) and the .catch re-fired close() (calling onClose
+    // hooks twice). We track a `closed` flag and skip both branches
+    // when the modal has already gone.
+    let closed = false;
+    const origClose = close;
+    close = () => { closed = true; origClose(); };
     loadImageFromFile(srcPath).then((loaded) => {
+      if (closed) return; // Esc pressed mid-decode — modal is gone
       img.naturalW = loaded.naturalWidth;
       img.naturalH = loaded.naturalHeight;
       img.src = loaded.src;
@@ -138,8 +161,9 @@ function showCropOverlay(srcPath) {
       hInput.value = String(loaded.naturalHeight);
       applyAutoSize();
     }).catch((e) => {
+      if (closed) return; // already closed via Esc — don't double-close
       toast('Failed to load image: ' + e.message, 'err', 6000);
-      close();
+      origClose();
     });
 
     // Create / recreate the frame at the specified W x H, centered.
@@ -180,7 +204,8 @@ function showCropOverlay(srcPath) {
         const out = await cropImageFile(srcPath, frameX, frameY, w, h);
         toast(`Cropped to ${w}×${h} → ${out}`, 'ok', 4000);
         await refreshBrowser();
-        if (typeof updatePreviewPane === 'function') {
+        // v1.1 (audit M3): guard + invoke the SAME function.
+        if (typeof previewImageFromFile === 'function') {
           try { previewImageFromFile(out); } catch (_) {}
         }
         close();
@@ -216,7 +241,12 @@ function showCropOverlay(srcPath) {
 // settings without re-opening the dialog (the slider
 // reposition would otherwise re-trigger the action).
 function showOptimizeOverlay(srcPath) {
-  const ext = (srcPath.split('.').pop() || '').toLowerCase();
+  // v1.1 (audit M11): same path-aware extraction as showConvertOverlay.
+  // The pre-v1.1 split('.').pop() returned the WHOLE filename for an
+  // extension-less source path, mis-classifying it as a known format.
+  const lastDot = Math.max(srcPath.lastIndexOf('.'), srcPath.lastIndexOf('/'), srcPath.lastIndexOf('\\'));
+  const hasExt = lastDot >= 0 && srcPath.indexOf('.', lastDot) === lastDot && srcPath.slice(lastDot + 1).length > 0;
+  const ext = hasExt ? srcPath.slice(lastDot + 1).toLowerCase() : '';
   const srcFmt = (ext === 'jpg' ? 'jpeg' : ext) || 'jpeg';
   // Pre-fill from the persisted settings so the user only has to
   // override the field they care about on a given run. The

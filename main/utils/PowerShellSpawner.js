@@ -40,11 +40,29 @@ function expandArchive(zipPath, destDir) {
     );
     let stderr = '';
     ps.stderr.on('data', (b) => { stderr += b.toString('utf8'); });
+    // v1.1 (audit L11): hard timeout. Antivirus / locked-file /
+    // UAC scenarios used to hang ps.on('close') forever, freezing
+    // the install UI. 5 min is the generous ceiling — Expand-
+    // Archive of the 200 MB Real-ESRGAN zip takes <30 s on any
+    // modern disk. SIGKILL escalation mirrors the isnetbg pattern.
+    let killed = false;
+    const killTimer = setTimeout(() => {
+      killed = true;
+      try { ps.kill(); } catch (_) {}
+      setTimeout(() => { try { ps.kill('SIGKILL'); } catch (_) {} }, 2000).unref();
+      reject(new Error(`Expand-Archive timed out after 5 min and was killed. ${stderr ? 'Last stderr: ' + stderr : ''}`));
+    }, 5 * 60 * 1000).unref();
     ps.on('close', (code) => {
+      if (killed) return;
+      clearTimeout(killTimer);
       if (code === 0) resolve();
       else reject(new Error(`Expand-Archive failed (code ${code}): ${stderr}`));
     });
-    ps.on('error', reject);
+    ps.on('error', (err) => {
+      if (killed) return;
+      clearTimeout(killTimer);
+      reject(err);
+    });
   });
 }
 

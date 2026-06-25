@@ -50,10 +50,12 @@ type Config = {
 | `mmx:quota` | `quota()` | `main/ipc/registerMmxIpc.js` | — | `{ ok, parsed? , error? }` |
 | `mmx:authStatus` | `authStatus()` | `main/ipc/registerMmxIpc.js` | — | `{ ok, message?, error?, command?, argv? }` |
 | `mmx:diagnose` | `diagnose()` | `main/ipc/registerMmxIpc.js` | — | `DiagnoseReport` |
-| `mmx:cancel` | `mmxCancel()` | `main/ipc/registerMmxIpc.js` | — | `{ ok: true }` (brich alle laufenden mmx-Spawns ab) |
+| `mmx:cancel` | `mmxCancel(opts?)` | `main/ipc/registerMmxIpc.js` | `{ jobId? }` | `{ ok: true }` (kein Payload → `cancelAll()`, killt alle laufenden mmx-Spawns; `{ jobId }` → bug-fix H4/Phase1, `_temp4.md`: killt nur den Proc dieses Jobs via `cancelByJobId`, andere Jobs laufen weiter) |
 | `mmx:log` (event) | `onLog(cb)` | (Main sendet via `webContents.send`) | — | `string` (eine Log-Zeile) |
 
 **Allowlist** in [`main/models/MmxSubcommandAllowlist.js`](../main/models/MmxSubcommandAllowlist.js): `image | speech | music | video | quota | voices`. Andere Subcommands → `{ ok: false, error: 'subcommand … is not allowed' }`.
+
+**Pfad-Validierung (bug-fix S1, _temp4.md):** `mmx:run` / `mmx:run:job` parsen `--out` / `--download` (Parent muss unter einem allowed root liegen, via `isParentUnderAny`) und `--out-dir` (muss selbst unter einem allowed root liegen, via `isPathUnderAny`) aus `args`, bevor `runMmx` aufgerufen wird. Ein Treffer außerhalb → `{ ok: false, code: -1, stderr: 'mmx: "<flag>" path "<value>" is outside the allowed directories.' }`, ohne dass mmx überhaupt gespawnt wird.
 
 ## 4. File-Browser (`fb:*`)
 
@@ -61,13 +63,14 @@ type Config = {
 |---|---|---|---|---|
 | `fb:list` | `fbList(dir)` | `main/ipc/registerFileBrowserIpc.js` | `string` (dir) | `{ ok, entries?, error? }` |
 | `fb:mkdir` | `fbMkdir(dir, name)` | `main/ipc/registerFileBrowserIpc.js` | `string, string` | `{ ok, path?, error? }` |
+| `fb:ensureDir` | `fbEnsureDir(dir)` | `main/ipc/registerFileBrowserIpc.js` | `string` | `{ ok, path?, error? }` (bug-fix D1: erstellt `dir` selbst rekursiv, falls noch nicht vorhanden — `fb:mkdir` kann das nicht, da es immer einen benannten Unterordner verlangt) |
 | `fb:rename` | `fbRename(p, newName)` | `main/ipc/registerFileBrowserIpc.js` | `string, string` | `{ ok, path?, error? }` |
 | `fb:delete` | `fbDelete(p)` | `main/ipc/registerFileBrowserIpc.js` | `string` | `{ ok, path?, error? }` |
 | `fb:move` | `fbMove(src, destDir)` | `main/ipc/registerFileBrowserIpc.js` | `string, string` | `{ ok, path?, error? }` |
 | `fb:copy` | `fbCopy(src, destDir)` | `main/ipc/registerFileBrowserIpc.js` | `string, string` | `{ ok, path?, error? }` |
 | `fb:reveal` | `fbReveal(p)` | `main/ipc/registerFileBrowserIpc.js` | `string` | `{ ok: true }` (öffnet Explorer) |
 | `fb:read` | `fbRead(p)` | `main/ipc/registerFileBrowserIpc.js` | `string` | `{ ok, base64?, error? }` (≤ Größe sinnvoll handhabbar) |
-| `fb:exists` | `fbExists(p)` | `main/ipc/registerFileBrowserIpc.js` | `string` | `boolean` |
+| `fb:exists` | `fbExists(p)` | `main/ipc/registerFileBrowserIpc.js` | `string` | `{ ok: boolean, exists: boolean, error?: string }` |
 | `fb:write` | `fbWrite(outPath, base64Data)` | `main/ipc/registerFileBrowserIpc.js` | `string, string` (Base64) | `{ ok, path?, error? }` (≤ 25 MB; atomar via tmp+rename) |
 
 **Sicherheit:** alle Pfad-Argumente werden via [`main/services/PathSecurityService.js`](../main/services/PathSecurityService.js) (`isPathUnderAny` / `isParentUnderAny`) gegen `allowedRoots()` geprüft.
@@ -79,7 +82,9 @@ type Config = {
 | `upscale:realesrgan:available` | `realesrganAvailable()` | `main/ipc/registerUpscaleIpc.js` | — | `{ available, binaryPath?, version }` |
 | `upscale:realesrgan:run` | `realesrganRun(src, dst, opts)` | `main/ipc/registerUpscaleIpc.js` | `string, string, { model?, scale?, gpu? }` | `{ ok, code, stderr?, outputPath }` |
 | `upscale:realesrgan:download` | `realesrganDownload()` | `main/ipc/registerUpscaleIpc.js` | — | `{ ok, binDir?, error? }` (streamt Fortschritt) |
-| `upscale:realesrgan:download:progress` (event) | `onRealesrganDownloadProgress(cb)` | (Main sendet) | — | `{ phase, downloaded, total, status }` |
+| `upscale:realesrgan:download:progress` (event) | `onRealesrganDownloadProgress(cb)` | (Main sendet) | — | `{ phase, downloaded, total, status }`. `phase` ∈ `download \| verify \| extract` |
+
+**Integritätsprüfung (bug-fix S2, _temp4.md):** zwischen `download` und `extract` verifiziert `InstallDownloadService.downloadRealesrgan` den SHA-256 der heruntergeladenen `.zip` gegen den gepinnten `RE_ESRGAN_ZIP_SHA256`. Bei Mismatch wird die Datei gelöscht, NICHT entpackt, und `{ ok: false, error: 'Checksum verification failed…' }` zurückgegeben.
 
 **Implementierung** lebt in [`main/services/InstallDownloadService.js`](../main/services/InstallDownloadService.js) + [`main/services/DownloadProgressEmitter.js`](../main/services/DownloadProgressEmitter.js) + [`main/services/HttpsRedirect.js`](../main/services/HttpsRedirect.js) + [`main/utils/PowerShellSpawner.js`](../main/utils/PowerShellSpawner.js).
 
@@ -95,6 +100,8 @@ type Config = {
 | Channel | Renderer | Handler-Datei (Soll) | Eingabe | Ausgabe |
 |---|---|---|---|---|
 | `image:optimize` | `optimizeImage(src, opts)` | `main/ipc/registerImageIpc.js` | `string, { quality?, format?, stripMetadata?, outputPath? }` | `{ ok, outputPath, inputSize, outputSize, savedBytes, savedPercent, format, width, height, error? }` |
+| `image:fixExtension` | `fixImageExtension(path)` | `main/ipc/registerImageIpc.js` | `string` | `{ ok, path, renamed, error? }` (bug-fix M6: sniffs the real format via sharp and renames the file when it disagrees with the extension — the mmx image API has no output-format parameter, so the CDN bytes don't always match the hardcoded `.png` extension) |
+| `image:refExists` | `refImageExists(path)` | `main/ipc/registerImageIpc.js` | `string` | `{ ok, exists, url? }` (bug-fix, reported by user: pre-flight existence probe for a `--subject-ref` reference image so a stale/missing path is caught with a clear message instead of a cryptic, 4×-retried mmx ENOENT. `http(s)` URLs report `exists:true` — validated server-side. Read-only existence check; deliberately NOT gated by the output allow-list since reference images live anywhere the user keeps them and are read by the mmx subprocess, not our fs layer. Returns only a boolean — no path metadata.) |
 
 ## 8. Audio (ffmpeg-static)
 

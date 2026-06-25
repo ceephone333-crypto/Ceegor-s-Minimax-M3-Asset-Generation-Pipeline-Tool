@@ -67,7 +67,7 @@ Die monolithische `renderer/app.js` (3000+ Zeilen) wurde in viele kleine Files a
 ### Verdacht 1: Electron-Cache / stale process
 Der User hat mehrfach behauptet keine electron-Prozesse laufen. Aber Trae IDE oder ein anderer Prozess könnte den asar cachen.
 
-**Test:** Kompletter Neustart von Windows, dann frische Extraktion der `dist\MiniMaxAssetTool-1.1.1-x64.zip` in einen NEUEN Ordner.
+**Test:** Kompletter Neustart von Windows, dann frische Extraktion der `dist\MiniMaxAssetTool-1.1.0-x64.zip` in einen NEUEN Ordner.
 
 ### Verdacht 2: `app.asar` hat 2 Files mit gleichem Namen
 Wenn der asar `renderer/app.js` UND `app.js` im Root hat, könnte Electron das falsche File laden.
@@ -159,8 +159,8 @@ In `renderer/index.html`:
 - `main/index.js` (main process): `C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\main\index.js`
 - `preload.js` (preload bridge): `C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\preload.js`
 - `renderer-error.log` (mein Output): `C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\renderer-error.log`
-- `dist/MiniMaxAssetTool-1.1.1-x64.zip` (430 MB, mit stable .exe + neuem asar): `C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\dist\MiniMaxAssetTool-1.1.1-x64.zip`
-- `dist/MiniMaxAssetTool-Dev-1.1.1-x64.zip` (516 MB, komplettes Projekt): `C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\dist\MiniMaxAssetTool-Dev-1.1.1-x64.zip`
+- `dist/MiniMaxAssetTool-1.1.0-x64.zip` (430 MB, mit stable .exe + neuem asar): `C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\dist\MiniMaxAssetTool-1.1.0-x64.zip`
+- `dist/MiniMaxAssetTool-Dev-1.1.0-x64.zip` (516 MB, komplettes Projekt): `C:\Projects\Ceegor-s-Minimax-M3-Asset-Generation-Pipeline-Tool\dist\MiniMaxAssetTool-Dev-1.1.0-x64.zip`
 
 ## Fresh-version Folder (KANONISCH — für User und alle Agents)
 
@@ -197,7 +197,7 @@ dist-stable/
 Falls `dist-stable/` gelöscht wurde:
 ```powershell
 mkdir dist-stable
-Expand-Archive -Path 'dist\MiniMaxAssetTool-1.1.1-x64.zip' -DestinationPath 'dist-stable' -Force
+Expand-Archive -Path 'dist\MiniMaxAssetTool-1.1.0-x64.zip' -DestinationPath 'dist-stable' -Force
 node scripts/sync-stable-asar.js
 ```
 

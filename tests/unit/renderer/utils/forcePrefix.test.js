@@ -96,3 +96,50 @@ test('counter is shared across multiple invocations on the same counter object',
     'temp000005.jpg',
   ]);
 });
+
+// --- C4 regression: nextFreeForcePrefixPath (renderer/app.js) -------------
+// v1.1.16 bug-fix: every tab used to wrap buildForcePrefixFileName's
+// result in uniquePath(), which appended a random 4-char suffix
+// (e.g. temp000001_a3f9.png) and broke the "exact name" promise the
+// user explicitly asked for (cde.txt 124). nextFreeForcePrefixPath is
+// the replacement: it returns the EXACT counter-built name when free,
+// and on collision bumps the counter (never randomizes). Pure
+// re-implementation mirroring the app.js contract, with a fake
+// fbExists so the test has no Electron/IPC dependency.
+async function nextFreeForcePrefixPath(dir, counter, prefix, ext, fbExists) {
+  const sep = dir.includes('\\') ? '\\' : '/';
+  const base = dir.replace(/[\\/]+$/, '');
+  for (;;) {
+    const name = buildForcePrefixFileName(counter, prefix, ext);
+    const full = base + sep + name;
+    let exists = false;
+    try { exists = await fbExists(full); } catch { exists = false; }
+    if (!exists) return full;
+  }
+}
+
+test('nextFreeForcePrefixPath returns the exact name with no collisions', async () => {
+  const c = { n: 0 };
+  const full = await nextFreeForcePrefixPath('C:\\out', c, 'temp', 'png', async () => false);
+  assert.equal(full, 'C:\\out\\temp000001.png');
+});
+
+test('nextFreeForcePrefixPath never appends a random suffix', async () => {
+  const c = { n: 0 };
+  const full = await nextFreeForcePrefixPath('C:\\out', c, 'etg', 'png', async () => false);
+  // Exact match against the user's spec — no `_<random>` infix.
+  assert.match(full, /^C:\\out\\etg\d{6}\.png$/);
+});
+
+test('nextFreeForcePrefixPath bumps the counter past existing files instead of randomizing', async () => {
+  const existing = new Set(['C:\\out\\temp000001.png', 'C:\\out\\temp000002.png']);
+  const c = { n: 0 };
+  const full = await nextFreeForcePrefixPath('C:\\out', c, 'temp', 'png', async (p) => existing.has(p));
+  assert.equal(full, 'C:\\out\\temp000003.png');
+});
+
+test('nextFreeForcePrefixPath treats an fbExists rejection as "does not exist" (fail-open, not throw)', async () => {
+  const c = { n: 0 };
+  const full = await nextFreeForcePrefixPath('C:\\out', c, 'temp', 'png', async () => { throw new Error('ipc down'); });
+  assert.equal(full, 'C:\\out\\temp000001.png');
+});

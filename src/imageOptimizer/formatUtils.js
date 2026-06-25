@@ -19,7 +19,17 @@ try {
 
 const DEFAULT_QUALITY = 82;
 
-const SUPPORTED_INPUT = new Set(['jpeg', 'png', 'webp']);
+// v1.1 (audit AUDIT-02): sharp reports AVIF files as format 'heif'
+// (because AVIF is technically a brand of HEIF — the file uses
+// HEIF container + AV1 codec). Without this addition, an
+// optimisation request for an .avif file is rejected with
+// "Unsupported input format. Supported: JPEG, PNG, WebP." even
+// though the advanced settings overlay advertises AVIF as an
+// output format. We accept 'avif' (the canonical name) AND
+// 'heif' (sharp's raw report) as valid input formats; the
+// detectRealFormat() function normalises both to 'avif' for
+// downstream consumers.
+const SUPPORTED_INPUT = new Set(['jpeg', 'png', 'webp', 'avif', 'heif']);
 const SUPPORTED_OUTPUT = new Set(['jpeg', 'png', 'webp', 'avif']);
 
 // User-friendly aliases. `jpg` ist erlaubt, weil die Datei-Extension
@@ -56,6 +66,37 @@ function inferFormatFromPath(p) {
   return null;
 }
 
+// bug-fix M6 (_temp4.md): the file extension is whatever the caller
+// asked mmx to write to (e.g. always ".png" for the image tab — the
+// mmx image API has no output-format parameter), but mmx writes the
+// CDN's actual bytes verbatim, which are sometimes JPEG. sharp reads
+// the real format from the file's content (magic bytes), not its
+// extension, so this is the source of truth `inferFormatFromPath`
+// cannot provide.
+//
+// v1.1 (audit AUDIT-02): sharp reports AVIF as 'heif' (HEIF
+// container with AV1 codec). We normalise that to 'avif' so the
+// rest of the pipeline (and the format-detection round-trip) can
+// use a single canonical name. The `compression === 'av1'` check
+// distinguishes true AVIF from HEIC / HEIF (which use HEVC /
+// H.265 — those are still rejected by SUPPORTED_INPUT).
+async function detectRealFormat(filePath) {
+  if (!sharp || !filePath) return null;
+  try {
+    const meta = await sharp(filePath).metadata();
+    if (!meta || !meta.format) return null;
+    const fmt = String(meta.format).toLowerCase();
+    if (fmt === 'heif' && meta.compression === 'av1') return 'avif';
+    return fmt;
+  } catch (e) {
+    return null;
+  }
+}
+
+// jpeg's canonical extension is "jpg" throughout this codebase (see
+// the targetFormat->ext mapping below in optimize()).
+const EXT_FOR_FORMAT = { jpeg: 'jpg', png: 'png', webp: 'webp', gif: 'gif', bmp: 'bmp' };
+
 function ensureSharp() {
   if (sharp) return null;
   return (
@@ -84,9 +125,11 @@ module.exports = {
   DEFAULT_QUALITY,
   SUPPORTED_INPUT,
   SUPPORTED_OUTPUT,
+  EXT_FOR_FORMAT,
   normaliseFormat,
   normaliseQuality,
   inferFormatFromPath,
+  detectRealFormat,
   ensureSharp,
   emptyResult,
 };

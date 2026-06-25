@@ -3,8 +3,35 @@
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+// v1.1 (lint-size split): the stdout/stderr cap + truncation-marker
+// logic was extracted to its own file so src/mmx.js stays under
+// the 500-line HARD limit. See src/mmxStreamCaps.js for the
+// rationale and the marker-emission contract.
+const { MAX_STDOUT_BYTES, MAX_STDERR_BYTES, makeCappedAppender } = require('./mmxStreamCaps');
 
 const AGENT_FLAGS = ['--non-interactive'];
+
+// v1.1 (audit L14): pre-v1.1 passed the API key via `--api-key <value>`
+// argv. On Windows, any local process can read every other process's
+// argv via WMI, exposing the key for the entire call duration. mmx-cli
+// resolves auth from its own ~/.mmx/config.json (verified via
+// `mmx config show`) — so we sync the key INTO that file before each
+// spawn and let mmx-cli read it directly. File exposure requires
+// filesystem access (which already implies the attacker could read our
+// config.txt), so this is a real narrowing of the exposure surface.
+// The sync is best-effort: a failure falls back to the legacy
+// --api-key argv path so the call still works on a locked-down user
+// profile where ~/.mmx is unwritable.
+// v1.1 (audit BUG-N4 + lint-size split): the API-key sync was
+// extracted to src/mmxApiKeySync.js so this file stays under
+// the 500-line HARD limit. The sync tracks the file's
+// mtime+size so an external `mmx config set` is detected
+// even when the in-memory hash matches. Note: the test
+// harness clears both the mmx.js and mmxApiKeySync.js
+// module caches in withMmxMocks so the latest `fs` mock
+// is picked up — see tests/unit/audit360/v11ReleaseAudit_audit.js.
+const { syncApiKeyToMmxCliConfig: _syncApiKeyToMmxCliConfig } = require('./mmxApiKeySync');
 
 // Build a minimal env for the spawned mmx process. We deliberately do
 // NOT pass `process.env` wholesale: that would leak every environment
@@ -112,6 +139,33 @@ function findMmxEntry() {
   return null;
 }
 
+// v1.1 (audit AUDIT-10): safeCall wraps a best-effort renderer
+// callback so a throw (e.g. a buggy onLog in the LogService)
+// cannot abort a long-running mmx job. Used for every onLog /
+// onChunk call site. The IPC wrapper in registerMmxIpc.js already
+// catches runMmx rejections, but that path was masking a real
+// defect — a buggy renderer should not nuke the main process's
+// view of a healthy job. safeCall also logs the throw to the
+// main process console (without the user's input data) so a
+// future crash is diagnosable.
+function safeCall(cb, ...args) {
+  if (typeof cb !== 'function') return;
+  try {
+    cb(...args);
+  } catch (e) {
+    try { console.error('[mmx] safeCall: callback threw:', e && (e.message || e)); } catch (_) { /* ignore */ }
+  }
+}
+
+// v1.1 (audit BUG-R2-11): see src/mmxCwd.js for the rationale.
+// We accept cwd only when it is one of:
+//   (a) undefined / null (use the OS default — process.cwd())
+//   (b) an absolute path
+// Anything else is silently coerced to undefined. The full
+// validation is in src/mmxCwd.js (extracted so src/mmx.js
+// stays under the 500-line HARD limit).
+const { safeCwd: _safeCwd } = require('./mmxCwd');
+
 function resolve() {
   if (resolved) return resolved;
   if (!isWindows()) {
@@ -137,16 +191,19 @@ function runMmx({ args, apiKey, cwd, onLog, onChunk, jobId }) {
     const r = resolve();
     if (!r.command) {
       const msg = `[mmx] ${r.error}`;
-      onLog?.(msg);
-      onChunk?.({ line: msg, jobId: jobId || null, kind: 'stderr' });
-      resolveP({ ok: false, code: -1, stdout: '', stderr: r.error || 'mmx unavailable', parsed: null });
+      safeCall(onLog, msg);
+      safeCall(onChunk, { line: msg, jobId: jobId || null, kind: 'stderr' });
+      // v1.1 (audit L16): include command/argv on the early-fail path.
+      resolveP({ ok: false, code: -1, stdout: '', stderr: r.error || 'mmx unavailable', parsed: null, command: r.command || '', argv: [] });
       return;
     }
+    // v1.1 (audit BUG-R2-11): see _safeCwd below for the rationale.
+    const safeCwd = _safeCwd(cwd);
     // Defensive: the renderer always passes an array, but a future caller
     // (or a corrupted IPC payload) might not. Bail out cleanly instead of
     // throwing a cryptic "args is not iterable" from the spread below.
     if (!Array.isArray(args)) {
-      resolveP({ ok: false, code: -1, stdout: '', stderr: 'mmx: args must be an array', parsed: null });
+      resolveP({ ok: false, code: -1, stdout: '', stderr: 'mmx: args must be an array', parsed: null, command: r.command || '', argv: [] });
       return;
     }
     const fullArgs = [
@@ -155,7 +212,16 @@ function runMmx({ args, apiKey, cwd, onLog, onChunk, jobId }) {
       '--output', 'json',
       ...AGENT_FLAGS,
     ];
-    if (apiKey) fullArgs.push('--api-key', apiKey);
+    // v1.1 (audit L14): route the API key through mmx-cli's own
+    // ~/.mmx/config.json instead of --api-key argv. argv is
+    // readable by any local process on Windows via WMI; the file
+    // path is readable only via filesystem access (which already
+    // implies the attacker could read our config.txt). When the
+    // sync fails (e.g. ~/.mmx is read-only), we fall back to the
+    // legacy --api-key argv so the call still works.
+    let keySyncedToConfig = false;
+    if (apiKey) keySyncedToConfig = _syncApiKeyToMmxCliConfig(apiKey);
+    if (apiKey && !keySyncedToConfig) fullArgs.push('--api-key', apiKey);
 
     // Log the command line, but redact the API key — otherwise the user
     // accidentally leaks their key when they click "Copy log" to share an
@@ -163,31 +229,88 @@ function runMmx({ args, apiKey, cwd, onLog, onChunk, jobId }) {
     // the quoted form `--api-key "<value>"`.
     const cmdLine = `$ ${r.command} ${fullArgs.map(quote).join(' ')}`
       .replace(/--api-key(?:\s+(?:"[^"]*"|'[^']*'|\S+))?/, '--api-key ***');
-    onLog?.(cmdLine);
-    onChunk?.({ line: cmdLine, jobId: jobId || null, kind: 'stderr' });
+    // v1.1 (audit AUDIT-10): wrap renderer callbacks in safeCall so
+    // a buggy onLog / onChunk can't abort a 30-min mmx job. The
+    // callbacks are best-effort by definition (UI notifications);
+    // their failure must NOT propagate back to runMmx.
+    safeCall(onLog, cmdLine);
+    safeCall(onChunk, { line: cmdLine, jobId: jobId || null, kind: 'stderr' });
 
     let stdout = '';
     let stderr = '';
     let lastStdoutTrim = '';
+    // v1.1 (lint-size split): the cap constants and the
+    // _appendCapped closure now live in src/mmxStreamCaps.js.
+    // We get a fresh appender per runMmx() call so the
+    // truncation flag is per-job (a slow mmx child that fills
+    // the cap does not affect the NEXT run's marker).
+    const _appendCapped = makeCappedAppender();
+    // v1.1 (audit H2): hard timeout so a hung mmx child cannot leave
+    // the JobRunner row stuck on "running" forever. 30 min is the
+    // generous ceiling — the longest legitimate job (a 6-second video
+    // at the API's slowest) takes ~3 min; we leave a lot of headroom
+    // for slow connections + retries. A timed-out proc is SIGKILLed
+    // so even a child that catches SIGTERM is reaped.
+    const TIMEOUT_MS = 30 * 60 * 1000;
+    let killed = false;
+    const killTimer = setTimeout(() => {
+      killed = true;
+      try { proc.kill(); } catch (_) {}
+    // Windows: proc.kill uses TerminateProcess (no signal). POSIX:
+    // SIGTERM by default. Give the child a 2s grace, then SIGKILL.
+    setTimeout(() => { try { proc.kill('SIGKILL'); } catch (_) {} }, 2000).unref();
+      const msg = `[mmx] timed out after ${Math.round(TIMEOUT_MS / 60000)} min and was killed.`;
+      safeCall(onLog, msg);
+      safeCall(onChunk, { line: msg, jobId: jobId || null, kind: 'stderr' });
+      currentGenProcs.delete(proc);
+      if (jobId) procsByJobId.delete(jobId);
+      // v1.1 (audit L16): include command/argv so the diagnostic
+      // surface matches the success path.
+      resolveP({ ok: false, code: -1, stdout, stderr: stderr + '\n' + msg, parsed: null, command: r.command || '', argv: fullArgs });
+    }, TIMEOUT_MS).unref();
     let proc;
     try {
       // Use a whitelisted env instead of the full process.env — see
       // buildChildEnv for the rationale.
-      proc = spawn(r.command, fullArgs, { cwd, windowsHide: true, env: buildChildEnv() });
+      proc = spawn(r.command, fullArgs, { cwd: safeCwd, windowsHide: true, env: buildChildEnv() });
       // Phase A: track every active proc in a Set. The legacy
       // currentGenProc slot is now a Set so cancelOne(proc) can kill
       // a specific in-flight generation while leaving sibling procs
       // (e.g. a parallel quota check) alone. cancelAll() still works
       // as the "panic" button.
       currentGenProcs.add(proc);
+      // bug-fix H4/Phase1 (_temp4.md): also index by jobId so
+      // cancelByJobId (JobRunner.cancel -> mmx:cancel {jobId}) can
+      // kill exactly this proc without touching sibling jobs.
+      // v1.1 (audit L15): if a duplicate jobId arrives (rare — the
+      // renderer's JobRunner hands out unique ids, but a corrupted
+      // state or a hand-crafted IPC payload could collide), the
+      // pre-v1.1 code silently overwrote the map entry, orphaning
+      // the first proc — it kept running but cancelByJobId(jobId)
+      // would now target the second proc. We kill the orphan
+      // explicitly so it can't leak.
+      if (jobId) {
+        const priorProc = procsByJobId.get(jobId);
+        if (priorProc && priorProc !== proc) {
+          try { _killWithEscalation(priorProc); } catch (_) {}
+          currentGenProcs.delete(priorProc);
+        }
+        procsByJobId.set(jobId, proc);
+      }
     } catch (err) {
-      resolveP({ ok: false, code: -1, stdout: '', stderr: String(err), parsed: null });
+      clearTimeout(killTimer);
+      // v1.1 (audit L16): include command/argv on every error path
+      // so diagnostics degrade gracefully (the success path already
+      // returns them). r.command is null when resolve() failed; the
+      // empty string is a safer placeholder than undefined for the
+      // IPC marshal.
+      resolveP({ ok: false, code: -1, stdout: '', stderr: String(err), parsed: null, command: r.command || '', argv: fullArgs });
       return;
     }
 
     proc.stdout.on('data', (b) => {
       const s = b.toString('utf8');
-      stdout += s;
+      stdout = _appendCapped('stdout', stdout, s, MAX_STDOUT_BYTES);
       // Forward a trimmed view of stdout to the log so the user sees
       // multi-line JSON responses broken into readable chunks. Skip empty
       // chunks (common with TTY-style output) and skip the last chunk if
@@ -199,37 +322,44 @@ function runMmx({ args, apiKey, cwd, onLog, onChunk, jobId }) {
         // don't want to spam the log with progress lines if mmx-cli ever
         // grows them.
         if (/^[\s]*[{[]/.test(trimmed) || /error|warning|failed/i.test(trimmed)) {
-          onLog?.(trimmed);
-          onChunk?.({ line: trimmed, jobId: jobId || null, kind: 'stdout' });
+          safeCall(onLog, trimmed);
+          safeCall(onChunk, { line: trimmed, jobId: jobId || null, kind: 'stdout' });
         }
       }
     });
     proc.stderr.on('data', (b) => {
       const s = b.toString('utf8');
-      stderr += s;
+      stderr = _appendCapped('stderr', stderr, s, MAX_STDERR_BYTES);
       // filter the noisy PowerShell wrapping
       const trimmed = s.replace(/^node\.exe\s*:\s*/gm, '').trimEnd();
       if (trimmed) {
-        onLog?.(trimmed);
-        onChunk?.({ line: trimmed, jobId: jobId || null, kind: 'stderr' });
+        safeCall(onLog, trimmed);
+        safeCall(onChunk, { line: trimmed, jobId: jobId || null, kind: 'stderr' });
       }
     });
     proc.on('error', (err) => {
+      if (killed) return;
+      clearTimeout(killTimer);
       // `error` fires when the process can't be spawned (ENOENT etc.) and
       // is usually followed by `close`. Resolve here in case `close` never
       // fires, and clear the proc slot so a later cancelAll() doesn't
       // try to kill a non-existent process.
       currentGenProcs.delete(proc);
-      resolveP({ ok: false, code: -1, stdout, stderr: stderr + '\n' + String(err), parsed: null });
+      if (jobId) procsByJobId.delete(jobId);
+      // v1.1 (audit L16): include command/argv on the error path.
+      resolveP({ ok: false, code: -1, stdout, stderr: stderr + '\n' + String(err), parsed: null, command: r.command || '', argv: fullArgs });
     });
     proc.on('close', (code) => {
+      if (killed) return;
+      clearTimeout(killTimer);
       currentGenProcs.delete(proc);
+      if (jobId) procsByJobId.delete(jobId);
       const parsed = tryParseAll(stdout);
       const ok = code === 0;
       if (!ok && !parsed) {
         const exitLine = `[mmx] exit code ${code}`;
-        onLog?.(exitLine);
-        onChunk?.({ line: exitLine, jobId: jobId || null, kind: 'stderr' });
+        safeCall(onLog, exitLine);
+        safeCall(onChunk, { line: exitLine, jobId: jobId || null, kind: 'stderr' });
       }
       resolveP({ ok, code, stdout, stderr, parsed, command: r.command, argv: fullArgs });
     });
@@ -266,20 +396,49 @@ function quote(v) {
 // expose cancelOne(proc) / getActiveProcs() / cancelAll() helpers
 // (see _plan3.md §4.3). cancelAll() remains as the "panic" button.
 const currentGenProcs = new Set();
+// bug-fix H4/Phase1 (_temp4.md): Map<jobId, proc> alongside the Set
+// above, populated only when runMmx({..., jobId}) is given one. Lets
+// JobRunner.cancel(jobId) kill exactly that job's proc instead of
+// every in-flight generation (the previous mmx:cancel{jobId} payload
+// was already half-specced but had no way to resolve jobId -> proc).
+const procsByJobId = new Map();
 function getActiveProcs() {
   return Array.from(currentGenProcs);
+}
+// v1.1 (audit L13): SIGKILL escalation. The pre-v1.1 cancel paths
+// sent SIGTERM only. Windows is fine (proc.kill uses TerminateProcess
+// which can't be caught), but on macOS/Linux a mmx child that catches
+// SIGTERM survives. We send SIGTERM, then SIGKILL after 2s, mirroring
+// the isnetbg timeout pattern.
+function _killWithEscalation(proc) {
+  try { proc.kill('SIGTERM'); } catch (_) {}
+  setTimeout(() => {
+    try {
+      // Only escalate if the proc is still running. proc.killed is
+      // true after a successful kill(); on Windows TerminateProcess
+      // already reaped the proc so this is a no-op.
+      if (!proc.killed) proc.kill('SIGKILL');
+    } catch (_) {}
+  }, 2000).unref();
 }
 function cancelOne(proc) {
   if (!proc) return false;
   if (!currentGenProcs.has(proc)) return false;
-  try { proc.kill('SIGTERM'); } catch {}
+  _killWithEscalation(proc);
   return true;
+}
+function cancelByJobId(jobId) {
+  if (!jobId) return false;
+  const proc = procsByJobId.get(jobId);
+  if (!proc) return false;
+  return cancelOne(proc);
 }
 function cancelAll() {
   for (const p of currentGenProcs) {
-    try { p.kill('SIGTERM'); } catch {}
+    _killWithEscalation(p);
   }
   currentGenProcs.clear();
+  procsByJobId.clear();
 }
 
-module.exports = { runMmx, resolve, cancelAll, cancelOne, getActiveProcs };
+module.exports = { runMmx, resolve, cancelAll, cancelOne, cancelByJobId, getActiveProcs };

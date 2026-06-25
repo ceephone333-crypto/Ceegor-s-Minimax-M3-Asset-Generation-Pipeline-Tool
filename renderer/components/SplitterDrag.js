@@ -47,8 +47,14 @@
   ];
 
   // Bounds (must mirror the :root defaults in styles.css).
+  // v1.1 (audit L18): pre-v1.1 MAX was Infinity for all three,
+  // despite the comment claiming parity with the CSS maxes
+  // (--sidebar-max: 70% etc.). A dragged splitter could persist
+  // state.layoutSettings.sidebarW = 99999, breaking the layout
+  // on the next launch. We use generous but finite bounds that
+  // match common display widths (no pane should exceed 4K).
   const MIN = { '--sidebar-w': 200, '--logbar-h': 80,  '--preview-w': 200 };
-  const MAX = { '--sidebar-w': Infinity, '--logbar-h': Infinity, '--preview-w': Infinity };
+  const MAX = { '--sidebar-w': 3840, '--logbar-h': 2160, '--preview-w': 3840 };
 
   function getRoot() { return document.documentElement; }
 
@@ -62,12 +68,12 @@
     getRoot().style.setProperty(name, `${Math.round(px)}px`);
   }
   function clamp(name, px) {
-    // For unknown var names (no bounds registered) pass through.
-    // This keeps the helper testable in isolation: a stray
-    // variable from a future feature won't silently snap to 0.
-    if (MIN[name] == null && (MAX[name] == null || MAX[name] === Infinity)) return px;
-    const lo = MIN[name] != null ? MIN[name] : -Infinity;
-    const hi = MAX[name] != null && MAX[name] !== Infinity ? MAX[name] : Infinity;
+    // v1.1 (audit L18): MAX is now finite for every registered
+    // splitter, so the Infinity special-casing is gone. Unknown
+    // variable names pass through unchanged.
+    if (MIN[name] == null && MAX[name] == null) return px;
+    const lo = MIN[name] != null ? MIN[name] : 0;
+    const hi = MAX[name] != null ? MAX[name] : Number.POSITIVE_INFINITY;
     return Math.max(lo, Math.min(hi, px));
   }
 
@@ -93,6 +99,13 @@
     let dragging = false;
 
     el.addEventListener('mousedown', (e) => {
+      // v1.1 (audit L19): only the primary mouse button (left)
+      // should start a drag. Pre-v1.1 right-click also entered drag
+      // mode (in addition to firing the browser's contextmenu),
+      // which left a phantom drag active when the user dismissed
+      // the context menu — the next left-click would then jump the
+      // splitter to wherever the cursor was.
+      if (e.button !== 0) return;
       e.preventDefault();
       dragging = true;
       startCoord = splitter.axis === 'x' ? e.clientX : e.clientY;

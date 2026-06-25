@@ -33,7 +33,7 @@ const mockConfig = { effectiveOutputDir: () => '/tmp/x' };
 // captured ipcMain handlers + the mkdir/stat call trackers.
 function loadWithMocks({ statResult, mkdirImpl }) {
   const handlers = {};
-  const calls = { mkdir: [], stat: [], trust: [] };
+  const calls = { mkdir: [], stat: [], trust: [], active: [] };
   const fakeFsp = {
     async stat(p) {
       calls.stat.push(p);
@@ -66,6 +66,11 @@ function loadWithMocks({ statResult, mkdirImpl }) {
       // v1.1.29: trust-ancestors test uses an isolated allow-list
       // seeded with the test's `mockConfig.effectiveOutputDir()`.
       addTrusted: (p) => calls.trust.push(p),
+      // BUG-9-04: the new activeDir-based write gate. The mock
+      // records every setActiveDir call so the test can assert
+      // the Up button pushed the new path.
+      setActiveDir: (p) => { calls.active.push(p); return p; },
+      getActiveDir: () => (calls.active.length ? calls.active[calls.active.length - 1] : null),
     },
     // v1.1.29: stub src/config so fb:trust-ancestors sees the
     // mockConfig-controlled root.
@@ -104,7 +109,7 @@ function loadWithMocks({ statResult, mkdirImpl }) {
 let _patchedLoad = null;
 function requireFresh() {
   const handlers = {};
-  const calls = { mkdir: [], stat: [], trust: [] };
+  const calls = { mkdir: [], stat: [], trust: [], active: [] };
   const fakeFsp = {
     async stat(p) { calls.stat.push(p); return { isDirectory: () => true }; },
     async mkdir(p, opts) {
@@ -121,7 +126,17 @@ function requireFresh() {
     fs: { promises: fakeFsp, constants: { F_OK: 0 } },
     [path.join(ROOT, 'src', 'fileBrowser')]: {},
     [path.join(ROOT, 'src', 'pathUtils')]: {
-      isPathUnderAny: () => true,
+      // BUG-9-04: was always returning true, which made the
+      // "refuses free-floating paths" test pass spuriously (the
+      // mock lied about the gate). Match the real check: the
+      // requested path must be inside `mockConfig.effectiveOutputDir()`
+      // for isPathUnderAny to be true.
+      isPathUnderAny: (p, roots) => {
+        const r = path.resolve(mockConfig.effectiveOutputDir());
+        const n = path.resolve(String(p || ''));
+        if (!n || n === r) return true;
+        return n.startsWith(r + path.sep) || n.startsWith(r + '/');
+      },
       isParentUnderAny: (p) => {
         // Mimic the real check: returns true if p's parent is under
         // any root. For our test dirs under TMP, we treat the test
@@ -148,6 +163,12 @@ function requireFresh() {
       // a trusted root?".
       getAllowedRoots: () => [path.resolve(mockConfig.effectiveOutputDir())],
       addTrusted: (p) => calls.trust.push(p),
+      // BUG-9-04: activeDir-based write gate. The test records
+      // every setActiveDir call so it can assert the IPC pushed
+      // the new path. getActiveDir returns the most recently set
+      // value (matching the real PathSecurityService behaviour).
+      setActiveDir: (p) => { calls.active.push(p); return p; },
+      getActiveDir: () => (calls.active.length ? calls.active[calls.active.length - 1] : null),
     },
     [path.join(ROOT, 'src', 'config')]: {
       read: () => ({ output_dir: mockConfig.effectiveOutputDir() }),
@@ -324,33 +345,32 @@ test('fb:rename rejects newName with path separators (BUG-R2-04 regression)', as
 // AUDIT-08 fallback silently rolls state.fbDir back to output_dir —
 // making the click appear to do nothing.
 //
-// The contract: walks up from the given dir until it hits an already-
-// trusted root (output_dir or a user-picked path). Trusts each
-// intermediate dir so subsequent fbList calls succeed. REJECTS any
-// dir whose ancestor chain doesn't end at a trusted root (so the
-// renderer can't ask for arbitrary paths on the allow-list).
+// BUG-9-04 (user-reported, 2026-06-25) — security model revisited.
+// The user wants writes gated on "the folder shown in the folder
+// explorer" and reads OS-driven. The trust-ancestors IPC used to
+// chain-walk up from the requested dir; it now does the simpler job:
+//   1) refuse any path the user never visited (it's not under a
+//      trusted root),
+//   2) set the path as the active dir (the new write gate),
+//   3) add the path to the trust set (so the existing "picked
+//      folder" path in ensureSubDir() still works).
+// `r.trusted` is a one-element array: just the leaf.
 // ============================================================================
-test('fb:trust-ancestors: trusts ancestors between the dir and the nearest already-trusted root', async () => {
+test('fb:trust-ancestors: trusts a dir inside a trusted root and sets it as the active dir', async () => {
   const TMP = path.join(os.tmpdir(), 'fb-trust-ancestors-' + Date.now());
   fs.mkdirSync(TMP, { recursive: true });
   const ROOT = path.join(TMP, 'a', 'b', 'c', 'd');
   fs.mkdirSync(ROOT, { recursive: true });
-  // Stub `cfg.effectiveOutputDir` to point at TMP/a (so TMP/a/b/c/d
-  // is a valid ancestor chain).
+  // Stub `cfg.effectiveOutputDir` to point at TMP (so ROOT is a
+  // valid descendant of the trusted root).
   mockConfig.effectiveOutputDir = () => TMP;
   try {
     const outRoot = requireFresh();
-    // Path inside the trusted root (descendant of TMP). Should
-    // trust all ancestors until TMP.
     const r = await outRoot.handlers['fb:trust-ancestors'](null, ROOT);
     assert.equal(r.ok, true, `should succeed (got: ${JSON.stringify(r)})`);
-    assert.deepEqual(r.trusted, [
-      path.join(TMP, 'a', 'b', 'c', 'd'),
-      path.join(TMP, 'a', 'b', 'c'),
-      path.join(TMP, 'a', 'b'),
-      path.join(TMP, 'a'),
-    ], `should trust every ancestor from ROOT up to TMP/a (got: ${JSON.stringify(r.trusted)})`);
-    // ROOT itself must NOT be in `trusted` (it's the input).
+    assert.deepEqual(r.trusted, [ROOT],
+      `should trust the leaf only (BUG-9-04 dropped the ancestor-chain walk) — got: ${JSON.stringify(r.trusted)}`);
+    assert.equal(r.activeDir, ROOT, 'activeDir must be set to the new path');
   } finally {
     fs.rmSync(TMP, { recursive: true, force: true });
   }

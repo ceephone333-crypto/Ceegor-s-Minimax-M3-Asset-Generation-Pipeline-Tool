@@ -111,8 +111,69 @@ function run(srcPath, dstPath, opts = {}) {
       '-s', scale,
       '-f', fmt,
     ];
-    if (opts.gpu !== undefined && opts.gpu !== null) {
-      args.push('-g', String(opts.gpu));
+    // Advanced opts (v1.1 advanced pipeline settings overlay):
+    //   -t <tile>  tile size for VRAM-constrained GPUs. 0 = auto
+    //              (the binary's default). Values <32 are rejected
+    //              by the binary; we sanitise at the state layer so
+    //              only the whitelist [0,32,64,128,256,512,1024,2048]
+    //              reaches here.
+    //   -x         enable TTA (test-time augmentation) mode. Boosts
+    //              quality at the cost of ~2× runtime. Off by default.
+    //   -g <id>    pin to a specific GPU. 'auto' (the default) lets
+    //              the binary pick. We only forward the flag when the
+    //              user explicitly chose a numeric id, so the default
+    //              spawn argv stays unchanged for users who never
+    //              opened the advanced overlay.
+    //   -j l:p:s   thread count for load/proc/save. Power-user knob;
+    //              we don't expose it in the overlay (the default
+    //              1:2:2 is optimal for almost every workload) but
+    //              the wrapper still honours it if a future caller
+    //              passes it.
+    // v1.1 (audit AUDIT-03): tileSize must be a valid number in
+    // [0, 4096] (the renderer's documented Custom-input range).
+    // Pre-v1.1 the wrapper silently clamped tileSize<32 up to 32
+    // AND silently dropped tileSize=0 (the auto value), so a
+    // caller who picked "auto" got an explicit -t 32 instead.
+    // The state.js whitelist mirror in nOr() is the first
+    // defence (silently drop out-of-range values on read AND
+    // write). This wrapper check is the second: only emit -t
+    // when the value is a finite, in-range number. tileSize=0
+    // means "auto" and the binary's default — do NOT emit -t.
+    if (Number.isFinite(Number(opts.tileSize))) {
+      const t = Math.round(Number(opts.tileSize));
+      if (t > 0 && t <= 4096) {
+        args.push('-t', String(t));
+      }
+      // t === 0 → auto, drop the flag (binary default).
+      // t > 4096 → out of range, drop the flag (binary default).
+    }
+    if (opts.ttaMode === true) {
+      args.push('-x');
+    }
+    // v1.1 (audit L5): gpuId resolution. The advanced overlay sends
+    // opts.gpuId as 'auto' | '0' | '1' | '2' | '3'. Legacy callers
+    // (pre-v1.1 renderer) sent opts.gpu as a number; that path is
+    // kept for one release so a stale renderer still works after a
+    // main-process upgrade, but we ONLY honour it when no opts.gpuId
+    // was supplied at all (so a user's explicit 'auto' is respected).
+    // v1.1 (audit AUDIT-04): whitelist mirror. The pre-v1.1 check
+    // accepted ANY digit string for gpuId, so a hand-edited
+    // state.json with gpuId='99' pinned the binary to a non-
+    // existent GPU. We now mirror the state whitelist
+    // [0, 1, 2, 3] (as strings) here as a defensive layer; any
+    // value outside the set is dropped (binary default = auto).
+    const ALLOWED_GPU_IDS = ['auto', '0', '1', '2', '3'];
+    if (typeof opts.gpuId === 'string' && ALLOWED_GPU_IDS.includes(opts.gpuId) && opts.gpuId !== 'auto') {
+      args.push('-g', opts.gpuId);
+    } else if (opts.gpuId === undefined && opts.gpu !== undefined && opts.gpu !== null) {
+      // Legacy single-release shim: accept a number here too, but
+      // ALSO validate it against the whitelist so a corrupted
+      // legacy caller can't pin a non-existent GPU either.
+      const n = Number(opts.gpu);
+      if (Number.isInteger(n) && n >= 0 && n <= 3) args.push('-g', String(n));
+    }
+    if (typeof opts.threads === 'string' && /^\d+:\d+:\d+$/.test(opts.threads)) {
+      args.push('-j', opts.threads);
     }
 
     let stderr = '';

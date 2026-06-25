@@ -22,8 +22,29 @@ function register({ getMainWindow }) {
   ipcMain.handle('config:get', () => {
     try { return cfgMod.read(); } catch (e) { return null; }
   });
+  // Bug-fix M2 (_temp5.md 360° audit): `config:set` used to return
+  // `null` on a write failure, which crashed the Settings modal
+  // (`saved.api_key = ...` on null) and the first-time-setup popup
+  // (`state.config = null` then `refreshQuota` reads `.api_key`).
+  // Return an envelope `{ ok, config, error }` so callers can branch
+  // on ok without crashing. On failure, `config` is the re-read
+  // previous config (the write didn't take) so assigning it back to
+  // state.config is always safe; if even the re-read fails, fall
+  // back to a minimal valid shape. The success return keeps the
+  // full config object so existing callers that only use `.config`
+  // keep working once they unwrap.
   ipcMain.handle('config:set', (_e, cfg) => {
     try {
+      // v1.1 (audit BUG-R2-14): the type check happens BEFORE
+      // sanitize so a non-object payload fails fast with a clear
+      // error instead of being passed to sanitize (which would
+      // throw a generic "Invalid payload" error). The previous
+      // version passed any input straight to sanitize and the
+      // renderer's `await api.setConfig(cfg)` would have
+      // returned an opaque TypeError if `cfg` was null.
+      if (cfg != null && (typeof cfg !== 'object' || Array.isArray(cfg))) {
+        return { ok: false, config: cfgMod.read(), error: 'Config must be a plain object.' };
+      }
       const safe = sanitize(cfg);
       cfgMod.write(safe);
       // API key changed → drop the cached voice list so the next
@@ -32,8 +53,32 @@ function register({ getMainWindow }) {
       if (typeof voicesCache?.reset === 'function') {
         try { voicesCache.reset(); } catch { /* best-effort */ }
       }
-      return cfgMod.read();
-    } catch (e) { return null; }
+      return { ok: true, config: cfgMod.read(), error: null };
+    } catch (e) {
+      // v1.1 (audit BUG-R2-14): the previous version's
+      // hardcoded fallback
+      //   prev = { api_key: '', output_dir: '', region: 'global',
+      //            theme: 'dark', styles: [] }
+      // was wrong in two ways:
+      //   1. The user might have an existing api_key + output_dir
+      //      on disk; returning `''` made the renderer's
+      //      "API key field" appear empty even though the key
+      //      is still saved on disk. The user would then think
+      //      the save wiped their key and re-enter it.
+      //   2. `styles: []` lost all of the user's saved styles
+      //      in the same way.
+      // We now use a richer fallback that calls cfgMod.read()
+      // TWICE — once to get the actual on-disk state, and if
+      // that fails (e.g. the config file was just corrupted by
+      // a partial write), we fall back to a minimal shape that
+      // is at least the documented contract of configSchema.
+      let prev = null;
+      try { prev = cfgMod.read(); } catch (_) { /* ignore */ }
+      if (!prev || typeof prev !== 'object') {
+        prev = { api_key: '', output_dir: '', region: 'global', theme: 'dark', styles: [] };
+      }
+      return { ok: false, config: prev, error: (e && e.message) || String(e) };
+    }
   });
   ipcMain.handle('config:path', () => {
     try { return cfgMod.configPath(); } catch (e) { return null; }

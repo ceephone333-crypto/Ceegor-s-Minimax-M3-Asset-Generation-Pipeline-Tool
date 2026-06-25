@@ -61,6 +61,10 @@ function makeEl(tag) {
       if (!this._listeners[ev]) return;
       this._listeners[ev] = this._listeners[ev].filter((f) => f !== fn);
     },
+    dispatchEvent(event) {
+      for (const fn of (this._listeners[event.type] || [])) fn(event);
+      return true;
+    },
     appendChild(child) { this.children.push(child); child.parentNode = this; return child; },
     insertBefore(child, ref) {
       const i = this.children.indexOf(ref);
@@ -78,6 +82,44 @@ function makeEl(tag) {
     setAttribute(k, v) { this.attributes[k] = v; this.dataset[k.replace(/^data-/, '').replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = v; },
     getAttribute(k) { return this.attributes[k] == null ? null : String(this.attributes[k]); },
     removeAttribute(k) { delete this.attributes[k]; },
+    // Minimal `closest(sel)` shim — the live renderer uses
+    // `e.target.closest('[data-help-topic]')` (HelpDelegation),
+    // and several other places. The selector grammar is
+    // deliberately small: it handles the cases the live code
+    // actually passes — `#id`, `.class`, `tag`, and the two
+    // compound forms the help delegation needs
+    // (`.help-button, .help-btn` and `[data-help-topic]`).
+    // The matchers are applied per comma-separated selector
+    // fragment; a fragment matches if any of its conditions
+    // hold. The walk proceeds up the parent chain until a
+    // fragment matches (then return the node) or we run out.
+    closest(sel) {
+      if (typeof sel !== 'string' || !sel) return null;
+      const matches = (node, fragment) => {
+        const f = fragment.trim();
+        if (!f) return false;
+        if (f.startsWith('#')) return node.attributes && node.attributes.id === f.slice(1);
+        if (f.startsWith('.')) return node.classList && node.classList.contains(f.slice(1));
+        if (f.startsWith('[') && f.endsWith(']')) {
+          const inner = f.slice(1, -1);
+          const m = inner.match(/^([\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s\]]+)))?$/);
+          if (!m) return false;
+          const key = m[1];
+          if (!node.attributes || !(key in node.attributes)) return false;
+          if (m[2] != null) return node.attributes[key] === m[2];
+          if (m[3] != null) return node.attributes[key] === m[3];
+          if (m[4] != null) return node.attributes[key] === m[4];
+          return true;
+        }
+        return node.tagName === f.toUpperCase();
+      };
+      let n = this;
+      while (n) {
+        if (sel.split(',').some((p) => matches(n, p))) return n;
+        n = n.parentNode;
+      }
+      return null;
+    },
     querySelector() { return null; },
     querySelectorAll() { return []; },
     focus() {},
@@ -243,7 +285,7 @@ test('HARNESS 2: fileBrowser1 exports the supported-file filter', () => {
   // Some window.api stubs that fileBrowser1 touches at load time.
   win.api.fbList = async () => ({ ok: true, dir: '/tmp', parent: '/', items: [] });
   win.api.fbMkdir = async () => ({ ok: true });
-  win.api.fbExists = async () => false;
+  win.api.fbExists = async () => ({ ok: true, exists: false });
   // fileBrowser1 is an IIFE that writes to window. It depends
   // on window.DropTarget (a renderer module loaded BEFORE
   // fileBrowser1 in index.html) — mock it here so the require
@@ -632,7 +674,7 @@ test('HARNESS 6: SplitterDrag follows Windows standard (drag right = right pane 
   const splitter = win.document.elements['splitter-sidebar'];
   const downListeners = splitter._listeners['mousedown'] || [];
   assert.ok(downListeners.length > 0, 'SplitterDrag must bind a mousedown listener on splitter-sidebar');
-  downListeners[0]({ clientX: 1000, clientY: 500, preventDefault: () => {} });
+  downListeners[0]({ button: 0, clientX: 1000, clientY: 500, preventDefault: () => {} });
   // Drag RIGHT by 100px. The user asked for normal Windows
   // behaviour: divider follows the cursor, the right pane
   // (sidebar) shrinks. So --sidebar-w must DECREASE by 100
@@ -655,7 +697,7 @@ test('HARNESS 6: SplitterDrag follows Windows standard (drag right = right pane 
   const logbarDown = logbarSplitter._listeners['mousedown'] || [];
   assert.ok(logbarDown.length > 0, 'SplitterDrag must bind a mousedown listener on splitter-logbar');
   styleProps['--logbar-h'] = '280px';
-  logbarDown[0]({ clientX: 100, clientY: 200, preventDefault: () => {} });
+  logbarDown[0]({ button: 0, clientX: 100, clientY: 200, preventDefault: () => {} });
   // Drag DOWN by 200 (clientY 200 → 400). Logbar must
   // SHRINK (Windows standard: divider follows cursor, the
   // dragged-toward side shrinks). 280 - 200 = 80.
@@ -667,7 +709,7 @@ test('HARNESS 6: SplitterDrag follows Windows standard (drag right = right pane 
   const previewSplitter = win.document.elements['splitter-log-preview'];
   const previewDown = previewSplitter._listeners['mousedown'] || [];
   styleProps['--preview-w'] = '500px';
-  previewDown[0]({ clientX: 1000, clientY: 200, preventDefault: () => {} });
+  previewDown[0]({ button: 0, clientX: 1000, clientY: 200, preventDefault: () => {} });
   // Drag right by 100. Preview must shrink.
   fireAllMove({ clientX: 1100, clientY: 200, preventDefault: () => {} });
   assert.equal(styleProps['--preview-w'], '400px',
@@ -682,7 +724,7 @@ test('HARNESS 6: SplitterDrag follows Windows standard (drag right = right pane 
   // Bottom bound: --logbar-h must NOT go below the min
   // (80px). Drag WAY past the bottom and verify it clamps.
   styleProps['--logbar-h'] = '100px';
-  logbarDown[0]({ clientX: 100, clientY: 200, preventDefault: () => {} });
+  logbarDown[0]({ button: 0, clientX: 100, clientY: 200, preventDefault: () => {} });
   fireAllMove({ clientX: 100, clientY: 10000, preventDefault: () => {} });
   assert.equal(styleProps['--logbar-h'], '80px',
     'drag far past the bottom must CLAMP to the min (80px)');
@@ -798,6 +840,90 @@ test('HARNESS 7: ParamRow enum kind exposes Custom… option + reveals text inpu
     'persisted-value row must pre-populate the text input with the saved value');
   assert.equal(customRow.getValue(), 'my-persisted-value',
     'persisted-value getValue() must return the typed text');
+  // bug-fix M3 (_temp4.md): the 50/50 layout class must be applied on
+  // INITIAL load too (a persisted value that doesn't match any
+  // option), not only when the user later re-selects "Custom…" from
+  // the dropdown. Before the fix, the wrapper never got
+  // 'enum-custom-active' on this path — the inputs were forced
+  // visible directly, but the dropdown stayed at its 100%-width CSS
+  // rule, so the layout did not actually become 50/50.
+  assert.ok(customRow.input.classList.contains('enum-custom-active'),
+    'M3: a persisted custom value must apply the 50/50 layout class on initial render, not just on user interaction');
+});
+
+// --- HARNESS 7b: ParamRow 'number' kind gets the same 50/50 + OK -----------
+// affordance as 'enum' (bug-fix M3, _temp4.md). Mirrors HARNESS 7's
+// structure exactly, but for kind:'number'.
+test('HARNESS 7b: ParamRow number kind exposes the 50/50 affordance (no OK button — v1.1.17)', () => {
+  const win = setupWindowMock();
+  delete require.cache[require.resolve(path.join(ROOT, 'renderer', 'components', 'ParamRow.js'))];
+  require(path.join(ROOT, 'renderer', 'components', 'ParamRow.js'));
+  const { buildParamRow } = win.ParamRow;
+  const row = buildParamRow('Test --width', {
+    kind: 'number',
+    default: 768,
+    options: [{ value: 768, label: '768' }, { value: 1024, label: '1024' }],
+  });
+  const sel = row.el;
+  assert.ok(sel, 'number kind must produce a <select>');
+  const hasCustom = (sel.children || []).some((c) => c.attributes && c.attributes.value === '__custom__');
+  assert.ok(hasCustom, 'number select must contain a "Custom…" option');
+  assert.equal(row.getValue(), '768', 'getValue() must return the dropdown value when not in Custom mode');
+
+  const wrap = row.input;
+  assert.ok(wrap.classList.contains('combo-select-number'),
+    'wrapper must keep the combo-select-number class (batchImportHelper.js matches on this exact name)');
+  let numInput = null;
+  let okBtn = null;
+  for (const c of (wrap.children || [])) {
+    if (c.tagName === 'INPUT' && c.attributes && c.attributes.type === 'number') numInput = c;
+    if (c.tagName === 'BUTTON') okBtn = c;
+  }
+  assert.ok(numInput, 'number wrapper must contain the number input');
+  // v1.1.17 (reported by user): the OK button on the number kind
+  // actively rewrote a typed value of 10 (with max 4) to 4 in
+  // silence, so the user thought their value was accepted. The
+  // OK button was removed; the typed value is now read at
+  // Generate time. The 50/50 layout (dropdown shrinks to 50%,
+  // text input takes the other 50%) is preserved.
+  assert.ok(!okBtn, 'v1.1.17: number wrapper must NOT contain an OK button (user reported it silently clamps typed values)');
+  assert.equal(numInput.style.display, 'none', 'number input must be hidden by default');
+  assert.ok(!wrap.classList.contains('number-custom-active'), 'wrapper must not start in the 50/50 layout');
+
+  // Selecting Custom… must reveal the input AND apply the 50/50
+  // layout class.
+  const changeListeners = sel._listeners['change'] || [];
+  assert.ok(changeListeners.length > 0, 'number select must have a change listener');
+  sel.value = '__custom__';
+  changeListeners[0]();
+  assert.notEqual(numInput.style.display, 'none', 'Custom… must reveal the number input');
+  assert.ok(wrap.classList.contains('number-custom-active'), 'M3: Custom… must apply the 50/50 layout class');
+
+  // getValue() reflects the typed number directly (no OK button to
+  // confirm). The renderer's preflight validateValues() and the mmx
+  // CLI both reject out-of-range values with a clear error.
+  numInput.value = '1536';
+  assert.equal(row.getValue(), '1536', 'getValue() must return the typed number in Custom mode');
+
+  // Switching back to a dropdown option hides the input and clears the
+  // layout class.
+  sel.value = '1024';
+  changeListeners[0]();
+  assert.equal(numInput.style.display, 'none', 'switching back to a dropdown option must hide the number input again');
+  assert.ok(!wrap.classList.contains('number-custom-active'), 'switching back must remove the 50/50 layout class');
+  assert.equal(row.getValue(), '1024');
+
+  // Persistence round-trip: a value that doesn't match any option
+  // must auto-load in Custom mode WITH the 50/50 layout applied
+  // immediately (same M3 fix as the enum kind).
+  const customRow = buildParamRow('Test --width', {
+    kind: 'number',
+    default: 1920,
+    options: [{ value: 768, label: '768' }, { value: 1024, label: '1024' }],
+  });
+  assert.equal(customRow.getValue(), '1920');
+  assert.ok(customRow.input.classList.contains('number-custom-active'),
+    'M3: a persisted custom value must apply the 50/50 layout class on initial render');
 });
 
 // ============================================================================
@@ -995,14 +1121,17 @@ test('HARNESS 9: every user-reported change is present in the source files', () 
     'app.js must define buildForcePrefixFileName');
   assert.ok(appJsSrc.includes('window.buildForcePrefixFileName'),
     'app.js must expose buildForcePrefixFileName on window (so the per-tab gen handlers can use it)');
-  // Each tab's gen handler must call buildForcePrefixFileName
-  // when state.filePrefixForceOnly is on.
+  // Each tab's gen handler must resolve the force-prefix path via
+  // nextFreeForcePrefixPath (app.js) when state.filePrefixForceOnly is
+  // on. (C4 fix: this wraps buildForcePrefixFileName internally with
+  // collision-bumping instead of a random uniquePath suffix, so the
+  // tabs call the wrapper, not the raw helper, directly.)
   for (const tab of ['imageTab', 'speechTab', 'musicTab', 'videoTab']) {
     const tabSrc = src(`renderer/tabs/${tab}.js`);
     assert.ok(tabSrc.includes('state.filePrefixForceOnly'),
       `${tab}.js must check state.filePrefixForceOnly in the gen handler`);
-    assert.ok(tabSrc.includes('buildForcePrefixFileName'),
-      `${tab}.js must call buildForcePrefixFileName when force-prefix-only is on`);
+    assert.ok(tabSrc.includes('nextFreeForcePrefixPath'),
+      `${tab}.js must call nextFreeForcePrefixPath when force-prefix-only is on`);
   }
   // 4.3 — enum kind has Custom… option.
   const prSrc = src('renderer/components/ParamRow.js');
@@ -1062,10 +1191,17 @@ test('HARNESS 10: every v1.1.15-round-2 bug fix is present in the source', () =>
   // The live code must also tag rows with the result class.
   assert.ok(lsSrc.includes("'log-result-ok'") || lsSrc.includes('"log-result-ok"') || lsSrc.includes('log-result-ok'),
     'LogService must emit the log-result-ok class string');
-  // Bug 2 — custom param layout: must include an OK button AND
-  // the 50/50 layout (when the wrapper has .enum-custom-active).
-  assert.ok(prSrc2.includes('enum-custom-ok') || prSrc2.includes('OK'),
-    'ParamRow enum Custom mode must include an OK button (per user spec)');
+  // Bug 2 — custom param layout: v1.1.17 (reported by user) the
+  // OK button was removed because it actively rewrote a typed
+  // value of 10 to the dropdown's max (4) without a clear
+  // visible toast, making the user's typed value silently
+  // disappear. The user wants the typed value to flow through
+  // to Generate unchanged. The wrapper still has the 50/50
+  // layout (dropdown shrinks to 50%, text input takes the
+  // other 50%) when the user is in Custom mode — the layout
+  // affordance is preserved, only the OK button is gone.
+  assert.ok(!/numOkBtn\s*=\s*el\(/.test(prSrc2) && !/okBtn\s*=\s*el\(['"]button/.test(prSrc2),
+    'ParamRow must NOT create an OK button (user reported: "OK buttons are not needed actually, as long as the tool reads the typed values after starting generation")');
   assert.ok(/\.enum-custom-active\s*>\s*select\s*\{[^}]*?flex:\s*1\s+1\s+50\s*%/s.test(cssSrc)
     || /\.enum-custom-active[^}]*?select[^}]*?flex:\s*1\s+1\s+50\s*%/s.test(cssSrc),
     'ParamRow enum Custom mode must shrink the dropdown to 50% (per user spec)');
@@ -1100,18 +1236,43 @@ test('HARNESS 10: every v1.1.15-round-2 bug fix is present in the source', () =>
   // `buildForcePrefixFileName(counter, prefix, ext)`.
   assert.ok(/function buildForcePrefixFileName\([\s\S]*?padStart\(6, '0'\)/.test(appJsSrc2),
     'app.js must define buildForcePrefixFileName with 6-digit zero-pad (per user spec)');
-  // The image tab must use the helper (not the legacy
-  // `${prefix}${ts}_${slug}${variantTag}` template) when
-  // state.filePrefixForceOnly is on.
-  const imageTabForceOnlyBlock = src('renderer/tabs/imageTab.js').match(/if \(state\.filePrefixForceOnly\)[\s\S]*?return[^\n]*buildForcePrefixFileName/);
-  assert.ok(imageTabForceOnlyBlock,
-    'imageTab must use buildForcePrefixFileName when state.filePrefixForceOnly is on');
+  // C4 regression (the original bug): every tab's force-prefix
+  // branch called `uniquePath(outDir, buildForcePrefixFileName(...))`,
+  // which appended a random 4-char suffix (e.g. temp000001_a3f9.png)
+  // and broke the "exact name" promise. The fix is
+  // `nextFreeForcePrefixPath()`, which probes fb:exists and bumps the
+  // counter instead of randomizing the name. Assert the fix is in
+  // place AND that the old buggy wrapping is gone, in all 4 tabs.
+  assert.ok(/async function nextFreeForcePrefixPath\([\s\S]*?\n\}/.test(appJsSrc2),
+    'app.js must define nextFreeForcePrefixPath (collision-safe force-prefix path builder)');
+  assert.ok(!/nextFreeForcePrefixPath[\s\S]{0,400}?Math\.random/.test(appJsSrc2),
+    'nextFreeForcePrefixPath must not use a random suffix — it must bump the counter on collision');
+  for (const tab of ['imageTab', 'speechTab', 'musicTab', 'videoTab']) {
+    const tabSrc3 = src(`renderer/tabs/${tab}.js`);
+    assert.ok(/state\.filePrefixForceOnly/.test(tabSrc3), `${tab}.js must branch on state.filePrefixForceOnly`);
+    assert.ok(/nextFreeForcePrefixPath/.test(tabSrc3),
+      `${tab}.js force-prefix branch must call nextFreeForcePrefixPath`);
+    assert.ok(!/uniquePath\([^)]*buildForcePrefixFileName/.test(tabSrc3),
+      `C4 regression: ${tab}.js must NOT wrap buildForcePrefixFileName in uniquePath (adds a random suffix)`);
+  }
   // Bug 8 — upscale when not requested: the post-process chain
   // must only upscale when state.upscaleEnabled is true. The
   // check happens in section07_Image_optimisation___compression.js.
   const s7Src2 = src('renderer/sections/section07_Image_optimisation___compression.js');
   assert.ok(/if \(state\.upscaleEnabled && state\.upscaleSettings\) \{/.test(s7Src2),
     'section07.runPostProcessChain must guard the upscale step with `if (state.upscaleEnabled && state.upscaleSettings)` so the upscale only runs when the user explicitly enabled it');
+  // C5 regression: neither the Upscale-settings modal's Save handler
+  // nor the right-click one-off "Upscale this image" dialog may
+  // unconditionally force state.upscaleEnabled = true. That flag is
+  // owned exclusively by the dedicated "🔍 Upscale" checkbox in the
+  // image tab's action bar (imageTab.js upscaleCb's own change
+  // listener) — opening either dialog just to tweak settings (or to
+  // upscale one existing file) must not silently turn auto-upscale on
+  // for every future Generate click.
+  assert.ok(!/upscaleEnabled\s*=\s*true/.test(s7Src2),
+    'C5 regression: section07.js must not unconditionally force state.upscaleEnabled = true anywhere');
+  assert.ok(/upscaleCb\.addEventListener\('change', async \(\) => \{\s*state\.upscaleEnabled = !!upscaleCb\.checked;/.test(src('renderer/tabs/imageTab.js')),
+    'imageTab.js must remain the sole owner of state.upscaleEnabled via the dedicated checkbox change listener');
   // The OUTER condition for running the chain at all is in
   // imageTab.js. The user might have only enable optimize, and
   // the chain should still only do optimize (not upscale).
@@ -1142,4 +1303,764 @@ test('HARNESS 10: every v1.1.15-round-2 bug fix is present in the source', () =>
     'bootstrap.js must call window.HelpTooltip.setupHoverHelpTooltips() (otherwise data-help hover tooltips never fire — the context-menu rewrite relied on this)');
   assert.ok(/HelpDelegation\.setupHelpDelegation\(\)/.test(bootstrapSrc),
     'bootstrap.js must call window.HelpDelegation.setupHelpDelegation() (otherwise clicking data-help-topic elements does nothing)');
+});
+
+// ============================================================================
+// HARNESS 11 — C3 regression: per-tab re-entrancy guard must actually guard
+// Each tab's generate handler used to gate re-entrancy with:
+//   if (window.JobRunner && window.JobRunner.isTabRunning(tab)) return;
+//   if (!window.JobRunner && state.generating) return;
+// window.JobRunner is always defined (the script always loads) but never
+// has jobs in production (only unit tests populate it via JobRunner.run),
+// so isTabRunning() was always false on line 1, and `!window.JobRunner` was
+// always false on line 2 — NEITHER line could ever return. A double-click
+// on Generate (or clicking Generate again before the first run finished)
+// started a second concurrent generation with no protection at all.
+// The fix combines both checks into one condition so state.generating
+// (set/cleared by armGenBtnWithCancel in app.js, holding the busy tab's
+// key) is consulted unconditionally, while still deferring to a real
+// JobRunner job if one is ever in flight for that tab.
+// ============================================================================
+test('HARNESS 11: every tab generate handler has a working re-entrancy guard (C3)', () => {
+  function src(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
+  for (const tab of ['image', 'speech', 'music', 'video']) {
+    const tabSrc = src(`renderer/tabs/${tab}Tab.js`);
+    // C3 regression (the original bug): `!window.JobRunner && state.generating`
+    // is dead code because window.JobRunner always exists. Assert that
+    // exact dead pattern is gone.
+    assert.ok(!/!window\.JobRunner\s*&&\s*state\.generating/.test(tabSrc),
+      `C3 regression: ${tab}Tab.js must NOT use the dead "!window.JobRunner && state.generating" guard (window.JobRunner always exists in production, so this branch never runs)`);
+    // The live guard must check state.generating directly (no `!window.JobRunner`
+    // gate in front of it) so the check actually executes regardless of
+    // whether JobRunner exists.
+    assert.ok(new RegExp(`state\\.generating\\s*===\\s*'${tab}'`).test(tabSrc),
+      `${tab}Tab.js generate handler must guard re-entrancy with state.generating === '${tab}' (a plain truthy check would wrongly block this tab whenever ANY other tab is generating — state.generating holds the busy tab's key, not a boolean)`);
+    // Must still consult JobRunner.isTabRunning for forward-compat with a
+    // real JobRunner migration, ORed with the state.generating check so
+    // either source of truth blocks re-entrancy.
+    assert.ok(new RegExp(`window\\.JobRunner\\s*&&\\s*window\\.JobRunner\\.isTabRunning\\('${tab}'\\)\\)\\s*\\|\\|\\s*state\\.generating\\s*===\\s*'${tab}'`).test(tabSrc),
+      `${tab}Tab.js must OR JobRunner.isTabRunning('${tab}') with state.generating === '${tab}' in a single guard condition`);
+  }
+});
+
+// ============================================================================
+// HARNESS 12 — C2 regression: log rows must not default to a permanent
+// blue "in-progress" spinner.
+// LogService.addLogEvent used to default every event's `state` to 'wip'
+// (LogService.js ~287), regardless of whether the row belonged to a real
+// in-flight JobRunner job. Since legacy/free-form events (every tab's
+// "started"/"Generated N"/"failed" lines, the log() wrapper, mmx stderr
+// chunks) never pass `state` and have no `jobId`, EVERY log line —
+// including successful generations — rendered with .log-state-wip (blue)
+// and an animated .log-wip-dots spinner that never resolved, because
+// nothing calls updateLogStatus on a row with no jobId. Separately, the
+// v1.1.9 12-hue `.log-group-N` background/border tints made a long
+// session's log look like confetti. Both are pinned here at the source
+// level; scripts/smoke-renderer.js pins the runtime behaviour.
+// ============================================================================
+test('HARNESS 12: log rows derive state from result instead of defaulting to wip (C2)', () => {
+  function src(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
+  const logSrc = src('renderer/services/LogService.js');
+  // The dead-simple unconditional default is gone.
+  assert.ok(!/state:\s*opts\.state\s*\|\|\s*'wip'\s*,/.test(logSrc),
+    "C2 regression: LogService.addLogEvent must NOT unconditionally default state to 'wip' for every event");
+  // Only a row with a jobId (a real in-flight JobRunner job) that is NOT
+  // an _internal secondary line defaults to wip; everything else derives
+  // its state from `result`. Bug-fix #7 (reported by user): the
+  // `&& !opts._internal` clause stops the raw mmx output lines (streamed
+  // in as _internal secondaries) from becoming perpetual "still running"
+  // blue/spinner rows when the tab uses suppressLogRow (no primary row to
+  // fold into).
+  assert.ok(/opts\.jobId\s*!=\s*null\s*&&\s*!opts\._internal\s*\)\s*\?\s*'wip'/.test(logSrc),
+    'LogService.addLogEvent must only default state to wip for a real in-flight JobRunner PRIMARY row (jobId set AND not an _internal secondary line) — #7 regression');
+  assert.ok(/opts\.result\s*===\s*'ok'\s*\?\s*'ok'\s*:\s*opts\.result\s*===\s*'err'\s*\?\s*'err'/.test(logSrc),
+    'LogService.addLogEvent must derive state from opts.result (ok/err) for free-form events with no jobId');
+  // The 12-hue group confetti background/border rules must be gone from
+  // styles.css. (The log-group-N class may still be applied by JS for
+  // other bookkeeping; it must simply carry no colour any more.)
+  const cssSrc = src('renderer/styles.css');
+  assert.ok(!/log-group-0\s*\{[^}]*hsla/.test(cssSrc) && !/log-group-11\s*\{[^}]*hsla/.test(cssSrc),
+    'C2 regression: styles.css must not paint .log-group-N rows with the 12-hue confetti background/border tints');
+});
+
+// ============================================================================
+// HARNESS 13 — D1/D2/D3 regression: output folder must match the browser
+// D1: ensureSubDir's Case 3 (state.fbDir empty or === output_dir root) used
+// to redirect generated files to <output_dir>/<tabName> — one level deeper
+// than the folder the browser was actually showing. The fix: write directly
+// to the root in that case (fbMkdir always requires a named child, so a new
+// fbEnsureDir IPC was added to create the root itself when missing).
+// D2: nothing warned the user when fbDir was unset at generate time. The
+// fix: ensureSubDir now toasts a warning and self-heals state.fbDir (+
+// refreshes the browser) when it resolves a target from an empty fbDir.
+// D3: showTab() used to leave state.fbDir untouched when the entering tab
+// had no saved folder, silently inheriting the PREVIOUS tab's folder. The
+// fix: reset to the output_dir root in that case.
+// ============================================================================
+test('HARNESS 13: ensureSubDir writes to the root instead of a per-tab subfolder (D1)', () => {
+  function src(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
+  const appSrc = src('renderer/app.js');
+  // D1 regression (the original bug): Case 3 must no longer build
+  // <output_dir>/<tabName> as its target.
+  assert.ok(!/targetDir = join\(base, name, baseSep\);/.test(appSrc),
+    'D1 regression: ensureSubDir Case 3 must NOT redirect to <output_dir>/<tabName> any more');
+  assert.ok(/targetDir = base\.replace\(/.test(appSrc) && /rootDefault = true;/.test(appSrc),
+    'ensureSubDir Case 3 must resolve targetDir to the output_dir root itself (base.replace(...)) and mark rootDefault');
+  // fbMkdir can't create the root itself (it always joins a child name
+  // onto its first argument), so the root-default branch must go through
+  // the dedicated fbEnsureDir call instead.
+  assert.ok(/window\.api\.fbEnsureDir\(targetDir\)/.test(appSrc),
+    'ensureSubDir must create the root via window.api.fbEnsureDir, not fbMkdir, since fbMkdir always requires a child name');
+
+  // The fbEnsureDir IPC must exist end-to-end: preload bridge + main
+  // handler, both gated by the same path-security allow-list as every
+  // other fb:* handler.
+  const preloadSrc = src('preload.js');
+  assert.ok(/fbEnsureDir:\s*\(dir\)\s*=>\s*ipcRenderer\.invoke\('fb:ensureDir',\s*dir\)/.test(preloadSrc),
+    'preload.js must expose window.api.fbEnsureDir bridging to the fb:ensureDir channel');
+  const fbIpcSrc = src('main/ipc/registerFileBrowserIpc.js');
+  assert.ok(/ipcMain\.handle\('fb:ensureDir'/.test(fbIpcSrc),
+    'main/ipc/registerFileBrowserIpc.js must register the fb:ensureDir handler');
+  assert.ok(/fb:ensureDir'[\s\S]{0,400}pathUtils\.isPathUnderAny\(dir, pathSecurity\.getAllowedRoots\(\)\)/.test(fbIpcSrc),
+    'fb:ensureDir must be gated by the same PathSecurityService allow-list as the other fb:* handlers');
+});
+
+test('HARNESS 13b: ensureSubDir warns and self-heals when the browser had nothing to show (D2)', () => {
+  function src(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
+  const appSrc = src('renderer/app.js');
+  assert.ok(/const fbWasEmpty = !fbNorm;/.test(appSrc),
+    'ensureSubDir must remember whether fbDir was empty before resolving a target (D2)');
+  assert.ok(/if \(fbWasEmpty && typeof toast === 'function'\)/.test(appSrc),
+    'ensureSubDir must warn the user via toast() when it resolved a target from an empty fbDir');
+  assert.ok(/state\.fbDir = targetDir;[\s\S]{0,200}window\.refreshBrowser/.test(appSrc),
+    'ensureSubDir must self-heal state.fbDir and refresh the browser so it stops being stale/empty after the warning');
+});
+
+test('HARNESS 13c: showTab resets fbDir to the output_dir root instead of leaking the previous tab (D3)', () => {
+  function src(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
+  const tabSrc = src('renderer/sections/section11_Variants_dropdown.js');
+  // D3 regression (the original bug): `if (saved) state.fbDir = saved;`
+  // with no else branch left state.fbDir pointing at whatever the
+  // previously-active tab had, when the entering tab had never been
+  // visited before. v1.1.16 update: the else branch is now a
+  // gate-on-truthiness pattern (`if (state.config.output_dir) …`)
+  // instead of `state.config.output_dir || ''`, so a fresh install
+  // with no config leaves state.fbDir empty and lets
+  // refreshBrowser() resolve the platform-default output dir
+  // (`<userData>/generated`) via the main process. The D3 fix is
+  // preserved: state.fbDir is never left pointing at a different
+  // tab's folder; it is either set to the new tab's saved
+  // folder, or to the current config's output_dir, or to ''.
+  // The D3 fix and the BUG-2 fix are two separate concerns;
+  // we assert on three tokens, in order, to verify the
+  // showTab function in its current form.
+  assert.ok(/if \(saved\) state\.fbDir = saved;/.test(tabSrc),
+    "D3 regression: showTab must set state.fbDir = saved when the entering tab has a saved folder");
+  assert.ok(/else if \(state\.config\.output_dir\) state\.fbDir = state\.config\.output_dir;/.test(tabSrc),
+    "BUG-2 fix: showTab must fall back to state.config.output_dir (only when truthy) instead of the empty string");
+  assert.ok(/else state\.fbDir = '';/.test(tabSrc),
+    "D3 regression: showTab must always reach an else branch that assigns state.fbDir");
+});
+
+test('HARNESS 13d: ensureSubDir behavioural check — root case creates no per-tab subfolder', async () => {
+  // Load the real renderer globals so we exercise the actual function
+  // (not a re-implementation) for the D1 root-default path end-to-end.
+  const appSrc = fs.readFileSync(path.join(ROOT, 'renderer/app.js'), 'utf8');
+  const ensureCalls = [];
+  const mkdirCalls = [];
+  const sandbox = {
+    state: { config: { output_dir: 'C:/out' }, fbDir: 'C:/out' },
+    window: {
+      api: {
+        fbMkdir: async (dir, name) => { mkdirCalls.push([dir, name]); return { ok: true }; },
+        fbEnsureDir: async (dir) => { ensureCalls.push(dir); return { ok: true, path: dir }; },
+      },
+    },
+    toast: () => {},
+    console,
+  };
+  sandbox.window.state = sandbox.state;
+  const vm = require('vm');
+  const context = vm.createContext(sandbox);
+  // Extract just the ensureSubDir function body by locating its source
+  // span — loading the whole file would execute a DOMContentLoaded boot
+  // sequence with no DOM present.
+  const startMarker = 'async function ensureSubDir(name) {';
+  const start = appSrc.indexOf(startMarker);
+  assert.ok(start >= 0, 'ensureSubDir function definition not found in renderer/app.js');
+  // Find the matching closing brace by brace-counting from the opening one.
+  let depth = 0, i = start, end = -1;
+  for (; i < appSrc.length; i++) {
+    if (appSrc[i] === '{') depth++;
+    else if (appSrc[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+  }
+  assert.ok(end > start, 'could not locate the end of ensureSubDir via brace matching');
+  const fnSrc = appSrc.slice(start, end);
+  vm.runInContext(`globalThis.__ensureSubDir = ${fnSrc}`, context);
+  const result = await context.__ensureSubDir('image');
+  assert.equal(result, 'C:/out', 'a root-equal fbDir must resolve the target to the root itself');
+  assert.deepEqual(ensureCalls, ['C:/out'], 'the root must be created via fbEnsureDir');
+  assert.deepEqual(mkdirCalls, [], 'no per-tab subfolder should be created as a side effect of the root-default case');
+});
+
+// --- HARNESS 14: nextFreeForcePrefixPath altExts (bug-fix M6) --------------
+// Extracts the real buildForcePrefixFileName + nextFreeForcePrefixPath
+// functions from renderer/app.js (not a re-implementation) and runs them
+// in a VM sandbox with a fake fbExists.
+function extractFnSrc(src, startMarker) {
+  const start = src.indexOf(startMarker);
+  assert.ok(start >= 0, `function definition not found: ${startMarker}`);
+  let depth = 0, i = start, end = -1;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+  }
+  assert.ok(end > start, `could not locate end of function via brace matching: ${startMarker}`);
+  return src.slice(start, end);
+}
+
+function loadForcePrefixHelpers(existingPaths) {
+  const appSrc = fs.readFileSync(path.join(ROOT, 'renderer/app.js'), 'utf8');
+  const buildFnSrc = extractFnSrc(appSrc, 'function buildForcePrefixFileName(counter, prefix, ext) {');
+  const nextFreeFnSrc = extractFnSrc(appSrc, 'async function nextFreeForcePrefixPath(dir, counter, prefix, ext, altExts) {');
+  const existing = new Set(existingPaths);
+  const sandbox = {
+    window: { api: { fbExists: async (p) => ({ ok: true, exists: existing.has(String(p).replace(/\\/g, '/')) }) } },
+    console,
+  };
+  const vm = require('vm');
+  const context = vm.createContext(sandbox);
+  vm.runInContext(
+    `globalThis.buildForcePrefixFileName = ${buildFnSrc};\nglobalThis.nextFreeForcePrefixPath = ${nextFreeFnSrc};`,
+    context,
+  );
+  return context;
+}
+
+test('HARNESS 14: nextFreeForcePrefixPath (M6) skips a counter slot already taken under a sibling extension', async () => {
+  // fixImageExtension() can rename an earlier file from .png to its real
+  // format (e.g. temp000001.png -> temp000001.jpg, mmx's image API has
+  // no output-format parameter so the CDN bytes don't always match the
+  // extension originally requested). Without altExts-aware checking,
+  // fbExists('temp000001.png') reports "free" even though
+  // 'temp000001.jpg' already occupies that counter slot, and every
+  // later click would collide on the same slot forever instead of
+  // advancing past it.
+  const context = loadForcePrefixHelpers(['C:/out/temp000001.jpg']);
+  const counter = { n: 0 };
+  const full = await context.nextFreeForcePrefixPath('C:/out', counter, 'temp', 'png', ['jpg', 'jpeg', 'webp', 'gif', 'bmp']);
+  assert.equal(full, 'C:/out/temp000002.png',
+    'slot 1 is occupied (as .jpg) — the search must advance to slot 2, not loop back onto temp000001.png');
+});
+
+test('HARNESS 14b: nextFreeForcePrefixPath ignores sibling extensions when altExts is omitted (video/speech/music unaffected)', async () => {
+  // Callers that can't have a content/extension mismatch (video has a
+  // single true container; speech/music request an honoured --format)
+  // don't pass altExts, so an unrelated same-counter file under a
+  // different extension must NOT block them.
+  const context = loadForcePrefixHelpers(['C:/out/clip000001.png']);
+  const counter = { n: 0 };
+  const full = await context.nextFreeForcePrefixPath('C:/out', counter, 'clip', 'mp4');
+  assert.equal(full, 'C:/out/clip000001.mp4');
+});
+
+test('HARNESS 14c: nextFreeForcePrefixPath (M6) still bumps past same-extension collisions with altExts set', async () => {
+  const context = loadForcePrefixHelpers(['C:/out/temp000001.png', 'C:/out/temp000002.jpg']);
+  const counter = { n: 0 };
+  const full = await context.nextFreeForcePrefixPath('C:/out', counter, 'temp', 'png', ['jpg', 'jpeg', 'webp']);
+  assert.equal(full, 'C:/out/temp000003.png');
+});
+
+// --- HARNESS 15: armGenBtnWithCancel jobId-aware cancel (bug-fix H4/Phase1) -
+// Extracts the real armGenBtnWithCancel from renderer/app.js and exercises
+// its Cancel-button click handler directly (no DOM, no real generation —
+// just the function under test).
+function makeFakeGenBtn() {
+  const listeners = {};
+  return {
+    textContent: 'Generate',
+    disabled: false,
+    classList: { _set: new Set(), add(c) { this._set.add(c); }, remove(c) { this._set.delete(c); } },
+    closest(sel) { return sel === '.tabpanel' ? { id: 'tab-image' } : null; },
+    addEventListener(type, fn) { listeners[type] = fn; },
+    removeEventListener(type) { delete listeners[type]; },
+    _fireClick() { return listeners.click ? listeners.click({ preventDefault() {}, stopPropagation() {} }) : undefined; },
+  };
+}
+
+function loadArmGenBtnWithCancel() {
+  const appSrc = fs.readFileSync(path.join(ROOT, 'renderer/app.js'), 'utf8');
+  return extractFnSrc(appSrc, 'function armGenBtnWithCancel(genBtn, label, jobId) {');
+}
+
+test('HARNESS 15: armGenBtnWithCancel without a jobId falls back to the legacy panic mmxCancel() (unchanged behaviour)', async () => {
+  const fnSrc = loadArmGenBtnWithCancel();
+  const mmxCancelCalls = [];
+  const sandbox = {
+    state: { generating: null, genStatus: {}, genStartMs: null, genAvgSec: null },
+    window: { api: { mmxCancel: async (...args) => { mmxCancelCalls.push(args); } } },
+    confirm: () => true,
+    toast: () => {},
+    refreshTabStatusDots: () => {},
+    ensureEtaTimer: () => {},
+    console,
+  };
+  sandbox.window.state = sandbox.state;
+  const vm = require('vm');
+  const context = vm.createContext(sandbox);
+  vm.runInContext(`globalThis.__arm = ${fnSrc}`, context);
+  const genBtn = makeFakeGenBtn();
+  const ctrl = context.__arm(genBtn, 'Generate'); // no jobId
+  await genBtn._fireClick();
+  assert.equal(ctrl.wasCancelled(), true);
+  assert.deepEqual(mmxCancelCalls, [[]], 'no jobId -> must call the bare panic mmxCancel()');
+});
+
+test('HARNESS 15b: armGenBtnWithCancel with a jobId drives JobRunner.cancel(jobId) instead of the panic mmxCancel() (H4)', async () => {
+  const fnSrc = loadArmGenBtnWithCancel();
+  const mmxCancelCalls = [];
+  const jobRunnerCancelCalls = [];
+  const sandbox = {
+    state: { generating: null, genStatus: {}, genStartMs: null, genAvgSec: null },
+    window: {
+      api: { mmxCancel: async (...args) => { mmxCancelCalls.push(args); } },
+      JobRunner: { cancel: (jobId) => { jobRunnerCancelCalls.push(jobId); } },
+    },
+    confirm: () => true,
+    toast: () => {},
+    refreshTabStatusDots: () => {},
+    ensureEtaTimer: () => {},
+    console,
+  };
+  sandbox.window.state = sandbox.state;
+  const vm = require('vm');
+  const context = vm.createContext(sandbox);
+  vm.runInContext(`globalThis.__arm = ${fnSrc}`, context);
+  const genBtn = makeFakeGenBtn();
+  const ctrl = context.__arm(genBtn, 'Generate', 'job-xyz');
+  await genBtn._fireClick();
+  assert.equal(ctrl.wasCancelled(), true);
+  assert.deepEqual(jobRunnerCancelCalls, ['job-xyz'], 'a jobId must route through JobRunner.cancel(jobId)');
+  assert.deepEqual(mmxCancelCalls, [], 'must NOT also call the panic mmxCancel() when a jobId path is available (would double-cancel)');
+});
+
+// --- HARNESS 16: all 4 generate handlers are wrapped in JobRunner.run() ----
+// (bug-fix C1/Phase1, _temp4.md). A permanent regression guard: if a future
+// refactor "simplifies" a tab back to a direct armGenBtnWithCancel call
+// without the JobRunner wrap, this must fail loudly rather than silently
+// reintroducing the C1 finding (ActiveJobsWidget / parallel generation /
+// job history going dead again).
+test('HARNESS 16: every tab generate handler is wrapped in JobRunner.run() with the cancel/jobId bridge (C1/Phase1)', () => {
+  function src(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
+  for (const tab of ['image', 'speech', 'music', 'video']) {
+    const tabSrc = src(`renderer/tabs/${tab}Tab.js`);
+    assert.ok(new RegExp(`window\\.JobRunner\\.run\\(\\{[\\s\\S]{0,200}tabKey:\\s*'${tab}'`).test(tabSrc),
+      `${tab}Tab.js: generate handler must wrap its generation flow in window.JobRunner.run({ tabKey: '${tab}', ... })`);
+    assert.ok(/suppressLogRow:\s*true/.test(tabSrc),
+      `${tab}Tab.js: JobRunner.run() must pass suppressLogRow:true — the tab already creates its own primary log row; without this every generation would show two rows instead of one`);
+    assert.ok(/armGenBtnWithCancel\(genBtn, 'Generate', ctrl\.jobId\)/.test(tabSrc),
+      `${tab}Tab.js: armGenBtnWithCancel must be passed ctrl.jobId so the Cancel button routes through JobRunner.cancel (H4) instead of the legacy panic mmxCancel()`);
+    assert.ok(/ctx\.signal\.addEventListener\('abort',\s*\(\)\s*=>\s*cancel\.cancel\(\)\)/.test(tabSrc),
+      `${tab}Tab.js: external cancellation (ActiveJobsWidget ✕, or JobRunner.cancel from any source) must abort ctx.signal, which must be bridged into the legacy cancel.cancel() so the existing cancel.wasCancelled() checks in the body still fire`);
+    assert.ok(/window\.api\.mmxRunJob\(\{\s*args,\s*jobId:\s*ctrl\.jobId\s*\}\)/.test(tabSrc),
+      `${tab}Tab.js: the generation call must use mmxRunJob({ args, jobId: ctrl.jobId }), not the legacy mmxRun(args) — without jobId, mmx:log lines can't be routed to this job (H4) and JobRunner.cancel(jobId) can't kill this specific proc`);
+    assert.ok(!/await window\.api\.mmxRun\(args\)/.test(tabSrc),
+      `${tab}Tab.js: must not still call the legacy window.api.mmxRun(args) for the migrated generation path`);
+    // The runFn must return a status for every exit path JobRunner needs
+    // to distinguish (ok/err/cancel) — otherwise jobsSnapshot/ArchiveViewer
+    // would record a cancelled or failed run as "ok" (falls through to
+    // the runFn-returned-undefined branch in JobRunner.run()).
+    assert.ok(/return \{ status: 'ok'/.test(tabSrc), `${tab}Tab.js: runFn must return { status: 'ok', ... } on success`);
+    assert.ok(/return \{ status: 'err'/.test(tabSrc), `${tab}Tab.js: runFn must return { status: 'err', ... } on failure`);
+    // v1.1 (audit H1+L1): the cancel branch now uses a ternary
+    // `status: outFiles.length > 0 ? 'ok' : 'cancel'` so a cancel
+    // AFTER partial success is recorded as 'ok' (the files on disk
+    // are real, BatchGen must not retry them). The literal
+    // `return { status: 'cancel'` was replaced by the ternary; we
+    // accept either shape.
+    assert.ok(/return \{ status: 'cancel'|status: outFiles\.length > 0 \? 'ok' : 'cancel'/.test(tabSrc),
+      `${tab}Tab.js: runFn must return a cancel status when cancelled (v1.1: ternary ok when outFiles.length > 0)`);
+  }
+});
+
+// --- HARNESS 17: BatchGen abort flag is per-tab (bug-fix Phase2, _temp4.md) -
+// The old bug: `_batchAbort` was a single bare (implicitly global)
+// variable shared by EVERY call to startBatchGen(tabKey) — and there are
+// two independent entry points (the per-tab "Start BatchGen" button,
+// app.js:930, and the sequential "BatGen All Types" dashboard,
+// batchImportHelper.js). Clicking "Stop batch" on either tab's overlay
+// silently aborted whatever OTHER tab's batch happened to be running too
+// — directly undermining the user's core ask ("a music batch + image
+// batch... can run simultaneously"). A live multi-batch-plus-cancel
+// smoke test proved fragile to script reliably (a separate, pre-existing
+// UX bug clobbers the Stop button out of the DOM almost immediately —
+// see the spawned follow-up task), so the fix is pinned at the source
+// level instead.
+test('HARNESS 17: BatchGen abort flag is window._batchAbortByTab, keyed per tab, not a single shared global', () => {
+  function src(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
+  const batchMgrSrc = src('renderer/tabs/batchManager.js');
+  const batchImportSrc = src('renderer/tabs/batchImportHelper.js');
+
+  // word-boundary on both sides means this does NOT match within
+  // "_batchAbortByTab" (no boundary between "Abort" and "ByTab" — both
+  // are word characters) — so any match here is a regression back to
+  // the old bare/shared identifier. Comments are excluded so this
+  // file's own explanatory prose (which names the old identifier for
+  // context) doesn't trip the check.
+  const bareRefs = (text) => text
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .filter((line) => /\b_batchAbort\b/.test(line));
+  assert.deepEqual(bareRefs(batchMgrSrc), [],
+    'batchManager.js must not use a bare (shared-global) _batchAbort in live code — every reference must be window._batchAbortByTab[tabKey] (Phase2 regression)');
+  assert.deepEqual(bareRefs(batchImportSrc), [],
+    'batchImportHelper.js must not use a bare (shared-global) _batchAbort in live code (Phase2 regression)');
+
+  assert.ok(/window\._batchAbortByTab\s*=\s*window\._batchAbortByTab\s*\|\|\s*\{\}/.test(batchMgrSrc),
+    'batchManager.js must declare window._batchAbortByTab as a shared, keyed object');
+  assert.ok(/window\._batchAbortByTab\[tabKey\]\s*=\s*false/.test(batchMgrSrc),
+    "startBatchGen must reset ITS OWN tab's flag, keyed by tabKey, at the start of each run");
+  assert.ok(/window\._batchAbortByTab\[tabKey\]\s*=\s*true/.test(batchMgrSrc),
+    "the Stop-batch button must set ITS OWN tab's flag, keyed by tabKey, not a shared global");
+  // Every abort checkpoint inside startBatchGen's loop must read the
+  // SAME per-tab keyed slot — count is a deliberately loose lower bound
+  // (the exact number is an implementation detail; what matters is that
+  // there are several, not just the start/stop assignments).
+  const checkpointCount = (batchMgrSrc.match(/window\._batchAbortByTab\[tabKey\]/g) || []).length;
+  assert.ok(checkpointCount >= 8,
+    `startBatchGen's loop must consistently check window._batchAbortByTab[tabKey] at every abort checkpoint (found ${checkpointCount} references, expected >= 8)`);
+
+  // The sequential "all tabs" dashboard runner must check the flag for
+  // the SPECIFIC tab it just ran (its own loop variable), not a shared
+  // flag — preserving "one stop halts the rest of the dashboard
+  // sequence" without reintroducing cross-call sharing.
+  assert.ok(/window\._batchAbortByTab\s*&&\s*window\._batchAbortByTab\[type\]/.test(batchImportSrc),
+    "startAllBatchGen must check window._batchAbortByTab[type] (the tab it just ran) to decide whether to stop the sequential chain");
+});
+
+// --- HARNESS 18: every tab passes fullText for the "started" log row (M1) -
+test('HARNESS 18: every tab generate handler passes fullText (the untruncated prompt/text) to its "started" log event', () => {
+  function src(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
+  for (const tab of ['image', 'speech', 'music', 'video']) {
+    const tabSrc = src(`renderer/tabs/${tab}Tab.js`);
+    assert.ok(new RegExp(`headline: \`${tab.charAt(0).toUpperCase() + tab.slice(1)} generation started:[\\s\\S]{0,200}fullText:`).test(tabSrc),
+      `${tab}Tab.js: the "started" addLogEvent call must include fullText (the real, untruncated prompt) right after headline, so the hover tooltip shows the complete text (M1)`);
+  }
+});
+
+// --- HARNESS 19: no dead empty .batch-dashboard-settings div (M4) ---------
+// app.js used to append `el('div', {class:'batch-dashboard-settings'},
+// lines.map(...).join('') ? '' : null)` right before the REAL settings
+// div of the same class — Array#join() over DOM nodes always stringifies
+// to a non-empty "[object HTMLDivElement]..." string when `lines` is
+// non-empty (truthy -> ''), or '' when `lines` is empty (falsy -> null);
+// either way the div's content is always '' or null, i.e. always empty.
+// Net effect: every "All Types" dashboard card silently got two
+// .batch-dashboard-settings divs, one of which was always empty dead
+// weight.
+test('HARNESS 19: openAllBatchDashboard does not append a dead empty .batch-dashboard-settings div', () => {
+  const appSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'app.js'), 'utf8');
+  assert.ok(!/lines\.map\(.*\)\.join\(''\)\s*\?\s*''\s*:\s*null/.test(appSrc),
+    'M4 regression: the dead "lines.map(...).join(\'\') ? \'\' : null" expression must be removed from app.js');
+  const matches = appSrc.match(/el\('div', \{ class: 'batch-dashboard-settings' \}/g) || [];
+  assert.equal(matches.length, 1,
+    `M4: exactly one .batch-dashboard-settings div should be constructed per card, found ${matches.length} construction site(s)`);
+});
+
+// --- HARNESS 20: BatchGen is one parent JobRunner job (spawned follow-up,
+// _temp4.md Phase2) ----------------------------------------------------------
+// The unfinished part of Phase2: represent a whole batch run as ONE parent
+// job (ActiveJobsWidget shows "Batch: Music (12 items)" with a live
+// progress bar) instead of leaving it as bare DOM/log manipulation, and
+// feed the previously-unused JobSummary.emit() at the end.
+//
+// The one critical, easy-to-get-wrong design constraint (per the spawned
+// task's own writeup): the PARENT job must use tabKey: null. JobRunner's
+// per-tab gate (isTabRunning(tabKey)) checks ANY wip job whose .tab field
+// matches — it does not know about parent/child relationships. If the
+// parent claimed the real tabKey, every child item's own
+// JobRunner.run({tabKey}) call (each batch item drives the tab's own,
+// Phase1-migrated generate handler via genBtn.click()) would immediately
+// self-reject with "A generation is already running on the X tab" and
+// the entire batch would silently produce zero successful items. This is
+// pinned at the source level (not just unit-tested against JobRunner.js
+// in the abstract) because the bug would be in WHICH VALUE batchManager.js
+// passes, not in JobRunner.js's gate logic itself (which is correct and
+// unchanged).
+test('HARNESS 20: startBatchGen wraps its run in JobRunner.run({tabKey: null, ...}) so child items never self-block', () => {
+  const raw = fs.readFileSync(path.join(ROOT, 'renderer', 'tabs', 'batchManager.js'), 'utf8');
+  // Strip pure-comment lines before pattern-matching so a commented-out
+  // (i.e. disabled) call site can't masquerade as a real one — plain
+  // regex .test() can't tell code from prose otherwise. Mirrors HARNESS
+  // 17's bareRefs() filter, applied here to every check in this test.
+  const src = raw.split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
+
+  assert.ok(/window\.JobRunner\.run\(\{[\s\S]{0,40}tabKey:\s*null,/.test(src),
+    'batchManager.js: the parent batch job must be created with tabKey: null — using the real tabKey would make every child item\'s own JobRunner.run({tabKey}) call self-reject against the still-wip parent');
+  // Guard against the inverse mistake: passing the tab's own key directly
+  // (e.g. a careless `tabKey,` or `tabKey: tabKey,` shorthand) anywhere in
+  // the same call. There must be exactly one JobRunner.run(...) call in
+  // this file (the parent wrap) and it must be the null-keyed one.
+  const runCallCount = (src.match(/window\.JobRunner\.run\(\{/g) || []).length;
+  assert.equal(runCallCount, 1,
+    `batchManager.js should wrap startBatchGen in exactly one JobRunner.run({...}) call (the batch parent), found ${runCallCount}`);
+
+  // The abort bridge: external cancellation (ActiveJobsWidget ✕, or the
+  // in-overlay "■ Stop batch" button routed through batchCtrl.cancel())
+  // must flip window._batchAbortByTab[tabKey] — the SAME flag the
+  // existing per-item loop already polls — so both cancellation paths
+  // converge on one mechanism instead of two independent ones that could
+  // drift apart.
+  assert.ok(/ctx\.signal\.addEventListener\('abort',\s*\(\)\s*=>\s*\{\s*window\._batchAbortByTab\[tabKey\]\s*=\s*true;\s*\}\)/.test(src),
+    'batchManager.js: ctx.signal abort must be bridged into window._batchAbortByTab[tabKey] so JobRunner.cancel() (ActiveJobsWidget ✕) behaves identically to the in-overlay Stop button');
+  assert.ok(/batchCtrl\.cancel\(\)/.test(src),
+    'batchManager.js: the in-overlay "■ Stop batch" button must also call batchCtrl.cancel() (not just set the abort flag directly) so JobRunner marks the parent job \'cancel\' instead of silently logging it as \'ok\' (_markJobDone only honours \'cancel\' when ac.signal.aborted is actually true)');
+
+  // Live progress: ActiveJobsWidget renders job.progress.step/total in the
+  // row's meta line. Without onProgress, the parent row would show during
+  // the whole run with no indication of how far along it is.
+  assert.ok(/ctx\.onProgress\(/.test(src),
+    'batchManager.js: the per-item loop must call ctx.onProgress(...) so ActiveJobsWidget shows live "N/M" progress on the parent row');
+
+  // JobSummary.emit was built in an earlier phase with zero call sites
+  // anywhere in the codebase. This is the wire-up.
+  assert.ok(/window\.JobSummary\.emit\(/.test(src),
+    'batchManager.js: must call window.JobSummary.emit(...) so a "Batch finished: N/M ok" summary row is logged — JobSummary.js was built but never wired to any caller');
+  // It must be called AFTER the parent settles (await ...done), not
+  // inside runFn — addLogEvent only creates a genuinely separate summary
+  // row once the jobId's status has left 'wip'; emitting while still wip
+  // would silently fold the summary into the primary row's details
+  // instead of creating a visible "Batch finished" line.
+  assert.ok(/await\s+batchCtrl\.done;[\s\S]{0,800}window\.JobSummary\.emit\(/.test(src),
+    'batchManager.js: JobSummary.emit must be called AFTER awaiting the parent job\'s done promise, not from inside runFn while the job is still wip (LogService routes jobId rows with status==\'wip\' into the primary row\'s details instead of a new row)');
+});
+
+// ============================================================================
+// HARNESS 18 — BUG-9-01b regression (_temp9.md)
+// Loads the actual renderer/services/fileBrowser1.js and calls
+// renderFbDrivesList() — the user-visible "drives list" feature —
+// in a sandbox that has NO `process` global (the live renderer
+// doesn't have one). Pre-fix: the very first row's
+// `process.platform === 'win32'` threw ReferenceError synchronously,
+// the function bailed, and `#fb-list` ended up with 0 rows. Post-fix:
+// the platform check is shape-based (drive name regex), so the
+// rows render normally.
+// ============================================================================
+test('HARNESS 18: renderFbDrivesList renders rows without a `process` global (BUG-9-01b)', () => {
+  const win = setupWindowMock();
+  // Defensive: assert the mocked `window` really has no
+  // `process` property. Node itself always has a `process`
+  // global (we're running under node:test), so checking
+  // `typeof process` would always be 'object' and prove
+  // nothing — we have to check the WINDOW, which is what
+  // the live renderer's code actually reads from. The
+  // live renderer has no `process` in its scope; our
+  // mocked `window` mirrors that.
+  assert.equal(typeof win.process, 'undefined',
+    'this test only proves anything when `window.process` is undefined — the live renderer is the same shape (contextIsolation:true, nodeIntegration:false)');
+  // The live fileBrowser1 IIFE does `var state = window.state || {};`
+  // — pre-seed the minimum shape the IIFE reads at load time
+  // (config.output_dir so refreshBrowser() at load doesn't error,
+  // fbShowAllFiles for isItemVisibleInList).
+  win.state = { fbShowAllFiles: false, config: { output_dir: '' }, currentTab: 'image', fbDirs: { image: '', speech: '', music: '', video: '' } };
+  // The IIFE calls window.api.* during the initial refreshBrowser();
+  // stub the calls the function makes during a drives-list render
+  // path (so the IIFE's load-time call doesn't NPE).
+  win.api.fbList = async () => ({ ok: true, dir: '__DRIVES__', items: [] });
+  win.api.fbListDrives = async () => ({ ok: true, drives: [] });
+  win.api.fbMkdir = async () => ({ ok: true });
+  win.api.fbExists = async () => ({ ok: true, exists: false });
+  // DropTarget is loaded before fileBrowser1 in index.html.
+  win.DropTarget = { attachDropTarget: () => {} };
+  // $-style helpers used at load time. The IIFE references
+  // `$` (the small DOM helper) at module top-level; in the live
+  // renderer it comes from app.js's `var $ = ...` and lives on
+  // the window. The mock window needs both `win.$` (for any
+  // code that walks up the call chain via window) AND a
+  // module-scope `$` (so renderFbDrivesList can call it
+  // directly — the function executes in the module's IIFE
+  // scope, which is OUTSIDE `win`).
+  win.$ = (sel) => {
+    // Match the real $ helper (renderer/core/DomHelpers.js):
+    //   var $ = (sel, root = document) => root.querySelector(sel);
+    // `#foo` selectors ARE passed to querySelector, not getElementById.
+    // The fb-list element is queried as '#fb-list' — see below for
+    // how the test pre-seeds it in dom.elements.
+    if (typeof sel === 'string' && sel.startsWith('#')) {
+      return win.document.getElementById(sel.slice(1));
+    }
+    return win.document.querySelector(sel);
+  };
+  win.$$ = (sel) => [];
+  global.$ = win.$;
+  global.$$ = win.$$;
+  // `el` is the small createElement-style helper. In the live
+  // renderer, ParamRow.js sets `window.el = window.createElement`
+  // at load time, and other files look it up via the global
+  // window. The require()-loaded fileBrowser1.js is in Node's
+  // module scope, not the window scope, so the live-renderer
+  // resolution chain doesn't work here — we have to put `el`
+  // AND the related helpers on Node's global object so the
+  // module's bare `el(...)` / `iconForFile(...)` calls resolve.
+  win.el = win.createElement;
+  global.el = win.el;
+  win.iconForFile = () => '📄';
+  global.iconForFile = win.iconForFile;
+  // scheduleStateSave is referenced by the navigate() callback.
+  win.scheduleStateSave = () => {};
+  global.scheduleStateSave = () => {};
+  // We need a real <ul id="fb-list"> in the DOM so the helper
+  // can append rows to it. setupWindowMock's makeDom already
+  // supports getElementById (it returns elements[id] || null),
+  // so we seed dom.elements['fb-list'] before the IIFE runs.
+  const fbList = makeEl('ul');
+  fbList.attributes.id = 'fb-list';
+  win.document.elements['fb-list'] = fbList;
+  // Load the real fileBrowser1.js — same shape as HARNESS 2.
+  delete require.cache[require.resolve(path.join(ROOT, 'renderer', 'services', 'fileBrowser1.js'))];
+  try {
+    require(path.join(ROOT, 'renderer', 'services', 'fileBrowser1.js'));
+  } catch (e) {
+    // The IIFE may throw deeper in the render path; the helper
+    // exports we care about are written to window BEFORE that
+    // point, so we proceed regardless. Surface unrelated
+    // failures loudly.
+    if (!String(e).match(/output|sort|applyFileSearch|render|refreshBrowser/i)) throw e;
+  }
+  // The helper must be on window (it is, per fileBrowser1.js's
+  // `window.renderFbDrivesList = renderFbDrivesList;`).
+  assert.equal(typeof win.renderFbDrivesList, 'function',
+    'renderFbDrivesList must be exposed on window');
+  // Drive rows: shape-based detection (no `process` reference).
+  // Mix of Windows and POSIX drives so the shape check exercises
+  // both branches.
+  const drives = [
+    { name: 'C:\\', label: 'C:\\' },
+    { name: 'D:\\', label: 'D:\\' },
+    { name: '/',     label: '/' },
+  ];
+  // Capture any synchronous ReferenceError / TypeError thrown
+  // from inside renderFbDrivesList. The bug shape was an
+  // EXACTLY synchronous throw on the very first iteration of
+  // the drives loop.
+  let renderErr = null;
+  try {
+    win.renderFbDrivesList(drives);
+  } catch (e) {
+    renderErr = e;
+  }
+  assert.equal(renderErr, null,
+    `renderFbDrivesList must NOT throw on a normal drive list (got: ${renderErr && (renderErr.stack || renderErr.message) || 'unknown'}) — the pre-fix code threw "ReferenceError: process is not defined" on the first iteration`);
+  // And the actual user-visible promise: 3 rows, with the .fb-drive-row
+  // class, must have been appended to #fb-list.
+  const rows = fbList.children.filter((c) => c.classList && c.classList._set && c.classList._set.has('fb-drive-row'));
+  assert.equal(rows.length, drives.length,
+    `renderFbDrivesList must render one .fb-drive-row per drive — got ${rows.length} rows for ${drives.length} drives. The pre-fix bug rendered 0 rows because the function threw on the first iteration.`);
+});
+
+// ============================================================================
+// HARNESS 19 — BUG-9-05 regression guard (user-reported, 2026-06-25)
+// The user reported: "various popups are still shown, even if deactivated
+// per default" and "the ones relating to ? buttons [should] only
+// [be] shown while hovering over them". The `?` icons used to open a
+// help modal on click (which is a popup, NOT gated by popupPolicy).
+// The fix: the `?` icons are now HOVER-ONLY. The help text shows on
+// mouseover via the HelpTooltip system (renderer/components/HelpTooltip.js
+// + the `data-help` attribute on each icon). The click handler is a
+// no-op (preventDefault + stopPropagation).
+//
+// This harness asserts:
+//   1. Clicking the real `.tab` button (which carries data-help-topic)
+//      does NOT call the showHelp callback. The tab's own handler
+//      still runs.
+//   2. Clicking the real `<button id="refresh">` (which carries
+//      data-help-topic) does NOT call showHelp. Its own handler
+//      still runs.
+//   3. Clicking a `.help-button` icon does NOT call showHelp either
+//      (BUG-9-05 — the user wants HOVER-ONLY, not click-to-open).
+//      The help text is shown on mouseover via HelpTooltip instead.
+// ============================================================================
+test('HARNESS 19: HelpDelegation does NOT open a help modal on click; ? icons are hover-only (BUG-9-05)', () => {
+  const win = setupWindowMock();
+  // Build the two real controls the user clicked in the live
+  // session that were hijacked by the bug.
+  const tab = makeEl('button');
+  tab.classList.add('tab');
+  tab.setAttribute('data-tab', 'music');
+  tab.setAttribute('data-help-topic', 'topbar.tabMusic');
+  // The tab's own (real) click handler — must still run.
+  let tabSwitched = 0;
+  tab.addEventListener('click', () => { tabSwitched++; });
+  const refresh = makeEl('button');
+  refresh.setAttribute('id', 'refresh');
+  refresh.setAttribute('data-help-topic', 'sidebar.refreshBtn');
+  // The refresh button's own (real) click handler — must still run.
+  let refreshClicked = 0;
+  refresh.addEventListener('click', () => { refreshClicked++; });
+  // A real help icon — created by ParamRow's helpButton() factory,
+  // which renders a <button class="help-button" data-help-topic="…">?
+  // The delegation MUST fire for this one.
+  const helpIcon = makeEl('button');
+  helpIcon.classList.add('help-button');
+  helpIcon.setAttribute('data-help-topic', 'image.prompt');
+  // Some renderer code attaches the icon's OWN click handler; we
+  // mimic that here so the test confirms the delegation is the
+  // path that opens the modal in production (the icon's own
+  // handler isn't required for the help modal to open — the
+  // delegation does it).
+  win.document.body.appendChild(tab);
+  win.document.body.appendChild(refresh);
+  win.document.body.appendChild(helpIcon);
+  // Track every showHelp() call.
+  const showHelpCalls = [];
+  const showHelp = (topic, fallback) => showHelpCalls.push({ topic, fallback });
+  // Load the actual HelpDelegation.js (same shape as HARNESS 2).
+  delete require.cache[require.resolve(path.join(ROOT, 'renderer', 'components', 'HelpDelegation.js'))];
+  require(path.join(ROOT, 'renderer', 'components', 'HelpDelegation.js'));
+  // The IIFE exposes a setup function on window — call it.
+  win.HelpDelegation.setupHelpDelegation(showHelp);
+  // The makeEl mock's dispatchEvent is per-element (no bubbling),
+  // and HelpDelegation attaches its click handler to `document`
+  // (not to each button). In a real browser, a click on a button
+  // bubbles up to document; in our mock, we have to fire the
+  // button's own click listeners AND the document's click
+  // listeners in that order. The document-level mock tracks
+  // listeners under `win.document.docListeners` (see makeDom).
+  // The synthetic event also needs preventDefault / stopPropagation
+  // (the live code's preventDefault call would throw on a
+  // plain-object event).
+  const makeEvent = (target) => {
+    const ev = { type: 'click', target };
+    ev.preventDefault = () => { ev.prevented = true; };
+    ev.stopPropagation = () => { ev.stopped = true; };
+    return ev;
+  };
+  const fireClick = (target) => {
+    const ev = makeEvent(target);
+    // 1) Per-element handlers (real control's own listener).
+    for (const fn of (target._listeners.click || [])) fn(ev);
+    // 2) Document-level delegated handler (HelpDelegation).
+    for (const fn of (win.document.docListeners.click || [])) fn(ev);
+  };
+  // 1) Click the real tab button.
+  fireClick(tab);
+  assert.equal(tabSwitched, 1, 'BUG-9-05 regression: clicking the .tab button MUST still call its own click handler (got 0 calls)');
+  assert.equal(showHelpCalls.length, 0, 'BUG-9-05 regression: clicking the .tab button MUST NOT open the help modal. The help text (if any) is on hover, not click.');
+  // 2) Click the real refresh button.
+  fireClick(refresh);
+  assert.equal(refreshClicked, 1, 'BUG-9-05 regression: clicking #refresh MUST still call its own click handler (got 0 calls)');
+  assert.equal(showHelpCalls.length, 0, 'BUG-9-05 regression: clicking the refresh button MUST NOT open the help modal');
+  // 3) Click the help icon — BUG-9-05 (user-reported, 2026-06-25):
+  // the `?` icons are HOVER-ONLY. The click handler is a
+  // no-op (preventDefault + stopPropagation so the button
+  // never submits a form / never bubbles). The help text
+  // is shown on mouseover via HelpTooltip + the `data-help`
+  // attribute, NOT on click. So clicking a `?` icon must
+  // NOT call showHelp.
+  let helpClicked = 0;
+  helpIcon.addEventListener('click', () => { helpClicked++; });
+  fireClick(helpIcon);
+  assert.equal(helpClicked, 1, 'BUG-9-05: clicking a `?` icon MUST still call its OWN click handler (got 0 calls)');
+  assert.equal(showHelpCalls.length, 0,
+    'BUG-9-05: clicking a `?` icon MUST NOT call showHelp() — the help text is shown on hover via the HelpTooltip system, not on click. Pre-fix: the delegation hijacked the click and opened a modal.');
 });

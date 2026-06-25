@@ -23,6 +23,22 @@
   let _hasMore = false;
   let _filter = '';   // text filter (matches title/subtitle/type/status)
   let _statusFilter = 'all'; // 'all' | 'ok' | 'err' | 'warn' | 'cancel'
+  // v1.1 (audit M1): in-flight guard so aggressive scrolling near the
+  // bottom of the list can NOT fire concurrent _loadNextPage() calls.
+  // Pre-v1.1 the scroll handler was unguarded; each tick of the
+  // wheel re-entered _loadNextPage, every concurrent call read the
+  // SAME _nextOffset, and each one appended the SAME page to
+  // _entries — producing duplicate rows + a wrong "N loaded in
+  // memory" counter. The guard is set at the top of the function
+  // and cleared in a finally so an early-return / throw can never
+  // strand the loader.
+  let _loading = false;
+  // Defensive dedup set. The in-flight guard is the primary fix,
+  // but a dedup-by-id belt-and-suspenders catches the edge case
+  // where a future caller by-passes _loadNextPage (e.g. a manual
+  // refresh button) and double-adds. IDs are stable in the JSONL
+  // archive (see src/services/ArchiveService.js).
+  const _loadedIds = new Set();
 
   function _ensureModal() {
     let m = document.getElementById(MODAL_ID);
@@ -54,11 +70,22 @@
     list.addEventListener('scroll', _onListScroll);
     const footer = document.createElement('div');
     footer.className = 'archive-viewer-footer';
-    const close = document.createElement('button');
-    close.textContent = 'Close';
-    close.className = 'btn-mini';
-    close.addEventListener('click', close);
-    footer.appendChild(close);
+    // Bug-fix H1 (_temp5.md 360° audit): the local variable used to be
+    // named `close`, which shadowed the function-scoped `close()`
+    // function (defined below at line ~239). The result:
+    //   - close.addEventListener('click', close) registered the BUTTON
+    //     ITSELF as the click handler (DOM elements aren't callable),
+    //     so clicking Close did nothing.
+    //   - the Escape handler's close() threw TypeError: close is not a
+    //     function.
+    // The modal was unkillable without killing the app. Renaming the
+    // button variable to `closeBtn` lets both handlers resolve to the
+    // real close() function.
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = 'Close';
+    closeBtn.className = 'btn-mini';
+    closeBtn.addEventListener('click', close);
+    footer.appendChild(closeBtn);
     m.append(header, list, footer);
     document.body.appendChild(m);
 
@@ -163,8 +190,12 @@
       try {
         const r = await window.api.stateArchiveDelete(entry.id);
         if (r && r.ok) {
-          // Remove from local state and re-render.
+          // Remove from local state and re-render. Also drop from
+          // the dedup set (audit M1) so a future page load that
+          // re-reads this id (shouldn't happen post-delete, but
+          // defensive) is treated as a fresh entry.
           _entries = _entries.filter((e) => e.id !== entry.id);
+          _loadedIds.delete(entry.id);
           row.remove();
           _formatInfo();
         } else {
@@ -191,7 +222,15 @@
 
   async function _loadNextPage() {
     if (!_hasMore) return;
+    // v1.1 (audit M1): in-flight guard. Aggressive scrolling fired
+    // this function multiple times concurrently — each call read
+    // the same _nextOffset and appended the same page, producing
+    // duplicate rows. The guard ensures only one page-load is in
+    // flight at a time. Cleared in finally so a throw / early
+    // return never strands the loader.
+    if (_loading) return;
     if (!window.api || typeof window.api.stateArchiveRead !== 'function') return;
+    _loading = true;
     try {
       const r = await window.api.stateArchiveRead({ offset: _nextOffset, limit: PAGE });
       if (!r || !r.ok) {
@@ -199,7 +238,12 @@
         _formatInfo();
         return;
       }
-      const incoming = Array.isArray(r.lines) ? r.lines : [];
+      const incomingAll = Array.isArray(r.lines) ? r.lines : [];
+      // Dedup by entry id. Pre-v1.1 a concurrent caller could
+      // re-add entries that were already in _entries; the dedup
+      // set makes that a no-op.
+      const incoming = incomingAll.filter((e) => e && e.id != null && !_loadedIds.has(e.id));
+      for (const e of incoming) _loadedIds.add(e.id);
       _entries = _entries.concat(incoming);
       _nextOffset = r.nextOffset || _nextOffset;
       _hasMore = !!r.hasMore;
@@ -213,16 +257,22 @@
     } catch (_) {
       _hasMore = false;
       _formatInfo();
+    } finally {
+      _loading = false;
     }
   }
 
   async function open() {
     const m = _ensureModal();
     m.style.display = 'flex';
-    // Reset state.
+    // Reset state. The dedup set (audit M1) is also cleared so a
+    // re-open after a delete doesn't reject re-read entries as
+    // duplicates of the deleted ones.
     _entries = [];
     _nextOffset = 0;
     _hasMore = true;
+    _loading = false;
+    _loadedIds.clear();
     _filter = '';
     _statusFilter = 'all';
     const search = m.querySelector('#archive-viewer-search');

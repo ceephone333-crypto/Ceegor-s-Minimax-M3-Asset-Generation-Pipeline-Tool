@@ -4,6 +4,8 @@ A cross-modal asset generation GUI for the [MiniMax Token Plan](https://MiniMax.
 
 Built on Electron. Ships as a portable Windows .exe or as a runnable source tree. MIT licensed.
 
+**Current release: v1.1.0** — adds the Advanced pipeline settings overlay (18 tunable knobs for Real-ESRGAN, IS-Net, Sharp, and the ffmpeg audio cutter), drives-list navigation in the file browser, default-off popups, and an empirical full-code audit (1 CRITICAL + 4 HIGH + 6 MEDIUM + 2 LOW defects fixed). See [Release notes](CHANGELOG.md) for the full list.
+
 ---
 
 ## Features
@@ -293,6 +295,34 @@ Everything else (per-tab form values, batch lists, current folder) is auto-manag
 - **[Real-ESRGAN ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN) (optional, BSD-3-Clause)** — when the binary is installed, the upscale path shells out to it for noticeably higher-quality output (especially 2× / 3× / 4×). Detected automatically; the source release works without it.
 - **IS-Net `isnet-general-use` (optional, MIT)** — when the `isnetbg` CLI is installed, the right-click "Remove background" item and the "✨ Remove background" checkbox in the Upscale Settings popup shell out to it for a transparent PNG. The same opt-in model: source release works without it, and the UI shows a precise "binary / model missing" hint when the tool is partially installed.
 - **Node.js `fs` + `path`** — the only Node modules used by the in-app image pipeline.
+
+### v1.1 — Advanced pipeline settings overlay
+
+⚙ Settings → Image → **Advanced pipeline settings…** opens a single overlay with every library-level knob the four special features actually accept. Defaults match the previous hard-coded behaviour — change them only if you have a specific reason (a slow GPU, a need for lossless screenshots, a preferred MP3 quality, etc.).
+
+| Section | Knobs | Library |
+|---|---|---|
+| 🔍 Real-ESRGAN upscaler | Tile size (-t), TTA mode (-x), GPU device id (-g) | [realesrgan-ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN) |
+| ✨ IS-Net background remover | intra-op threads, inter-op threads, execution mode (CPU only) | [onnxruntime-node](https://www.npmjs.com/package/onnxruntime-node) |
+| 🗜 Image optimiser (Sharp) | JPEG chroma subsampling + mozjpeg, PNG compression level + palette, WebP mode + effort, AVIF effort + chroma | [Sharp / libvips](https://sharp.pixelplumbing.com/) |
+| ✂ Audio cutter (ffmpeg) | Silence threshold (dB) + min silence (ms), MP3 / Ogg quality, Opus + M4A bitrate | [ffmpeg](https://ffmpeg.org/) |
+
+Every select dropdown offers a **Custom…** entry that reveals a small text input (and an OK button) next to the dropdown, so the user can enter a value not in the pre-defined list. The dropdown shrinks to 50% width and the input takes the other 50%, matching the same pattern used in every other ParamRow combo in the app. The input is validated against a per-knob spec (number range, string pattern) so a typo is caught with a toast before it's applied.
+
+### v1.1 — File browser drives-list navigation
+
+The file browser's ↑ (Up) button now navigates through four levels, with the button **disabled at the lowest** (the drives list, on Windows; `/` on POSIX):
+
+1. A real folder inside `output_dir` → one level up
+2. `output_dir` itself → one level up (parentDir)
+3. A drive root (e.g. `D:\`) → the **DRIVES list**
+4. The DRIVES list → **DISABLED** (the button is greyed out, the cursor is `not-allowed`, and the click is a no-op)
+
+A user whose `output_dir` is at a drive root (e.g. `D:\`) can now reach any folder on a different drive without closing the tool.
+
+### v1.1 — Default-off popups
+
+Per the user's spec, the default popup policy is now `never` so a fresh install shows none of the informational popups (welcome / tab-intro / optional add-ons). The required first-time setup (API key + output folder) is NOT gated by this policy — it shows whenever the config is incomplete, independent of the popup setting. Change the policy in ⚙ Settings → Popups.
 
 ### Licensing & open-source
 

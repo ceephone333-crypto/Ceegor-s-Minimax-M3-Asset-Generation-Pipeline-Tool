@@ -11,7 +11,7 @@ const path = require('path');
 // `window`. Shim a global window, then load it.
 global.window = global.window || {};
 require(path.join(__dirname, '..', '..', '..', 'renderer', 'specs', 'modelSpecs.js'));
-const { validateValues } = global.window.ModelSpecs;
+const { validateValues, validateToolCombos } = global.window.ModelSpecs;
 
 const errsOf = (tab, vals, opts) => validateValues(tab, vals, opts).errors;
 const ok = (tab, vals, opts) => assert.deepStrictEqual(errsOf(tab, vals, opts), [], `expected no errors for ${JSON.stringify(vals)}`);
@@ -72,4 +72,56 @@ test('video: default T2V model needs no images', () => ok('video', { model: 'Min
 test('unknown keys and missing optional values do not error', () => {
   ok('speech', { text: 'hi', somethingUnknown: 'x' });
   ok('image', { prompt: 'a cat' });
+});
+
+// ---------------------------------------------------------------------------
+// validateToolCombos — BUG-9-08 (reported 2026-06-25). The MiniMax API
+// itself accepts any --n (1-9) × Variants (1-5) combination, but the GUI
+// must warn because each variant is a separate mmx call and rapid back-
+// to-back calls can trigger rate limits (the user hit this exactly: --n=2
+// + Variants=2 → 2nd variant got a silent "mmx exited with code -1").
+// ---------------------------------------------------------------------------
+const toolErrsOf = (tab, vals, ctx) => validateToolCombos(tab, vals, ctx).errors;
+const toolOk = (tab, vals, ctx) => assert.deepStrictEqual(toolErrsOf(tab, vals, ctx), [], `expected no tool-combo errors for ${JSON.stringify({ vals, ctx })}`);
+const toolBad = (tab, vals, re, ctx) => {
+  const e = toolErrsOf(tab, vals, ctx);
+  assert.ok(e.length > 0, `expected a tool-combo error for ${JSON.stringify({ vals, ctx })}`);
+  if (re) assert.ok(e.some((x) => re.test(x)), `expected an error matching ${re}; got ${JSON.stringify(e)}`);
+};
+
+test('tool-combo: image with --n=1 + Variants=1 is fine', () => {
+  toolOk('image', { n: 1 }, { variantsCount: 1 });
+  toolOk('image', {}, { variantsCount: 1 });
+});
+test('tool-combo: image with --n=2 + Variants=2 warns (user-reported case)', () => {
+  toolBad('image', { n: 2 }, /--n=2.*Variants=2/i, { variantsCount: 2 });
+});
+test('tool-combo: image with --n=4 + Variants=3 warns + warns total>9', () => {
+  const e = toolErrsOf('image', { n: 4 }, { variantsCount: 3 });
+  // Should warn about combo AND total exceeding per-call max
+  assert.ok(e.some((x) => /--n=4.*Variants=3/i.test(x)), `expected combo warning; got ${JSON.stringify(e)}`);
+  assert.ok(e.some((x) => /exceeds the API/i.test(x)), `expected total warning; got ${JSON.stringify(e)}`);
+});
+test('tool-combo: image with --n=2 + Variants=1 is fine (only --n is active)', () => {
+  toolOk('image', { n: 2 }, { variantsCount: 1 });
+});
+test('tool-combo: image with --n=1 + Variants=3 is fine (only Variants is active)', () => {
+  toolOk('image', { n: 1 }, { variantsCount: 3 });
+});
+test('tool-combo: image without toolCtx defaults variantsCount to 1', () => {
+  toolOk('image', { n: 1 });
+  toolOk('image', { n: 2 });
+});
+test('tool-combo: speech with Variants>3 warns', () => {
+  toolBad('speech', {}, /Variants is set to 4/i, { variantsCount: 4 });
+  toolOk('speech', {}, { variantsCount: 3 });
+});
+test('tool-combo: music with Variants>3 warns', () => {
+  toolBad('music', {}, /Variants is set to 5/i, { variantsCount: 5 });
+});
+test('tool-combo: video with Variants>3 warns', () => {
+  toolBad('video', {}, /Variants is set to 5/i, { variantsCount: 5 });
+});
+test('tool-combo: unknown tab returns no errors', () => {
+  toolOk('unknown-tab', { n: 99 }, { variantsCount: 99 });
 });

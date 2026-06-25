@@ -42,7 +42,7 @@
     <div class="splitter splitter-v" id="splitter-sidebar" data-splitter="sidebar" title="Drag to resize the folder-browser column"></div>
     <aside id="sidebar">
       <div class="sidebar-head">
-        <button id="fb-up" class="btn-mini" title="Up" data-help-topic="sidebar.upBtn">↑</button>
+        <button id="fb-up" class="btn-mini" title="Up one level (Ctrl+U)">↑</button>
         <span id="fb-path" class="path-label" title="">—</span>
         <button id="fb-refresh" class="btn-mini" title="Refresh" data-help-topic="sidebar.refreshBtn">↻</button>
       </div>
@@ -119,7 +119,7 @@
             <button id="log-copy" class="btn-mini" title="Copy selected events (Ctrl+C) or all to the clipboard" data-help-topic="log.copy">📋 Copy</button>
             <button id="log-clear" class="btn-mini" title="Clear the log" data-help-topic="log.clear">🗑 Clear</button>
             <button id="log-toggle" class="btn-mini" title="Collapse / expand the log" data-help-topic="log.toggle">▲ Collapse</button>
-            <button id="log-help" class="btn-mini" title="About the log pane" data-help-topic="log.structured">?</button>
+            <button id="log-help" class="btn-mini" title="About the log pane" data-help="The log pane shows everything the app does in real time: generation progress, mmx output, post-processing steps, errors, and the active-jobs widget for cancellable jobs. Click a row to expand its details (or collapse it). Ctrl+Click to select, Shift+Click to range-select, Ctrl+C to copy, Ctrl+A to select all. The column on the right (separated by a draggable splitter) is a picture preview for the currently selected file.">?</button>
           </span>
         </summary>
         <div id="log-jump-pill" class="log-jump-pill" title="Click to jump to the newest row">↓ 0 new</div>
@@ -188,6 +188,7 @@
   <script src="specs/modelSpecs.js"></script>
   <script src="components/ParamRow.js"></script>
   <script src="tabs/imageTab.js"></script>
+  <script src="tabs/speechTabVoices.js"></script>
   <script src="tabs/speechTab.js"></script>
   <script src="tabs/musicTab.js"></script>
   <script src="tabs/videoTab.js"></script>
@@ -227,12 +228,32 @@
   <script src="sections/section11_Variants_dropdown.js"></script>
   <script src="sections/section10_Tab_intro_popups.js"></script>
   <script src="sections/section09_Style_dropdown_refresh.js"></script>
+  <!-- v1.1 (lint-size split): the resilient addLog helper
+       was extracted from section08 so the main file stays
+       under the 500-line HARD limit. Loaded BEFORE
+       section08 so window.Section08Helpers is defined
+       when section08's script runs. -->
+  <script src="sections/section08Helpers.js"></script>
   <script src="sections/section08_Image_pipeline__Upscale___Crop___Convert_.js"></script>
   <script src="sections/section07_Image_optimisation___compression.js"></script>
   <!-- section06_File_browser.js removed: split into services/fileBrowser1.js + fileBrowser2.js -->
   <script src="sections/section05_Context_menu_for_preview_thumbnails___overlay.js"></script>
   <script src="sections/section04_Settings.js"></script>
   <script src="sections/section03_Settings_tab_panes.js"></script>
+  <!-- v1.1 (research-driven): the Advanced pipeline settings overlay
+       exposed by the Image pane. Loads AFTER section03 so its
+       openAdvancedPipelineSettings() is defined before the Image
+       pane's button can be clicked. The DOM-builder helpers
+       (selRow, cbRow, numRow, sectionTitle) were extracted to
+       their own file in v1.1 to keep this overlay under the
+       lint 500-line HARD cap. They MUST load BEFORE the overlay. -->
+  <script src="sections/section25_Advanced_pipeline_settings_helpers.js"></script>
+  <script src="sections/section25_Advanced_pipeline_settings_overlay.js"></script>
+  <!-- v1.1 (lint-size split): the isnetbg availability probe,
+       extracted from section08 so that file stays under the lint
+       500-line cap. Exposes window.probeIsnetbgStatus so section08's
+       existing call sites keep working. -->
+  <script src="sections/section26_IsnetbgProbe.js"></script>
   <script src="sections/section02_Popups_settings.js"></script>
   <script src="sections/section01_Diagnose_dialog.js"></script>
   <script src="bootstrap.js"></script>

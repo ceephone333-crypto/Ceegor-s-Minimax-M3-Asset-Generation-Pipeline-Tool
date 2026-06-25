@@ -74,6 +74,20 @@ function getTabInputValue(container) {
     if (sel.value === '__custom__') return num.value;
     return sel.value;
   }
+  // Bug-fix H3 (_temp5.md 360° audit): `combo-select-enum` (the
+  // v1.1.15 enum wrapper from ParamRow.js) was missing — the
+  // fallback below querySelector('input, select, textarea') matches
+  // the <select> first, so when the user picked "Custom…" the
+  // snapshot stored '__custom__' (the select's value) instead of
+  // the typed text. BatchGen then re-ran with the literal string
+  // '__custom__' as the model/mode/etc. Handle it explicitly,
+  // mirroring the combo-select-number branch.
+  if (container.classList && container.classList.contains('combo-select-enum')) {
+    const sel = container.querySelector('select');
+    const txt = container.querySelector('input');
+    if (sel.value === '__custom__') return txt ? txt.value : '';
+    return sel.value;
+  }
   if (container.classList && container.classList.contains('enum-text-row')) {
     const sel = container.querySelector('select');
     const txt = container.querySelector('input');
@@ -89,7 +103,7 @@ function getTabInputValue(container) {
 
 function setTabInputValue(container, val) {
   const sel = container.querySelector ? container.querySelector('select') : null;
-  
+
   // Boolean normalization
   if (sel && sel.options && sel.options.length === 2 && sel.options[0].value === 'off' && sel.options[1].value === 'on') {
     const isTrue = String(val).toLowerCase() === 'true' || String(val).toLowerCase() === 'on' || val === true;
@@ -117,6 +131,25 @@ function setTabInputValue(container, val) {
       }
       sel.dispatchEvent(new Event('change', { bubbles: true }));
       num.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  } else if (container.classList && container.classList.contains('combo-select-enum')) {
+    // Bug-fix H3 (_temp5.md 360° audit): mirror combo-select-number
+    // for the enum wrapper. The wrapper has a <select>, a hidden
+    // text input, AND an OK button; setCustomVisible (in ParamRow)
+    // is driven by the select's change event, so dispatching change
+    // here makes the 50/50 layout flip on for custom values.
+    const txt = container.querySelector('input.enum-custom-input');
+    if (sel && txt) {
+      const optionExists = Array.from(sel.options).some(o => o.value === String(val));
+      if (optionExists) {
+        sel.value = String(val);
+        txt.value = '';
+      } else {
+        sel.value = '__custom__';
+        txt.value = String(val);
+      }
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      txt.dispatchEvent(new Event('input', { bubbles: true }));
     }
   } else if (container.classList && container.classList.contains('enum-text-row')) {
     const txt = container.querySelector('input');
@@ -438,19 +471,27 @@ async function startAllBatchGen() {
     `\n\nStart processing now?`;
   if (!confirm(confirmMsg)) return;
 
-  _batchAbort = false;
-  
+  // bug-fix Phase2 (_temp4.md): startBatchGen owns window._batchAbortByTab
+  // (keyed per tab — see batchManager.js for why the old shared
+  // `_batchAbort` was wrong). This loop runs each tab SEQUENTIALLY
+  // (awaited, never concurrent with itself), so after each tab finishes
+  // we check whether ITS flag was set — i.e. the user clicked "■ Stop
+  // batch" on that tab's overlay DURING this dashboard-driven run — and
+  // if so, stop walking the rest of the tabs too (preserving the
+  // existing "one stop halts the whole sequential chain" behaviour
+  // without reintroducing a flag shared with independent, concurrent
+  // per-tab "Start BatchGen" runs).
   for (const type of tabsToRun) {
-    if (_batchAbort) {
+    // Switch to the active generating tab so the user sees progress
+    showTab(type);
+
+    // Start batchgen and wait for completion
+    await startBatchGen(type);
+
+    if (window._batchAbortByTab && window._batchAbortByTab[type]) {
       toast('Global batch generation aborted.', 'warn');
       break;
     }
-    
-    // Switch to the active generating tab so the user sees progress
-    showTab(type);
-    
-    // Start batchgen and wait for completion
-    await startBatchGen(type);
   }
 }
 

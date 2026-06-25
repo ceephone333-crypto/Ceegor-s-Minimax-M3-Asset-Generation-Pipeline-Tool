@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 global.window = global;
-global.window.api = { fbExists: async (p) => false }; // immer "existiert nicht"
+global.window.api = { fbExists: async (p) => ({ ok: true, exists: false }) }; // immer "existiert nicht"
 require('../../../../renderer/utils/PathBuilder.js');
 
 const { derivedOutputPath, nextFreeName, resolveUniqueOutputPath } = window.PathBuilder;
@@ -44,7 +44,7 @@ test('resolveUniqueOutputPath returns original when free', async () => {
 test('resolveUniqueOutputPath skips existing files', async () => {
   // Mock: first 2 exist, then free
   let call = 0;
-  window.api.fbExists = async () => { call++; return call <= 2; };
+  window.api.fbExists = async () => { call++; return { ok: true, exists: call <= 2 }; };
   const r = await resolveUniqueOutputPath('C:/out/foo.png');
   assert.equal(r, 'C:/out/foo (2).png');
 });

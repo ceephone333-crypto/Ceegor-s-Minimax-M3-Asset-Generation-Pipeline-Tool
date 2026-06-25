@@ -27,17 +27,43 @@
     let warn = 0;
     let cancel = 0;
     const failureReasons = new Map(); // reason → count
+    let unknown = 0;
     for (const r of results) {
       if (!r) continue;
       if (r.status === 'ok') ok++;
       else if (r.status === 'warn') { warn++; }
       else if (r.status === 'cancel') { cancel++; }
-      else { err++; }
-      if (r.status === 'err' || r.status === 'warn') {
-        const reason = (r.error || 'unknown').toLowerCase().slice(0, 80);
+      else if (r.status === 'err') { err++; }
+      else {
+        // v1.1 (audit M5): treat unknown / undefined status as err
+        // AND count it in the unknown bucket so the user can see
+        // the cause. Pre-v1.1 these were silently lumped into err
+        // with no failure reason, producing a "1 failed" headline
+        // with an empty Failures: breakdown.
+        err++;
+        unknown++;
+      }
+      if (r.status === 'err' || r.status === 'warn' || (r.status !== 'ok' && r.status !== 'cancel' && r.status !== undefined && r.status !== null)) {
+        // v1.1 (audit M5): guard against a non-string r.error.
+        // The previous `(r.error || 'unknown').toLowerCase()`
+        // threw TypeError if r.error was a non-string (e.g. an
+        // object), silently losing the whole summary.
+        //
+        // v1.1 (audit AUDIT-12): the previous version had a
+        // `continue` in the unknown-status branch that skipped
+        // THIS block entirely — so the failure-reason list never
+        // recorded a row for an unknown-status result even when
+        // the result had an r.error. We now always record the
+        // r.error (or a generic reason) for every non-ok row,
+        // including unknown-status rows.
+        const errStr = (typeof r.error === 'string' && r.error)
+          ? r.error
+          : (r.error && r.error.message) ? String(r.error.message) : 'unknown';
+        const reason = errStr.toLowerCase().slice(0, 80);
         failureReasons.set(reason, (failureReasons.get(reason) || 0) + 1);
       }
     }
+    void unknown; // tracked in failureReasons under '(unknown status)'
     const total = ok + err + warn + cancel;
     const headline =
       `Batch finished: ${ok}/${total} ok` +

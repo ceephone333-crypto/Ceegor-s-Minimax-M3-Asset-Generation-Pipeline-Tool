@@ -256,14 +256,19 @@ window.TABS.image = {
         for (const e of preErrs) toast(e, 'err', 6000);
         return;
       }
+      // Compute variantsCount UP-FRONT so the preflight can warn about
+      // --n × Variants combos (validateToolCombos reads it from toolCtx).
+      // The hard cap [1..5] is enforced here, mirroring the dropdown's
+      // own options, so validateToolCombos can safely multiply without
+      // re-checking bounds.
+      const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
       // Authoritative allowed-value / combination check (warn + proceed).
       if (typeof mmxPreflightConfirm === 'function' && !mmxPreflightConfirm('image', {
         model: model.input.getValue(), 'aspect-ratio': aspect.input.getValue(),
         n: n.input.getValue(), width: width.input.getValue(), height: height.input.getValue(),
         'response-format': respFmt.input.getValue(),
         prompt: promptText,
-      })) return;
-      const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
+      }, { variantsCount })) return;
       const seedVal = seed.input.getValue();
       const seedLocked = String(seedVal) !== '' && variantsCount > 1;
       if (seedLocked) {
@@ -840,6 +845,21 @@ window.TABS.image = {
             'Wait a few seconds and click Retry.',
             'If it persists, the service may be degraded — try again later.',
           ],
+          // BUG-9-08 (reported 2026-06-25): mmx exited with code -1 and
+          // produced NO stderr/stdout. The main process's `proc.on('error')`
+          // path fires when the Node child cannot be spawned OR dies before
+          // reaching mmx's own error handler. mmx normally prints "Error:
+          // <msg>" to stderr before exit, so a truly empty stderr is the
+          // smoking gun for "mmx crashed before it could print anything".
+          // Observed cause: rate-limit crash on a rapid 2nd variant when
+          // the user runs --n × Variants. Targeted tips for that pattern.
+          silent: [
+            'mmx exited silently with no error output (code -1).',
+            'This commonly happens after rapid back-to-back mmx calls (e.g. Variants + --n).',
+            'Wait 30–60 seconds, then retry with one variant at a time.',
+            'Reduce Variants or --n to avoid hitting rate limits.',
+            'Click "Diagnose" to verify the mmx-cli installation.',
+          ],
           unknown: [
             'The service returned an unrecognised error.',
             'Click "Copy error" to share the details with support.',
@@ -905,7 +925,9 @@ window.TABS.image = {
             ? 'Rate limited. Wait 30s and Retry.'
             : classification === 'quota'
               ? 'Quota exhausted.'
-              : 'Generation failed. See preview for details.';
+              : classification === 'silent'
+                ? 'mmx exited silently. Wait 30s and retry with fewer variants.'
+                : 'Generation failed. See preview for details.';
         toast(shortMsg, 'warn', 4000);
       }
       } catch (e) {

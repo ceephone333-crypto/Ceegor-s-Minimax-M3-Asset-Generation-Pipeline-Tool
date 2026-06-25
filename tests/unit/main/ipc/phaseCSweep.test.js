@@ -442,6 +442,19 @@ test('Phase C / Renderer side: LogService.renderPersistedL2 renders rows but doe
       // Confirms they're non-interactive by design.
       assert.ok(!row.attributes['data-job-id'],
         'persisted rows must not have data-job-id (non-interactive by design)');
+      // bug-fix M2 (_temp4.md): the row's DIRECT children must match
+      // renderLogEvent's flat structure (ts, icon, headline, chev,
+      // details) — NOT wrap icon+headline in an extra .log-event-head
+      // div. .log-event is display:grid with a fixed
+      // grid-template-columns; an extra wrapper counts as a single
+      // grid child, squeezing icon+headline into one column instead
+      // of each getting its own, and misaligning against every live
+      // row.
+      const childClasses = row.children.map((c) => c.className);
+      assert.ok(!childClasses.includes('log-event-head'),
+        'M2 regression: renderPersistedL2 must not wrap icon+headline in a .log-event-head div');
+      assert.deepEqual(childClasses, ['log-event-ts', 'log-type-icon', 'log-event-headline', 'log-event-chev log-event-chev-empty', 'log-event-details'],
+        'M2: persisted rows must have the same flat child shape (and class names) as a simple live row');
     }
   } finally {
     delete global.window;

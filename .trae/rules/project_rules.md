@@ -1,5 +1,70 @@
 # Project Rules — MiniMax Asset Generation Pipeline Tool
 
+## ⚠️ AI WORKING ON THIS PROJECT — READ THIS FIRST  ⚠️
+
+You keep making the **same three mistakes**, and they are why bugs "come back"
+even after you mark them fixed. Read this before you touch renderer code or
+claim anything works. (Source: _temp9.md — the audit that finally pinned this
+down after the 9th "why is the Up button still broken?" round.)
+
+### Mistake 1 — You trust green unit tests and your own "fixed" claim instead of running the app.
+
+`node --test` passing proves *nothing* about the renderer. The renderer is
+build-free vanilla JS loaded into one browser global scope; most bugs only
+fire when a real DOM event handler runs (a button click, a tab build). A
+green suite + a confident commit message is the exact state the app is in
+*while a core button is dead.* **Never write "fixed" unless you executed the
+real renderer and watched the behaviour change.** To execute it: boot the
+headless renderer (`scripts/smoke-renderer.js` via `npm run test:smoke`, or
+extend `scripts/smoke-eval.js` with an `EVAL=…` snippet), click the actual
+element, and read back the state you claim changed.
+
+### Mistake 2 — Your renderer tests fake browser globals, which hides real `ReferenceError`s.
+
+Several vm-sandbox tests inject things the real renderer does NOT have — e.g.
+`tests/unit/renderer/fbUpButtonBehavior.test.js` used to set
+`process: { platform: 'win32' }` in its sandbox. So code that says
+`process.platform` runs fine in the test and **throws `ReferenceError: process
+is not defined` in the real app.** When you add a renderer test, do NOT add
+`process`, `require`, `module`, `Buffer`, `__dirname`, or `global` to the
+sandbox to "make it pass." If the test needs them, the code under test is
+wrong — that is the bug, not the test setup. (A dedicated
+`process`-absent test now lives in `fbUpButtonBehavior.test.js` so a future
+regression of this exact bug is caught.)
+
+### Mistake 3 — You write Node code in the renderer.
+
+The renderer is a browser (`contextIsolation: true`, `nodeIntegration: false`).
+These do **not exist** there and throw the instant the line runs: `process`,
+`require()`, `__dirname`, `__filename`, `Buffer`, `global`, `fs`, `path`.
+Anything the renderer needs from Node must go through `window.api.*` (the
+preload bridge). Platform detection in the renderer: use a path-shape regex
+(`/^[A-Za-z]:[\\\/]?$/.test(p) || p === '/'`) or expose `platform` via the
+preload — never `process.platform`.
+
+### Mechanical checklist you must run every time (no diagnosis skill required)
+
+1. `node scripts/check-renderer-no-node-globals.js`
+   → must print `OK`. Every hit is a latent white-screen / dead handler.
+2. For any UI fix, boot the real renderer and **click the thing**; assert
+   the observable state (`state.fbDir`, a toast, a new DOM node) actually
+   changed. If you can't observe the change, you did not fix it.
+3. Before telling the user it's fixed, run `node scripts/sync-stable-asar.js`
+   and confirm the asar version matches `package.json` (extract `package.json`
+   from `dist-stable/win-unpacked/resources/app.asar` and check
+   `version`). If the user launches `dist-stable`, an un-synced asar means
+   they never receive your fix — which looks identical to "the bug is
+   still there." (See the "Fresh-version Folder" section below.)
+4. Do not delete or rewrite a passing test to make red turn green. A red
+   test that mirrors real renderer behaviour is telling you the truth; a
+   green test that injects fake globals is lying.
+
+**Bottom line:** the renderer is a browser, your tests sometimes pretend
+it's Node, and the user runs a packaged build you forgot to rebuild. Those
+three together are the whole pattern. Verify in the running app, keep Node
+out of the renderer, and re-sync the asar — and the "unfixable" bugs stop
+recurring.
+
 ## Fresh-version Folder (MANDATORY for every agent)
 
 The user has exactly ONE folder they use to start the most recent version.

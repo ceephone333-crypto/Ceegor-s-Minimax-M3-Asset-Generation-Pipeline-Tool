@@ -333,6 +333,35 @@ test('addLogEvent appends a free-form row when no jobId is set', () => {
   assert.equal(ev.jobId, null);
 });
 
+// --- bug-fix M1 (_temp4.md): hover tooltip must show the FULL message ---
+test('addLogEvent stores fullText, and the rendered row\'s title attribute prefers it over the (possibly truncated) headline', () => {
+  setupMock();
+  const LogService = loadLogService();
+  const longPrompt = 'a '.repeat(200).trim(); // far longer than a typical truncated headline
+  const id = LogService.addLogEvent({
+    headline: 'Image generation started: a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a…',
+    fullText: longPrompt,
+    category: 'gen',
+  });
+  const ev = global.window.state._logEvents.find((e) => e.id === id);
+  assert.equal(ev.fullText, longPrompt);
+  const row = global.document.querySelector(`.log-event[data-log-id="${id}"]`);
+  assert.ok(row, 'the row must have been rendered into the DOM');
+  const headlineEl = row.children.find((c) => c.classList && c.classList.contains('log-event-headline'));
+  assert.ok(headlineEl, 'the rendered row must have a .log-event-headline span');
+  assert.equal(headlineEl.attributes.title, longPrompt,
+    'the title attribute must be the FULL text, not the truncated headline (M1)');
+});
+
+test('addLogEvent without fullText falls back to the headline for the title attribute (backward compatible)', () => {
+  setupMock();
+  const LogService = loadLogService();
+  const id = LogService.addLogEvent({ headline: 'Short free-form line', category: 'info' });
+  const row = global.document.querySelector(`.log-event[data-log-id="${id}"]`);
+  const headlineEl = row.children.find((c) => c.classList && c.classList.contains('log-event-headline'));
+  assert.equal(headlineEl.attributes.title, 'Short free-form line');
+});
+
 test('addLogEvent with a wip jobId attaches the line to the job\'s primary row instead of creating a new row', () => {
   setupMock();
   const LogService = loadLogService();
@@ -394,6 +423,32 @@ test('addLogEvent with a non-wip jobId creates a new row (the job is closed)', (
   });
   const ev = global.window.state._logEvents.find((e) => e.id === id);
   assert.ok(ev, 'closed-job events must become their own row');
+});
+
+test('addLogEvent: an _internal secondary mmx line gets a NEUTRAL state, not wip (#7)', () => {
+  // Bug-fix (reported by user): a successfully generated music file was
+  // still shown "running" in the log. The raw mmx output lines stream in
+  // as _internal secondary events carrying the job's id; with every tab
+  // now using suppressLogRow there is no primary row for them to fold
+  // into, so each became a STANDALONE row. They used to default to 'wip'
+  // (blue + animated dots) and nothing ever marked them done. They must
+  // be neutral instead.
+  setupMock();
+  const LogService = loadLogService();
+  global.window.state.jobs = new Map(); // no wip primary to fold into
+  global.window.JobRunner.attachSecondaryToJob = () => null;
+  const secId = LogService.addLogEvent({
+    headline: '{ "saved": "C:/out/song.mp3" }', jobId: 'job-1', _internal: true, category: 'info',
+  });
+  const sec = global.window.state._logEvents.find((e) => e.id === secId);
+  assert.ok(sec, 'an _internal secondary line still creates a row when there is no wip primary');
+  assert.notEqual(sec.state, 'wip', 'an _internal secondary mmx line must NOT default to wip (would render as a perpetual "still running" blue/spinner row)');
+  assert.equal(sec.state, 'none');
+  // Control: a genuine primary job row (jobId, NOT _internal) still
+  // defaults to wip so an in-flight generation shows its spinner.
+  const primId = LogService.addLogEvent({ headline: 'Generation', jobId: 'job-2', category: 'info' });
+  const prim = global.window.state._logEvents.find((e) => e.id === primId);
+  assert.equal(prim.state, 'wip', 'a real primary job row must still default to wip');
 });
 
 test('plain click toggles expand (NOT selection) — selection moves to Ctrl+Click', () => {

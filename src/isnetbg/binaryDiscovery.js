@@ -105,4 +105,12 @@ module.exports = {
   findBinary,
   pickBackend,
   resetCache,
+  // Bug-fix (v1.1 audit): src/isnetbg.js:71 called this for the
+  // "backend not available" diagnostic, but the function was never
+  // exported. The ReferenceError was swallowed by the surrounding
+  // try/catch, so the user only ever saw a partial reason list
+  // ("no isnetbg.exe in ./bin/") and never the actionable
+  // "onnxruntime-node not bundled in the app" hint. Exporting it
+  // here lets the wrapper build the full diagnosis.
+  checkNodeBackendAvailable,
 };

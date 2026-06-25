@@ -127,7 +127,22 @@ function openSettings() {
       // {api_key,output_dir,region} object which silently dropped
       // `theme` and `styles` on every save. We preserve every
       // unknown key so future config fields aren't wiped.
-      const saved = await window.api.setConfig(merged);
+      const result = await window.api.setConfig(merged);
+      // Bug-fix M2 (_temp5.md 360° audit): config:set now returns an
+      // envelope `{ ok, config, error }`. A write failure (read-only
+      // fs, disk full, permission revoked) used to return `null`,
+      // which crashed the next line (`saved.api_key = ...`). Now we
+      // branch on ok and show the real error instead of lying
+      // "Saved.".
+      if (!result || result.ok !== true) {
+        const msg = (result && result.error) || 'Could not write config.txt (disk full, read-only, or permission denied).';
+        toast('Save failed: ' + msg, 'err', 8000);
+        // Still assign the returned (previous) config so state.config
+        // stays a valid object — downstream code reads .api_key etc.
+        if (result && result.config) state.config = result.config;
+        return;
+      }
+      const saved = result.config;
       // If the user enabled "Don't save" but entered a key,
       // assign it in-memory (state.config.api_key) so the
       // session works, then CLEAR it from the saved config so

@@ -13,6 +13,20 @@ const { pickAndCopy } = require('../services/InstallPickCopyService');
  */
 function register({ getMainWindow, appRoot }) {
   ipcMain.handle('install:openUrl', async (_e, url) => {
+    // v1.1 (audit BUG-R2-01): defense-in-depth. The sanitizer
+    // is the AUTHORITATIVE gate — anything not passing it is
+    // dropped on the floor before we even think about handing
+    // it to the OS. We re-ran sanitizeUrl() a second time
+    // right before shell.openExternal as an extra guard
+    // against renderer-side mutation, but the audit
+    // (_temp9.md OBS-2) noted that a second call against the
+    // SAME `url` string is meaningless (sanitizeUrl is
+    // pure); it only catches a TOCTOU window if some
+    // untrusted code mutated `url` between the two calls,
+    // and the renderer is already sandboxed. Removed the
+    // duplicate check — one authoritative call, then hand
+    // the URL to the OS (which has its own protocol/handler
+    // validation).
     const r = sanitizeUrl(url);
     if (!r.ok) return r;
     try {

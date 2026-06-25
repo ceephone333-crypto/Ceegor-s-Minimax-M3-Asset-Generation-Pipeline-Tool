@@ -26,6 +26,13 @@ const {
   findBinary,
   pickBackend,
   resetCache,
+  // Bug-fix (v1.1 audit): imported here so the "backend not
+  // available" diagnostic below can call it. Was previously
+  // called but never imported, so the call always threw a
+  // ReferenceError that the surrounding try/catch swallowed —
+  // the user never saw the actionable "onnxruntime-node not
+  // bundled in the app" hint.
+  checkNodeBackendAvailable,
 } = require('./isnetbg/binaryDiscovery');
 
 /** @type {string|null} */
@@ -123,6 +130,21 @@ function runNode(srcPath, dstPath, opts) {
   const useGpu = (opts.useGpu === false) ? '0' : '1';
   const scriptPath = path.join(__dirname, 'isnetbg_node.js');
   const args = [scriptPath, '--input', srcPath, '--output', dstPath, '--use-gpu', useGpu];
+  // Advanced session opts (v1.1 advanced pipeline settings overlay):
+  // forwarded as extra CLI flags so the child can apply them to the
+  // onnxruntime InferenceSession. intra/interOpNumThreads 0 means
+  // "let onnxruntime pick" (the default); we only forward the flag
+  // when the user set a positive value so the default spawn argv
+  // stays unchanged. executionMode defaults to 'sequential'.
+  if (Number(opts.intraOpNumThreads) > 0) {
+    args.push('--intra-op', String(Math.max(1, Math.min(64, Math.round(Number(opts.intraOpNumThreads))))));
+  }
+  if (Number(opts.interOpNumThreads) > 0) {
+    args.push('--inter-op', String(Math.max(1, Math.min(64, Math.round(Number(opts.interOpNumThreads))))));
+  }
+  if (opts.executionMode === 'parallel') {
+    args.push('--execution-mode', 'parallel');
+  }
   const modelDir = path.dirname(findModelPath() || '');
   const binDir = path.dirname(modelDir);
   return new Promise((resolveP) => {

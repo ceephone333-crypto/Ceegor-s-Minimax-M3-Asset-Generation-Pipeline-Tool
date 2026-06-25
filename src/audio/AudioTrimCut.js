@@ -108,6 +108,10 @@ async function trimSilence(filePath, opts = {}) {
 
 /**
  * Codec-Auswahl pro Container-Extension.
+ * Default-Qualität pro Codec — kann pro-Call über die
+ * `quality`-Option überschrieben werden (v1.1 advanced pipeline
+ * settings overlay). Map ist stabil: Renderer / Tests greifen
+ * über `CODEC_BY_EXT` auf die Default-Args zu.
  * @type {Record<string, string[]>}
  */
 const CODEC_BY_EXT = {
@@ -119,6 +123,44 @@ const CODEC_BY_EXT = {
   m4a:  ['-c:a', 'aac', '-b:a', '192k'],
   aac:  ['-c:a', 'aac', '-b:a', '192k'],
 };
+
+/**
+ * Build the codec argv for the chosen extension, substituting
+ * the user-tuned quality values when present. `quality` is the
+ * v1.1 advanced-pipeline-settings shape:
+ *   { mp3Quality, oggQuality, opusBitrate, m4aBitrate }
+ * Each field is optional; missing fields keep the codec default.
+ */
+function codecArgsFor(ext, quality) {
+  const base = CODEC_BY_EXT[ext] || ['-c:a', 'pcm_s16le'];
+  if (!quality || typeof quality !== 'object') return base.slice();
+  // The codec arrays are stable 2/4-tuples. Substitute the
+  // quality-bearing token (the LAST element of the relevant
+  // codec array) when the user provided an override.
+  //
+  // v1.1 (audit AUDIT-06): coerce the input. The pre-v1.1
+  // check used `Number.isFinite(q.mp3Quality)`, which is false
+  // for the string "5" (a value state.js NEVER sends, but an
+  // external IPC handler or a test might). Coerce via
+  // `Number(value)` first, then validate. The result is the
+  // same for the in-app flow (state.js always normalises to
+  // numbers) and correct for the other call sites.
+  const q = quality;
+  const numQ = (v) => { const n = Number(v); return Number.isFinite(n) ? n : NaN; };
+  if (ext === 'mp3' && Number.isFinite(numQ(q.mp3Quality))) {
+    return ['-c:a', 'libmp3lame', '-q:a', String(Math.max(0, Math.min(9, Math.round(numQ(q.mp3Quality)))))];
+  }
+  if (ext === 'ogg' && Number.isFinite(numQ(q.oggQuality))) {
+    return ['-c:a', 'libvorbis', '-q:a', String(Math.max(0, Math.min(10, Math.round(numQ(q.oggQuality)))))];
+  }
+  if (ext === 'opus' && typeof q.opusBitrate === 'string' && /^\d+k$/.test(q.opusBitrate)) {
+    return ['-c:a', 'libopus', '-b:a', q.opusBitrate];
+  }
+  if ((ext === 'm4a' || ext === 'aac') && typeof q.m4aBitrate === 'string' && /^\d+k$/.test(q.m4aBitrate)) {
+    return ['-c:a', 'aac', '-b:a', q.m4aBitrate];
+  }
+  return base.slice();
+}
 
 /**
  * Cut-Export. Streams srcPath[startSec..endSec] nach dstPath, optional
@@ -136,7 +178,7 @@ async function cut(srcPath, dstPath, opts = {}) {
   const wantFade = !!opts.fade && fadeMs > 0;
 
   const ext = (path.extname(dstPath).toLowerCase().replace(/^\./, '') || 'wav');
-  const codec = CODEC_BY_EXT[ext] || ['-c:a', 'pcm_s16le'];
+  const codec = codecArgsFor(ext, opts.quality);
 
   // For "copy" mode (-c copy), the rules are different: ffmpeg needs
   // the fast seek (before -i) to keep stream-copying working. We keep
@@ -190,4 +232,4 @@ async function cut(srcPath, dstPath, opts = {}) {
   });
 }
 
-module.exports = { trimSilence, cut, CODEC_BY_EXT };
+module.exports = { trimSilence, cut, codecArgsFor, CODEC_BY_EXT };

@@ -34,6 +34,19 @@ function setupCropFrameDrag(frame, stage, getImageW, getImageH, onMove, displayS
     document.addEventListener('mouseup', onUp);
     document.addEventListener('touchmove', onMv, { passive: false });
     document.addEventListener('touchend', onUp);
+    // v1.1 (audit L17): if the user presses Esc while holding the
+    // mouse, mouseup never fires and the four document listeners
+    // (plus their captured closures) leak for the lifetime of the
+    // page. We add a one-time keydown listener that calls onUp()
+    // so the listeners are cleaned up before the modal's Esc
+    // handler removes the modal from the DOM.
+    document.addEventListener('keydown', onEscDuringDrag);
+  }
+  function onEscDuringDrag(e) {
+    if (e.key === 'Escape' && dragging) {
+      onUp();
+      // onUp removes us via the cleanup below.
+    }
   }
   function onMv(e) {
     if (!dragging) return;
@@ -62,6 +75,8 @@ function setupCropFrameDrag(frame, stage, getImageW, getImageH, onMove, displayS
     document.removeEventListener('mouseup', onUp);
     document.removeEventListener('touchmove', onMv);
     document.removeEventListener('touchend', onUp);
+    // v1.1 (audit L17): also remove the Esc-during-drag listener.
+    document.removeEventListener('keydown', onEscDuringDrag);
   }
   frame.addEventListener('mousedown', onDown);
   frame.addEventListener('touchstart', onDown, { passive: false });

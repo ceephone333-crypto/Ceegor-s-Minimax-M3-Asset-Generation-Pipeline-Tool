@@ -805,12 +805,100 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
 }
 .combo-select-enum.enum-custom-active > input.enum-custom-input {
   flex: 1 1 calc(50% - 60px);
-  display: '';
+  display: block;
   min-width: 80px;
 }
 .combo-select-enum.enum-custom-active > button.enum-custom-ok {
   flex: 0 0 50px;
-  display: '';
+  display: block;
+}
+
+/* bug-fix M3 (_temp4.md): the 'number' kind gets the same 50/50 + OK
+   affordance as 'enum' above (cde.txt 116 asked for this on "any
+   menu", not just enum) — same shape, just targeting the number
+   input's own classes. The wrapper itself keeps the
+   'combo-select-number' class (NOT renamed to combo-select-enum):
+   batchImportHelper.js's getTabInputValue/setTabInputValue match on
+   that exact class name. */
+.combo-select-number > select {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.combo-select-number > input.number-custom-input {
+  flex: 0 0 0;
+  display: none;
+  min-width: 0;
+}
+.combo-select-number > button.number-custom-ok {
+  flex: 0 0 0;
+  display: none;
+  margin: 0;
+}
+.combo-select-number.number-custom-active > select {
+  flex: 1 1 50%;
+  min-width: 100px;
+}
+.combo-select-number.number-custom-active > input.number-custom-input {
+  flex: 1 1 calc(50% - 60px);
+  display: block;
+  min-width: 80px;
+}
+.combo-select-number.number-custom-active > button.number-custom-ok {
+  flex: 0 0 50px;
+  display: block;
+}
+
+/* v1.1 (user request): the file browser's Up button is
+   disabled when the user is at the drives list (the lowest
+   navigable point). We dim the button + change the cursor so
+   the disabled state is visually obvious. The native
+   `disabled` HTML attribute is also set, which blocks the
+   click — the .fb-up-disabled class is purely cosmetic. */
+button.fb-up-disabled,
+button.fb-up-disabled:hover,
+button.fb-up-disabled:focus {
+  opacity: 0.4;
+  cursor: not-allowed;
+  /* Suppress the default hover/active backgrounds the .btn-mini
+     style applies so the dimmed state reads as "inert". */
+  background: var(--bg-2);
+  border-color: var(--border-2);
+  color: var(--fg-2);
+}
+
+/* v1.1 (user request): the advanced pipeline settings overlay
+   (section25) now offers a "Custom…" entry on every select
+   dropdown. When the user picks it, the dropdown shrinks to
+   50% and the text input + OK button take the other 50%.
+   Same pattern as the ParamRow combo-select-enum / combo-
+   select-number rules above, scoped to the section25 wrapper
+   so the two CSS rules don't fight each other. */
+.section25-sel-row > select {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.section25-sel-row > input.section25-custom-input {
+  flex: 0 0 0;
+  display: none;
+  min-width: 0;
+}
+.section25-sel-row > button.section25-custom-ok {
+  flex: 0 0 0;
+  display: none;
+  margin: 0;
+}
+.section25-sel-row.section25-custom-active > select {
+  flex: 1 1 50%;
+  min-width: 100px;
+}
+.section25-sel-row.section25-custom-active > input.section25-custom-input {
+  flex: 1 1 calc(50% - 60px);
+  display: block;
+  min-width: 80px;
+}
+.section25-sel-row.section25-custom-active > button.section25-custom-ok {
+  flex: 0 0 50px;
+  display: block;
 }
 
 /* ========== Action bar ========== */
@@ -1474,10 +1562,26 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
 .logbar-log summary {
   flex-shrink: 0;
 }
+/* Bug-fix (reported by user — "we still can't scroll the log element"):
+   even though `.logbar-log details` computes as display:flex, the Chromium
+   that Electron ships does NOT actually size a <details>'s flex children —
+   #log (flex:1, min-height:0) grew to its FULL content height (measured
+   1938px inside a 279px logbar) instead of shrinking, so the overflowing
+   rows were clipped by the logbar's overflow:hidden and unreachable. This
+   is the long-standing "<details> can't be a real flex container" quirk;
+   the flex declarations below are kept as a best-effort for engines that
+   DO honour them, but the height is pinned explicitly so scrolling works
+   regardless. --logbar-h is the single source of truth for the logbar
+   height (set on :root, updated live by the splitter drag), so a calc()
+   off it tracks every resize with no JS. The subtracted 42px covers the
+   summary (~31px) + the logbar's top border + a small breathing gap so
+   #log never exceeds the logbar (which would re-clip it). #log is
+   border-box, so its own padding is already inside this height; the rows
+   scroll within via overflow-y:scroll. */
 .logbar-log #log {
   flex: 1;
   min-height: 0;
-  max-height: none;
+  max-height: calc(var(--logbar-h, 280px) - 42px);
 }
 .logbar-preview {
   /* Locked to the right edge: no border, no right margin, full
@@ -2326,8 +2430,19 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   font-size: 12px;
   color: var(--fg-2);
   white-space: normal;       /* per-row overflow is handled in the row */
-  user-select: none;         /* individual rows opt back in for text */
-  -webkit-user-select: none;
+  /* Bug-fix (reported by user — "we still can't select and copy single
+     log entries"): the pane used to be user-select:none with only the
+     timestamp + headline opting back into text, so the most useful
+     content (the expanded detail lines: file paths, error JSON) couldn't
+     be selected with the mouse at all. Make the whole pane selectable so
+     standard click-drag highlight + Ctrl+C works on any row text. The
+     interactive controls (chevron / cancel ✕) opt back OUT below so a
+     drag that ends on a button doesn't select its glyph, and the
+     click-to-expand handler bails when the user actually selected text
+     (see setupLogClicks). */
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
   /* v1.1.15 (reported by user): the previous version
      had no overflow-y set, so the rows would overflow
      out of the pane and the scrollbar would never appear
@@ -2387,6 +2502,13 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
   cursor: default;
 }
 .log-pane .log-event:hover { background: var(--bg-3); }
+/* Interactive controls opt back OUT of text selection so a drag that ends
+   on the chevron / cancel button doesn't select its glyph, and they keep
+   the pointer cursor instead of the I-beam the selectable pane now uses. */
+.log-pane .log-event-chev,
+.log-pane .log-cancel-btn,
+.log-pane .log-wip-dots,
+.log-pane .log-type-icon { user-select: none; -webkit-user-select: none; cursor: pointer; }
 .log-pane .log-event.selected {
   background: var(--accent-3);
   color: #fff;
@@ -2562,54 +2684,12 @@ body.resizing-width, body.resizing-height { user-select: none; -webkit-user-sele
 .log-pane .log-event[data-log-cat="cancel"]   { border-left-color: var(--fg-3); }
 .log-pane .log-event.selected { border-left-color: var(--accent) !important; }
 
-/* v1.1.9: per-group colour tints. Each generation run / picture
-   group gets one of 12 stable hues; events belonging to the same
-   group share a faint left-tint AND a faint row background so the
-   user can visually trace which log lines belong to which picture.
-   The hue cycle repeats every 12 group ids, so a long session
-   doesn't grow an unbounded stylesheet. HSL with relatively
-   low saturation + high lightness so the underlying category
-   border (set above) still reads on top. */
-.log-pane .log-event.log-group-0  { background: hsla(  0, 70%, 50%, 0.06); border-left-color: hsla(  0, 70%, 55%, 0.9); }
-.log-pane .log-event.log-group-1  { background: hsla( 30, 70%, 50%, 0.06); border-left-color: hsla( 30, 70%, 55%, 0.9); }
-.log-pane .log-event.log-group-2  { background: hsla( 60, 70%, 50%, 0.06); border-left-color: hsla( 60, 70%, 55%, 0.9); }
-.log-pane .log-event.log-group-3  { background: hsla( 90, 70%, 45%, 0.06); border-left-color: hsla( 90, 70%, 50%, 0.9); }
-.log-pane .log-event.log-group-4  { background: hsla(140, 60%, 45%, 0.06); border-left-color: hsla(140, 60%, 50%, 0.9); }
-.log-pane .log-event.log-group-5  { background: hsla(180, 60%, 45%, 0.06); border-left-color: hsla(180, 60%, 50%, 0.9); }
-.log-pane .log-event.log-group-6  { background: hsla(210, 70%, 55%, 0.06); border-left-color: hsla(210, 70%, 60%, 0.9); }
-.log-pane .log-event.log-group-7  { background: hsla(240, 60%, 60%, 0.06); border-left-color: hsla(240, 60%, 65%, 0.9); }
-.log-pane .log-event.log-group-8  { background: hsla(270, 60%, 60%, 0.06); border-left-color: hsla(270, 60%, 65%, 0.9); }
-.log-pane .log-event.log-group-9  { background: hsla(300, 60%, 55%, 0.06); border-left-color: hsla(300, 60%, 60%, 0.9); }
-.log-pane .log-event.log-group-10 { background: hsla(330, 70%, 55%, 0.06); border-left-color: hsla(330, 70%, 60%, 0.9); }
-.log-pane .log-event.log-group-11 { background: hsla(200, 40%, 60%, 0.06); border-left-color: hsla(200, 40%, 65%, 0.9); }
-/* On hover / selection, the bg colour darkens slightly so the
-   group tint is still visible. The accent "selected" border
-   always wins (set above) so the user can still see the
-   selection ring. */
-.log-pane .log-event.log-group-0:hover,
-.log-pane .log-event.log-group-0.selected  { background: hsla(  0, 70%, 50%, 0.12); }
-.log-pane .log-event.log-group-1:hover,
-.log-pane .log-event.log-group-1.selected  { background: hsla( 30, 70%, 50%, 0.12); }
-.log-pane .log-event.log-group-2:hover,
-.log-pane .log-event.log-group-2.selected  { background: hsla( 60, 70%, 50%, 0.12); }
-.log-pane .log-event.log-group-3:hover,
-.log-pane .log-event.log-group-3.selected  { background: hsla( 90, 70%, 45%, 0.12); }
-.log-pane .log-event.log-group-4:hover,
-.log-pane .log-event.log-group-4.selected  { background: hsla(140, 60%, 45%, 0.12); }
-.log-pane .log-event.log-group-5:hover,
-.log-pane .log-event.log-group-5.selected  { background: hsla(180, 60%, 45%, 0.12); }
-.log-pane .log-event.log-group-6:hover,
-.log-pane .log-event.log-group-6.selected  { background: hsla(210, 70%, 55%, 0.12); }
-.log-pane .log-event.log-group-7:hover,
-.log-pane .log-event.log-group-7.selected  { background: hsla(240, 60%, 60%, 0.12); }
-.log-pane .log-event.log-group-8:hover,
-.log-pane .log-event.log-group-8.selected  { background: hsla(270, 60%, 60%, 0.12); }
-.log-pane .log-event.log-group-9:hover,
-.log-pane .log-event.log-group-9.selected  { background: hsla(300, 60%, 55%, 0.12); }
-.log-pane .log-event.log-group-10:hover,
-.log-pane .log-event.log-group-10.selected { background: hsla(330, 70%, 55%, 0.12); }
-.log-pane .log-event.log-group-11:hover,
-.log-pane .log-event.log-group-11.selected { background: hsla(200, 40%, 60%, 0.12); }
+/* Bug-fix (C2): the v1.1.9 per-group 12-hue colour tints were removed.
+   Each generation run cycled through 12 background/border hues, so a
+   long session's log rendered as confetti stripes — the opposite of
+   the legible result/state colour coding the user actually wants. The
+   `log-group-N` class is still applied by LogService (data-log-group
+   is read elsewhere) but no longer carries any colour. */
 
 /* ========== Startup modal ========== */
 .startup-modal { width: min(560px, 92vw); }

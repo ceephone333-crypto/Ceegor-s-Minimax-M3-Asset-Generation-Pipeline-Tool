@@ -1,8 +1,27 @@
 // renderer/services/fileBrowser2a.js (Phase 3 Block 32)
 // First half of fileBrowser2.js (preview + thumbs).
 
-// renderer/services/fileBrowser2.js (Phase 3 Block 27)
-// Second half of the File browser section.
+// v1.1 (audit H6): pause + release any <audio>/<video> element
+// currently in the preview pane. The browser does NOT reliably
+// pause detached media, so replacing innerHTML while a song is
+// playing left the audio running in the background with no UI to
+// stop it. We pause + clear the src explicitly so the element's
+// resources (network buffer, audio graph) are released even if the
+// element is GC'd late.
+function _stopPreviewMedia() {
+  try {
+    const content = $('#fb-preview-content');
+    if (!content) return;
+    const media = content.querySelectorAll('audio, video');
+    for (const el of media) {
+      try { el.pause(); } catch (_) {}
+      try { el.src = ''; } catch (_) {}
+    }
+  } catch (_) { /* best-effort — never block the preview swap */ }
+}
+// Expose on window so fileBrowser2b.js (audio/video preview pane
+// helpers) and any future caller can reuse the same cleanup.
+window._stopPreviewMedia = _stopPreviewMedia;
 
 function markFbItemActive(path) {
   if (!path || typeof path !== 'string') return;
@@ -40,6 +59,12 @@ function markFbItemActive(path) {
 }
 
 function previewImageFromFile(p) {
+  // v1.1 (audit H6): pause any playing <audio>/<video> in the
+  // preview pane before we replace its innerHTML. The browser
+  // does NOT reliably pause detached media, so without this the
+  // previously-previewed song kept playing in the background
+  // after the user clicked an image.
+  _stopPreviewMedia();
   // Images from the file browser go to the new Picture preview pane
   // (bottom-right of the log bar), not the tab's generation preview.
   // The tab's generation preview is reserved for content that the user
@@ -92,6 +117,8 @@ function previewImageFromFile(p) {
 // The pane scrolls horizontally if there are too many thumbs to fit
 // at the current pane width.
 function previewImagesFromFiles(paths) {
+  // v1.1 (audit H6): pause any playing media before replacing the pane.
+  _stopPreviewMedia();
   const content = $('#fb-preview-content');
   if (!content) return;
   if (!Array.isArray(paths) || !paths.length) {
@@ -112,6 +139,13 @@ function previewImagesFromFiles(paths) {
   // N > 1 → grid of thumbnails. Build the container once, then async-
   // resolve each path's natural dimensions for the title hint.
   content.innerHTML = '';
+  // v1.1 (audit M10): clear _lastPreviewPath so a later single-click
+  // preview of a file that was the last single-file preview (before
+  // this batch grid was shown) is NOT silently no-op'd by the
+  // early-return `if (state._lastPreviewPath === p) return;` check
+  // in previewImageFromFile. The grid is a separate UX mode from a
+  // single-file preview, so the cache must reset on every grid show.
+  state._lastPreviewPath = null;
   // Stash the current batch on state so the image overlay's
   // arrow-key handler (added in a later feature) can navigate to
   // the previous / next thumbnail without re-fetching the list
@@ -180,7 +214,12 @@ function previewImagesFromFiles(paths) {
         if (w && h) openImageOverlay(url, filename, w, h, p);
         else openImageOverlay(url, filename, 0, 0, p);
       };
-      slot.addEventListener('click', open, { once: true });
+    slot.addEventListener('click', open);
+    // v1.1 (audit M9): pre-v1.1 used `{ once: true }` here, which
+    // made the thumbnail unclickable after the first click. The
+    // `clickBound` flag above already prevents double-binding, so
+    // `once: true` was both redundant and harmful — closing the
+    // overlay and clicking the same thumb again did nothing.
     };
     // Resolve the natural size async so the overlay can show it.
     const probe = new Image();
@@ -276,12 +315,11 @@ function _buildPreviewThumb(p, options) {
       if (w && h) openImageOverlay(url, filename, w, h, p);
       else openImageOverlay(url, filename, 0, 0, p);
     };
-    slot.addEventListener('click', open, { once: true });
-    // Right-click: open the full folder-browser context menu
-    // for this path. The preview pane is just a shortcut to
-    // the same actions (Upscale / Crop / Convert / Optimize /
-    // Remove background + file-level Copy / Cut / Rename /
-    // Move / Delete).
+    slot.addEventListener('click', open);
+    // v1.1 (audit M9): no `{ once: true }` — same fix as the
+    // sibling bind() above. The clickBound flag already prevents
+    // double-binding, so once:true was redundant AND made the
+    // thumbnail unclickable after the first click.
     slot.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();

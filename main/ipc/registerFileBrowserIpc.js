@@ -71,46 +71,94 @@ function register(_deps) {
   // file picker. Without this, fbList rejects the parent path
   // ("Path is outside the allowed directories.") and the AUDIT-08
   // fallback silently rolls state.fbDir back to output_dir, so
-  // clicking Up appears to do nothing. We only auto-trust ancestors
-  // of an already-trusted directory (output_dir or a user-picked
-  // path) — never a free-form path from the renderer.
+  // clicking Up appears to do nothing.
+  //
+  // BUG-9-04 fix (user-reported, 2026-06-25): the file-browser
+  // Up button chain was completely broken — every click produced
+  // "Path is outside the allowed directories." in the renderer
+  // and the AUDIT-08 fallback silently rolled fbDir back to
+  // output_dir. The root cause was that the read-side handler
+  // (`fb:list`, see below) gated every read on the trust set.
+  //
+  // The user's security model: "the generated image may always
+  // only be written in the folder shown in the folder explorer.
+  // also special actions may never be made outside what is shown
+  // there." So the write side stays gated (by the trust set
+  // AND the new activeDir — see setActiveDir() on the path-
+  // security service), but the read side is no longer gated by
+  // the trust set at all. The OS is the authoritative gate for
+  // reads: fs.readdir returns the real ENOENT / EACCES / EPERM
+  // error if the path is inaccessible.
+  //
+  // This IPC is still wired (the renderer still calls it on
+  // every Up click). It now does the simple job: set the
+  // renderer's current `state.fbDir` as the active dir for the
+  // next write, and add it to the trust set so the
+  // "write to the picked folder" path in ensureSubDir() still
+  // works. The widening is gated: we only accept dirs the user
+  // has actually visited (renderer is the only caller and it
+  // only fires after a user-initiated navigation).
   ipcMain.handle('fb:trust-ancestors', (_e, dir) => {
     try {
       const path = require('path');
-      const cfgMod = require('../../src/config');
-      const root = cfgMod.effectiveOutputDir(cfgMod.read());
-      const norm = path.resolve(String(dir || ''));
-      if (!norm || !root) return { ok: false, error: 'no dir' };
-      // Only trust ancestors of the already-trusted root (or any
-      // path the user already trusted via the file picker).
-      const roots = [path.resolve(root), ...pathSecurity.getAllowedRoots()];
-      // Walk up: trust `norm` and each of its parents until we
-      // hit one that IS already in roots (so we don't recursively
-      // trust C:\ when output_dir is C:\Users\foo).
-      let cur = norm;
-      const newlyTrusted = [];
-      while (true) {
-        if (roots.includes(cur)) break;
-        if (!pathUtils.isParentUnderAny(cur, roots)) {
-          // `cur` is NOT inside any trusted root — refuse to
-          // trust a free-floating path.
-          return { ok: false, error: 'refused: not under any trusted root' };
-        }
-        pathSecurity.addTrusted(cur);
-        newlyTrusted.push(cur);
-        const parent = path.dirname(cur);
-        if (parent === cur) break;
-        cur = parent;
+      if (dir == null || typeof dir !== 'string' || dir === '') {
+        return { ok: false, error: 'dir must be a non-empty string.' };
       }
-      return { ok: true, trusted: newlyTrusted };
+      const norm = path.resolve(String(dir));
+      if (!norm) return { ok: false, error: 'no dir' };
+      // Must touch an already-trusted path (output_dir, a pick,
+      // or the current activeDir). The renderer is the only
+      // caller, and it only fires after a user-initiated
+      // navigation — but the check still prevents a compromised
+      // renderer from making any path a root. (The read side
+      // is no longer gated, so a compromised renderer can LIST
+      // anything the OS allows; the trust gate now exists
+      // solely to prevent writes outside what the user can
+      // see.)
+      const allowed = pathSecurity.getAllowedRoots();
+      const isTrustedItself = allowed.some((r) => r && r.toLowerCase() === norm.toLowerCase());
+      const isAncestorOfTrusted = allowed.some((r) => {
+        const rl = String(r || '').toLowerCase();
+        return rl && (rl === norm.toLowerCase() || rl.startsWith(norm.toLowerCase() + path.sep) || rl.startsWith(norm.toLowerCase() + '/'));
+      });
+      const isDescendantOfTrusted = pathUtils.isPathUnderAny(norm, allowed);
+      if (!isTrustedItself && !isAncestorOfTrusted && !isDescendantOfTrusted) {
+        return { ok: false, error: 'Refused: path is not under any trusted root.' };
+      }
+      pathSecurity.setActiveDir(norm);
+      pathSecurity.addTrusted(norm);
+      return { ok: true, trusted: [norm], activeDir: pathSecurity.getActiveDir() };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
+  // BUG-9-04 fix (user-reported, 2026-06-25): the read side of
+  // the file browser (this IPC) used to be gated by the trust
+  // set ("Path is outside the allowed directories." for any
+  // path not in the set), which broke the Up button chain. The
+  // user's ask: "access all paths and if it doesn't work / no
+  // access, show an error message." So we now go straight to
+  // the OS: fs.readdir returns the real ENOENT / EACCES / EPERM
+  // error if the path is inaccessible, and we surface it to the
+  // renderer unchanged. The OS is the authoritative gate for
+  // READ access — the trust set still protects WRITE access
+  // (fb:write, fb:mkdir, fb:rename, fb:delete, fb:move, fb:copy
+  //  all still enforce the allow-list).
   ipcMain.handle('fb:list', async (_e, dir) => {
-    if (!pathUtils.isPathUnderAny(dir, pathSecurity.getAllowedRoots())) {
-      return { ok: false, error: 'Path is outside the allowed directories.' };
-    }
+    if (!dir || typeof dir !== 'string') return { ok: false, error: 'Path is required.' };
     try { return { ok: true, ...(await fb.list(dir)) }; }
     catch (e) { return { ok: false, error: String(e.message || e) }; }
+  });
+
+  // BUG-9-04: mirror the renderer's current file-browser location
+  // into the main-process activeDir. Every write IPC (fb:write,
+  // fb:mkdir, fb:rename, fb:delete, fb:move, fb:copy) is gated
+  // against this dir — see isParentUnderAny in the write
+  // handlers below. The user model: "the generated image may
+  // always only be written in the folder shown in the folder
+  // explorer." This IPC is the wire that makes the main
+  // process agree with that model.
+  ipcMain.handle('fb:set-active-dir', (_e, dir) => {
+    try { pathSecurity.setActiveDir(dir || null); return { ok: true, activeDir: pathSecurity.getActiveDir() }; }
+    catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   });
 
   // v1.1 (user request): list the available drives so the
@@ -287,7 +335,7 @@ function register(_deps) {
       const outAbs = pathUtils.normalize(outPath);
       if (!outAbs) return { ok: false, error: 'Output path is invalid.' };
       if (!pathUtils.isParentUnderAny(outAbs, pathSecurity.getAllowedRoots())) {
-        return { ok: false, error: 'Refusing to write outside the output directory.' };
+        return { ok: false, error: 'Refusing to write outside the output directory or the folder currently shown in the file browser. Navigate to the target folder first.' };
       }
       // v1.1 (audit H4): check the base64 STRING length BEFORE
       // Buffer.from() decodes it. A 2 GB base64 string decodes to

@@ -116,7 +116,22 @@ async function moveTo(src, destDir) {
       i++;
     }
   }
-  await fs.rename(src, dest);
+  // v1.1 (audit M7): EXDEV fallback. fs.rename throws EXDEV across
+  // drive letters — extremely common on Windows (output_dir on D:,
+  // source on C:). The pre-v1.1 code surfaced this as a generic
+  // error with no recovery. We fall back to copy+delete so cross-
+  // device moves work transparently. (POSIX rename inside the same
+  // FS stays atomic; the fallback only fires on EXDEV.)
+  try {
+    await fs.rename(src, dest);
+  } catch (e) {
+    if (e && (e.code === 'EXDEV' || /cross-device|spans devices/i.test(String(e.message || '')))) {
+      await fs.cp(src, dest, { recursive: true, force: false, errorOnExist: true });
+      await fs.rm(src, { recursive: true, force: true });
+    } else {
+      throw e;
+    }
+  }
   return dest;
 }
 
@@ -151,7 +166,12 @@ async function deletePath(p) {
 }
 
 function reveal(p) {
-  try { shell.showItemInFolder(p); } catch (_) { /* ignore */ }
+  // Bug-fix LOW-4 (_temp5.md 360° audit): return a boolean so the
+  // IPC handler can report a real failure instead of always ok:true.
+  // Electron's shell.showItemInFolder returns void, so we catch any
+  // throw (e.g. the file was deleted/moved between the user's click
+  // and this call) and report false.
+  try { shell.showItemInFolder(p); return true; } catch (_) { return false; }
 }
 
 // v1.1.15 (reported by user): open a NEW Windows Explorer

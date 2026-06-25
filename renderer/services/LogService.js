@@ -50,7 +50,18 @@ var { el } = window.createElement ? { el: window.createElement } : window.DomHel
   return node;
 }};
 var $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
-var { maskLine } = window.securityUtils || (() => String);
+// v1.1 (audit BUG-N1): the previous fallback was a bare function
+// `(() => String)`. Destructuring `{ maskLine }` from a function
+// returns `undefined`, so a missing `window.securityUtils` would
+// throw `maskLine is not a function` at every log event that
+// called it (every stderr entry, every mmx:log IPC, every job
+// completion). Use the same shape as a real securityUtils object
+// (an object with a `maskLine` function) so the destructure
+// works AND the resulting function is a no-op stringifier
+// (returns the input unchanged) — losing the redacting behaviour
+// is a fair trade for not crashing the entire log pane on a
+// load-order glitch.
+var { maskLine } = window.securityUtils || { maskLine: (s) => String(s == null ? '' : s) };
 
 // Default per-job secondary-event cap. Phase C moves this to a config
 // field; the constant here is the safe baseline.
@@ -103,32 +114,55 @@ function _leastRecentlyViewedJob() {
   return lru;
 }
 
-// Drop the oldest secondary event of the given job. The event
-// is removed from state._logEvents (by id) AND from the DOM row.
-// Returns the removed logId, or null if the job has no secondaries.
-function _dropOldestSecondaryOfJob(jobId) {
-  if (!jobId) return null;
-  const firstId = _jobSecondaryFirstIds.get(jobId);
-  if (firstId == null) return null;
-  const idx = window.state._logEvents.findIndex((e) => e.id === firstId);
-  if (idx === -1) return null;
-  const ev = window.state._logEvents[idx];
-  // Only drop if it's still a secondary of this job (defensive:
-  // the firstId map could be stale if the array was reordered).
-  if (ev.jobId !== jobId) {
+  // Drop the oldest secondary event of the given job. The event
+  // is removed from state._logEvents (by id) AND from the DOM row.
+  // Returns the removed logId, or null if the job has no secondaries.
+  // Bug-fix H2 (_temp5.md 360° audit): self-heal a stale firstId
+  // instead of returning null. The global cap trim (below in
+  // _appendEvent) removes events without touching this map, so the
+  // recorded firstId can point to a now-deleted event. Previously
+  // that made _dropOldestSecondaryOfJob return null, which made
+  // _maybeEvictJobSecondaries return true regardless, which made
+  // the caller's `while (evicted)` loop never terminate — a real
+  // infinite loop / UI freeze once any job's stale count exceeded
+  // the cap. Re-derive the firstId from the live array before
+  // bailing so the drop can still succeed.
+  function _dropOldestSecondaryOfJob(jobId) {
+    if (!jobId) return null;
+    let firstId = _jobSecondaryFirstIds.get(jobId);
+    // Self-heal: if the recorded firstId is gone (trimmed by the
+    // global cap or otherwise removed), re-derive it from the live
+    // event array before giving up.
+    if (firstId == null || window.state._logEvents.findIndex((e) => e.id === firstId) === -1) {
+      firstId = _findFirstSecondaryId(jobId);
+      if (firstId == null) {
+        // No secondaries left at all — clear the stale bookkeeping
+        // so the next eviction sweep doesn't keep trying this job.
+        _jobSecondaryCounts.delete(jobId);
+        _jobSecondaryFirstIds.delete(jobId);
+        return null;
+      }
+      _jobSecondaryFirstIds.set(jobId, firstId);
+    }
+    const idx = window.state._logEvents.findIndex((e) => e.id === firstId);
+    if (idx === -1) return null;
+    const ev = window.state._logEvents[idx];
+    // Only drop if it's still a secondary of this job (defensive:
+    // the firstId map could be stale if the array was reordered).
+    if (ev.jobId !== jobId) {
+      _jobSecondaryFirstIds.set(jobId, _findFirstSecondaryId(jobId));
+      return _dropOldestSecondaryOfJob(jobId);
+    }
+    window.state._logEvents.splice(idx, 1);
+    _logJobIndex.delete(ev.id);
+    // Update the cap counter and the first-secondary pointer.
+    _jobSecondaryCounts.set(jobId, Math.max(0, (_jobSecondaryCounts.get(jobId) || 1) - 1));
     _jobSecondaryFirstIds.set(jobId, _findFirstSecondaryId(jobId));
-    return _dropOldestSecondaryOfJob(jobId);
+    // Remove the DOM row.
+    const row = document.querySelector(`.log-event[data-log-id="${ev.id}"]`);
+    if (row && row.parentNode) row.parentNode.removeChild(row);
+    return ev.id;
   }
-  window.state._logEvents.splice(idx, 1);
-  _logJobIndex.delete(ev.id);
-  // Update the cap counter and the first-secondary pointer.
-  _jobSecondaryCounts.set(jobId, Math.max(0, (_jobSecondaryCounts.get(jobId) || 1) - 1));
-  _jobSecondaryFirstIds.set(jobId, _findFirstSecondaryId(jobId));
-  // Remove the DOM row.
-  const row = document.querySelector(`.log-event[data-log-id="${ev.id}"]`);
-  if (row && row.parentNode) row.parentNode.removeChild(row);
-  return ev.id;
-}
 
 function _findFirstSecondaryId(jobId) {
   for (const e of window.state._logEvents) {
@@ -142,19 +176,28 @@ function _findFirstSecondaryId(jobId) {
 // we're under cap. The active job is excluded — the user is
 // actively watching it; silently dropping its events would feel
 // like a bug.
-function _maybeEvictJobSecondaries(activeJobId) {
-  const ids = Array.from(_jobSecondaryCounts.keys()).filter((id) => id !== activeJobId);
-  for (const id of ids) {
-    const n = _jobSecondaryCounts.get(id) || 0;
-    if (n > _JOB_SECONDARY_CAP) {
-      const lru = _leastRecentlyViewedJob();
-      if (!lru) break;
-      _dropOldestSecondaryOfJob(lru);
-      return true; // one drop per call; caller re-checks on next event
+  function _maybeEvictJobSecondaries(activeJobId) {
+    const ids = Array.from(_jobSecondaryCounts.keys()).filter((id) => id !== activeJobId);
+    for (const id of ids) {
+      const n = _jobSecondaryCounts.get(id) || 0;
+      if (n > _JOB_SECONDARY_CAP) {
+        const lru = _leastRecentlyViewedJob();
+        if (!lru) break;
+        const dropped = _dropOldestSecondaryOfJob(lru);
+        // Bug-fix H2 (_temp5.md 360° audit): only return true when we
+        // ACTUALLY dropped something. The previous version returned
+        // true unconditionally, which — combined with a stale count
+        // (e.g. after the global-cap trim removed the event without
+        // decrementing the count) — made the caller's
+        // `while (evicted) evicted = _maybeEvictJobSecondaries(...)`
+        // loop forever, freezing the UI. If the drop failed, bail
+        // out of the loop so the caller terminates.
+        if (dropped == null) return false;
+        return true; // one drop per call; caller re-checks on next event
+      }
     }
+    return false;
   }
-  return false;
-}
 
 // ----- autoscroll state (persisted via state.json by app.js if desired) -----
 let _autoscroll = true;
@@ -266,6 +309,16 @@ function addLogEvent(opts) {
     ts: opts.ts instanceof Date ? opts.ts : new Date(),
     category: LOG_CATEGORIES[opts.category] ? opts.category : 'info',
     headline: mask(opts.headline || ''),
+    // bug-fix M1 (_temp4.md): headline is pre-truncated at the source
+    // (e.g. the tab handlers slice a prompt to 120 chars before
+    // calling addLogEvent, so the row doesn't blow out to one giant
+    // line) — but that meant the hover tooltip (which used to read
+    // title=headline) showed the SAME truncated text, not "100% of
+    // the log message" (cde.txt 99). Callers that have the real full
+    // text available (the prompt/input text itself, not just the
+    // already-short headline) pass it here; renderLogEvent's title
+    // attribute prefers this over the headline.
+    fullText: opts.fullText != null ? mask(String(opts.fullText)) : null,
     details: (function () {
       const d = opts.details;
       if (d == null) return [];
@@ -284,7 +337,27 @@ function addLogEvent(opts) {
       : null,
     cancellable: !!opts.cancellable,
     typeIcon: opts.typeIcon || null,
-    state: opts.state || 'wip',
+    // Bug-fix (C2): only a true in-flight JobRunner row (jobId set) should
+    // default to 'wip' with a spinner. Free-form/legacy events (the tab
+    // handlers' started/"Generated N"/failed calls, the log() wrapper,
+    // mmx stderr lines) never pass state and have no jobId — defaulting
+    // them to 'wip' painted every line blue with a permanent spinner,
+    // since nothing ever calls updateLogStatus on a row with no jobId.
+    // Derive the state from `result` instead: ok/err get their real
+    // colour, anything else is a neutral row (no tint, no dots).
+    // Bug-fix (reported by user — a successfully generated music file was
+    // still shown "running" in the log): only a row that REPRESENTS a job
+    // (the primary row: jobId set, NOT an _internal secondary) should
+    // default to 'wip' (blue + animated dots). The raw mmx stdout/stderr
+    // lines stream in as _internal secondary events carrying the jobId;
+    // they used to default to 'wip' too, and because every tab now runs
+    // with suppressLogRow:true there is no primary row for them to fold
+    // into — so each mmx line (e.g. the final `{ "saved": "…mp3" }`)
+    // became its own standalone blue/spinner row that nothing ever marks
+    // done. Secondary lines are informational echoes, not in-flight jobs,
+    // so they get a neutral state.
+    state: opts.state || ((opts.jobId != null && !opts._internal) ? 'wip'
+      : (opts.result === 'ok' ? 'ok' : opts.result === 'err' ? 'err' : 'none')),
     // Internal flag used by JobRunner._addLogSecondary to bypass
     // the wip-jobId routing (avoids infinite recursion: the
     // routing would call attachSecondaryToJob, which calls
@@ -337,10 +410,40 @@ function _appendEvent(ev, opts) {
   // Cap the buffer. Drop the oldest events (FIFO) so the visible
   // scroll position stays near the bottom (newest event). The user
   // can still scroll up to see what's left of the dropped events.
+  // Bug-fix H2 (_temp5.md 360° audit): keep the per-job secondary
+  // bookkeeping (_jobSecondaryCounts / _jobSecondaryFirstIds) in sync
+  // with this trim. Previously this block only deleted from
+  // _logJobIndex, so a secondary that was trimmed here stayed
+  // counted in _jobSecondaryCounts and its id stayed in
+  // _jobSecondaryFirstIds — once any job's stale count exceeded the
+  // cap, every subsequent secondary event triggered the eviction
+  // loop, which called _dropOldestSecondaryOfJob(LRU), which
+  // returned null (stale firstId), which (before the _maybeEvict
+  // fix) returned true, looping forever. Even with the _maybeEvict
+  // fix, leaving stale counts pollutes the LRU sweep, so we
+  // decrement here too.
   if (window.state._logEvents.length > LOG_MAX_EVENTS) {
     const dropped = window.state._logEvents.length - LOG_MAX_EVENTS;
     const removed = window.state._logEvents.splice(0, dropped);
-    for (const r of removed) _logJobIndex.delete(r.id);
+    for (const r of removed) {
+      _logJobIndex.delete(r.id);
+      if (r.jobId && r._internal) {
+        const cnt = (_jobSecondaryCounts.get(r.jobId) || 1) - 1;
+        if (cnt <= 0) {
+          _jobSecondaryCounts.delete(r.jobId);
+          _jobSecondaryFirstIds.delete(r.jobId);
+        } else {
+          _jobSecondaryCounts.set(r.jobId, cnt);
+          // If we just trimmed the recorded first secondary, point
+          // it at whatever secondary is now the oldest (the drop
+          // path in _dropOldestSecondaryOfJob self-heals too, but
+          // doing it here keeps the map honest for the next append).
+          if (_jobSecondaryFirstIds.get(r.jobId) === r.id) {
+            _jobSecondaryFirstIds.set(r.jobId, _findFirstSecondaryId(r.jobId));
+          }
+        }
+      }
+    }
   }
   renderLogEvent(ev);
   if (_autoscroll) _scrollPaneToNewest();
@@ -391,7 +494,7 @@ function renderLogEvent(ev) {
   row.appendChild(el('span', { class: 'log-type-icon', title: cat.label }, icon));
   // 3. Headline. Truncated with ellipsis on overflow; full text on
   //    hover.
-  const headlineEl = el('span', { class: 'log-event-headline', title: ev.headline }, ev.headline);
+  const headlineEl = el('span', { class: 'log-event-headline', title: ev.fullText || ev.headline }, ev.headline);
   row.appendChild(headlineEl);
   // 3b. WIP animated dots (only on wip state).
   if (ev.state === 'wip' && !ev.cancellable) {
@@ -503,7 +606,7 @@ function formatLogEventForCopy(ev) {
   // Phase A: include the state so a help-desk helper can see "this row
   // was wip when the user copied" without having to open DevTools.
   const st = ev.state && ev.state !== 'wip' ? ` [${ev.state}]` : '';
-  parts.push(`[${ts}] [${cat}]${res}${st}${grp} ${ev.headline}`);
+  parts.push(`[${ts}] [${cat}]${res}${st}${grp} ${ev.fullText || ev.headline}`);
   for (const d of ev.details) parts.push('    ' + d);
   if (ev.raw) parts.push('    ' + ev.raw);
   return parts.join('\n');
@@ -676,6 +779,22 @@ function setupLogClicks() {
       toggleLogSelection(id, !isLogSelected(id), false);
       window.state._logLastClickedId = id;
     } else {
+      // Bug-fix (reported by user — log text must be selectable): if the
+      // user just made a text selection (click-drag to highlight a path /
+      // error line), the mouseup fires a 'click' too. Don't treat that as
+      // a plain click-to-expand — it would collapse the row out from under
+      // the selection. Bail when there's a non-collapsed selection inside
+      // the log pane so standard select-then-Ctrl+C works.
+      const sel = window.getSelection && window.getSelection();
+      if (sel && !sel.isCollapsed && String(sel).length > 0) {
+        const anchorInLog = sel.anchorNode && sel.anchorNode.nodeType != null &&
+          (sel.anchorNode.parentElement || sel.anchorNode).closest &&
+          (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+        if (anchorInLog && anchorInLog.closest && anchorInLog.closest('#log')) {
+          window.state._logLastClickedId = id;
+          return;
+        }
+      }
       // Plain click: toggle expand. Selection is NOT changed.
       e.preventDefault();
       const ev = window.state._logEvents.find((x) => x.id === id);
@@ -850,24 +969,47 @@ function renderPersistedL2(entries) {
       : entry.status === 'cancel' ? 'log-result-cancel'
       : 'log-result-ok';
     row.classList.add(statusCls);
-    const head = document.createElement('div');
-    head.className = 'log-event-head';
+    // bug-fix M2 (_temp4.md): match renderLogEvent's FLAT child
+    // structure (same classes, no extra wrapper div). .log-event is
+    // display:grid with a fixed grid-template-columns; the old
+    // .log-event-head wrapper counted as ONE grid child holding BOTH
+    // the icon and headline, so they were squeezed into a single
+    // column instead of each getting its own — misaligning against
+    // every live row. A persisted row has no progress/wip-dots/cancel
+    // (it's never wip), so its shape now matches a simple live
+    // ok/err row: ts, icon, headline, chev, details.
+    const ts = document.createElement('span');
+    ts.className = 'log-event-ts';
+    ts.title = 'From a previous session';
+    ts.textContent = entry.finishedAt
+      ? new Date(entry.finishedAt).toLocaleTimeString('en-GB', { hour12: false })
+      : '';
     const icon = document.createElement('span');
-    icon.className = 'log-persisted-icon';
+    icon.className = 'log-type-icon';
+    icon.title = 'From a previous session';
     icon.textContent = '↻';
-    icon.title = 'From previous session';
-    const headline = document.createElement('span');
-    headline.className = 'log-event-headline';
-    headline.textContent = (entry.title || entry.type || 'Job')
+    const headlineText = (entry.title || entry.type || 'Job')
       + '  ·  '
       + (entry.status || 'ok')
       + '  ·  '
       + (entry.finishedAt ? new Date(entry.finishedAt).toLocaleString() : '');
+    const headline = document.createElement('span');
+    headline.className = 'log-event-headline';
+    headline.title = headlineText;
+    headline.textContent = headlineText;
+    // Persisted rows are always-expanded (no re-run, no interaction —
+    // see bootstrap.js) — the chevron is present only so the row
+    // occupies the same number/order of grid columns as a simple live
+    // row, not to offer a working toggle.
+    const chev = document.createElement('button');
+    chev.type = 'button';
+    chev.className = 'log-event-chev log-event-chev-empty';
+    chev.setAttribute('aria-label', 'No details');
+    chev.disabled = true;
+    chev.textContent = '▸';
     const details = document.createElement('div');
     details.className = 'log-event-details';
     details.style.display = 'block';
-    const sub = document.createElement('div');
-    sub.className = 'log-event-meta';
     if (entry.subtitle) {
       const subEl = document.createElement('div');
       subEl.textContent = entry.subtitle;
@@ -885,8 +1027,7 @@ function renderPersistedL2(entries) {
         details.appendChild(moreEl);
       }
     }
-    head.append(icon, headline);
-    row.append(head, details);
+    row.append(ts, icon, headline, chev, details);
     root.appendChild(row);
     added++;
   }

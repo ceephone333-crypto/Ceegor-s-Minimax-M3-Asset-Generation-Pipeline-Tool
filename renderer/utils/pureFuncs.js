@@ -21,10 +21,27 @@ function humanSize(n) {
 // Get the parent directory of a path, handling both Windows \ and Unix /.
 function parentDir(p) {
   if (!p) return '';
-  const sep = p.includes('\\') ? '\\' : '/';
-  const parts = p.split(/[\\/]/).filter(Boolean);
+  // v1.1 (audit L10): pre-v1.1 split on /[\\/]/, dropped empty
+  // parts, popped the last, and rejoined. This had two Windows
+  // bugs:
+  //   1) UNC paths (\\server\share\dir) lost their leading \\,
+  //      producing "server\share" instead of "\\server\share".
+  //   2) Drive roots (C:\) became "C:" (which on Windows means
+  //      "current dir on drive C", NOT "C:\" — so the next fbList
+  //      listed a random cwd-relative folder).
+  // We preserve the leading separator for POSIX absolute paths and
+  // the double-backslash for UNC paths.
+  let s = String(p).replace(/[\\/]+$/, ''); // strip trailing slashes
+  if (!s) return '';
+  const isUNC = /^\\\\|^\/\//.test(s);
+  const isPosixAbs = !isUNC && s.startsWith('/');
+  if (isUNC) s = s.slice(2);
+  else if (isPosixAbs) s = s.slice(1);
+  const sep = s.includes('\\') ? '\\' : '/';
+  const parts = s.split(/[\\/]/).filter(Boolean);
   parts.pop();
-  return parts.length ? parts.join(sep) : '';
+  if (!parts.length) return '';
+  return (isUNC ? '\\\\' : isPosixAbs ? '/' : '') + parts.join(sep);
 }
 
 // Map a file extension to a single-emoji icon for the file browser.

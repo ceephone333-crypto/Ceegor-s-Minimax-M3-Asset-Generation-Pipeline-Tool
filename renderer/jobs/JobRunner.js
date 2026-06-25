@@ -39,6 +39,18 @@
 
 (function () {
   const HARD_CAP = 16;
+  // Bug-fix B7 (_temp5.md): cap on the number of FINISHED jobs we
+  // keep in `_jobs` for query/scrollback. Finished jobs are
+  // intentionally NOT pruned at completion (see _wipJobCount above)
+  // because tests/UI (scrollToJob, childLogIds lookups right after
+  // `await ctrl.done`) expect a finished job to stay queryable in
+  // the same tick. Without a cap, a marathon batch session would
+  // accumulate finished-job records for the whole session with no
+  // bound. We keep the most recent FINISHED_JOB_KEEP entries (in
+  // insertion order, which is chronological because ids are
+  // monotonic) and evict the oldest finished ones whenever a new
+  // job is added. WIP jobs are NEVER evicted.
+  const FINISHED_JOB_KEEP = 200;
   const _jobs = new Map();
   const _listeners = new Map(); // event -> Set<cb>
 
@@ -93,6 +105,62 @@
     return out;
   }
 
+  // bug-fix H1 (_temp4.md): finished jobs used to stay in `_jobs`
+  // forever (nothing ever deleted them), so once 16 jobs had EVER run
+  // in a session the HARD_CAP check below would block every future
+  // generation with "Too many jobs running" — even with zero jobs
+  // actually in flight. Existing tests/UI (scrollToJob, the
+  // childLogIds/job.status lookups right after `await ctrl.done`)
+  // expect a finished job to stay queryable in `_jobs`/`state.jobs`,
+  // so the fix counts only WIP jobs against the cap instead of
+  // pruning the map.
+  function _wipJobCount() {
+    let n = 0;
+    for (const j of _jobs.values()) if (j.status === 'wip') n++;
+    return n;
+  }
+
+  // bug-fix B7 (_temp5.md): bound the finished-job history. Called
+  // from run() right after a new job is inserted. Walks the map in
+  // insertion order (Map iteration is insertion-ordered, and ids
+  // are monotonic by _newJobId, so "oldest" == "first inserted")
+  // and evicts finished jobs past FINISHED_JOB_KEEP. WIP jobs and
+  // the just-inserted job are always retained. Emits
+  // jobrunner:job-removed for each eviction so ActiveJobsWidget /
+  // listeners stay in sync. Best-effort: a listener throwing does
+  // not abort the sweep.
+  // v1.1 (audit BUG-N7): also strip evicted ids from
+  // state.jobsSnapshot so the snapshot and _jobs stay
+  // consistent (snapshot ⊂ _jobs).
+  function _pruneFinishedJobs() {
+    if (_jobs.size <= FINISHED_JOB_KEEP) return;
+    let finishedCount = 0;
+    for (const j of _jobs.values()) {
+      if (j.status !== 'wip') finishedCount++;
+    }
+    if (finishedCount <= FINISHED_JOB_KEEP) return;
+    const toEvict = finishedCount - FINISHED_JOB_KEEP;
+    const evictedIds = []; // v1.1: collected for snapshot cleanup
+    let evicted = 0;
+    for (const [id, j] of _jobs) {
+      if (evicted >= toEvict) break;
+      if (j.status === 'wip') continue;
+      _jobs.delete(id);
+      evictedIds.push(id);
+      try { _emit('jobrunner:job-removed', j); } catch (_) { /* best-effort */ }
+      evicted++;
+    }
+    // v1.1 (audit BUG-N7): strip evicted ids from
+    // state.jobsSnapshot so the snapshot and _jobs stay in lock-step.
+    if (evictedIds.length && typeof window !== 'undefined' && window.state
+        && Array.isArray(window.state.jobsSnapshot)) {
+      const evictedSet = new Set(evictedIds);
+      window.state.jobsSnapshot = window.state.jobsSnapshot.filter(
+        (e) => !evictedSet.has(e && e.id),
+      );
+    }
+  }
+
   // Legacy projection: keep `state.generating` truthy while ANY
   // JobRunner job is running. Single tab -> its key, multiple ->
   // 'mixed'. When NO JobRunner job is in flight we LEAVE the legacy
@@ -133,37 +201,118 @@
       error: null,
       logEventId: null,        // primary row id (filled in by addLogEvent)
       childLogIds: [],         // secondary stderr chunks
+      outputPaths: [],         // bug-fix Phase1 (_temp4.md): filled from runFn's result on completion
       _abortController: null,  // AbortController for the runFn signal
       _cancellable: true,      // matches opts.cancellable
     };
   }
 
+  // bug-fix Phase1/H1 (_temp4.md): persist a summary of a finished job
+  // into state.jobsSnapshot so the L2 boot-render (bootstrap.js),
+  // History/ArchiveViewer, and JobSummary panel actually get data —
+  // before this, jobsSnapshot stayed null forever because nothing
+  // wrote to it (Phase C's UI was built but never fed). The shape
+  // mirrors what LogService.renderPersistedL2 / ArchiveViewer already
+  // read: { id, type, tab, title, subtitle, status, finishedAt,
+  // outputPaths, error }. Does NOT remove the job from `_jobs` — see
+  // _wipJobCount above for why finished jobs intentionally stay
+  // queryable.
+  function _pushJobSnapshot(job) {
+    if (typeof window === 'undefined' || !window.state) return;
+    if (!Array.isArray(window.state.jobsSnapshot)) window.state.jobsSnapshot = [];
+    window.state.jobsSnapshot.push({
+      id: job.id,
+      type: job.type,
+      tab: job.tab,
+      title: job.title,
+      subtitle: job.subtitle,
+      status: job.status,
+      finishedAt: job.finishedAt,
+      outputPaths: Array.isArray(job.outputPaths) ? job.outputPaths.slice() : [],
+      error: job.error || null,
+    });
+    // Bug-fix HIGH-1 (_temp5.md 360° audit): trim the in-memory L2
+    // list to jobsArchiveCap RIGHT HERE, after every push. Previously
+    // the renderer's jobsSnapshot only ever grew, and saveAllStates()
+    // sent the full untrimmed array on every save — so src/state.js
+    // write() re-archived the SAME overflow entries on every save
+    // (live-reproduced: 5 → 10 → 15 archive lines on 3 identical
+    // writes). Trimming client-side means the array we persist is
+    // already the post-trim shape, and the server-side trim becomes
+    // a defensive no-op for the normal path. The cap is clamped to
+    // [20, 1000] to match src/state.js write()'s clamp.
+    const cap = Math.max(20, Math.min(1000, Number(window.state.jobsArchiveCap) || 200));
+    if (window.state.jobsSnapshot.length > cap) {
+      window.state.jobsSnapshot = window.state.jobsSnapshot.slice(-cap);
+    }
+    if (typeof window.scheduleStateSave === 'function') {
+      try { window.scheduleStateSave(); } catch (_) { /* ignore */ }
+    }
+  }
+
   function _addLogSecondary(job, line) {
     if (!job || !line) return;
     const Log = (typeof window !== 'undefined' && window.LogService) || null;
-    if (!Log || typeof Log.addLogEvent !== 'function') return;
-    // Cap secondary events per job to avoid runaway log spam.
-    if (job.childLogIds.length >= 500) {
-      // Drop the oldest. Cheap: we keep an array, the DOM stays small
-      // because the details section is the only place they're rendered.
-      job.childLogIds.shift();
+    if (!Log) return;
+    const safeLine = String(line);
+    // BUG-9-07 fix (user-reported, 2026-06-25): if the job has a
+    // primary row, fold the line into the row's `details` array
+    // (so it shows in the expanded view of the primary row, not
+    // as a separate standalone row). The previous version always
+    // called `addLogEvent({ _internal: true, ... })`, which
+    // `addLogEvent`'s routing check (`!ev._internal`) skipped, so
+    // every line became its own separate log row. Combined with
+    // the main process sending each line TWICE (onLog + onChunk
+    // — see main/ipc/registerMmxIpc.js), the user saw every mmx
+    // line (e.g. "[Model: image-01]", "$ node mmx.mjs ...",
+    // `{"saved": "..."}`) twice in the log pane. Folding into the
+    // primary row's details also matches the documented intent of
+    // attachSecondaryToJob: "any line with a jobId is appended
+    // into the row's details, NOT as its own row."
+    if (job.logEventId != null
+        && typeof Log.appendLogDetails === 'function') {
+      // Cap secondary lines per job to avoid runaway log spam.
+      // The DOM stays small because the details section is the
+      // only place they're rendered, but a runaway mmx process
+      // could otherwise grow the array unbounded.
+      if (job.childLogIds.length >= 500) {
+        // Drop the oldest. We don't bother removing it from the
+        // DOM (appendLogDetails is incremental), but the cap
+        // prevents the array from growing without bound.
+        job.childLogIds.shift();
+      }
+      Log.appendLogDetails(job.logEventId, [safeLine]);
+      job.childLogIds.push(job.logEventId);
+      return;
     }
+    // No primary row (suppressLogRow: true) — fall back to
+    // creating a separate log row so the user still sees the
+    // mmx output. We use addLogEvent WITHOUT the _internal
+    // flag so the routing check still applies (free-form, no
+    // jobId, so no routing anyway).
+    if (typeof Log.addLogEvent !== 'function') return;
+    if (job.childLogIds.length >= 500) job.childLogIds.shift();
     const evId = Log.addLogEvent({
       category: 'info',
-      headline: String(line).slice(0, 200),
-      details: [String(line)],
+      headline: safeLine.slice(0, 200),
+      details: [safeLine],
       jobId: job.id,
-      // _internal: true tells addLogEvent NOT to route through
-      // attachSecondaryToJob again (would be infinite recursion).
+      // _internal: true tells addLogEvent NOT to re-route through
+      // attachSecondaryToJob (infinite recursion safeguard). The
+      // routing check (`!ev._internal`) means this event won't
+      // fold into the primary row — but we already established
+      // above that there IS no primary row (logEventId is null),
+      // so the routing check is moot.
       _internal: true,
     });
     if (evId != null) job.childLogIds.push(evId);
   }
 
-  function _markJobDone(job, status, errorMsg, details) {
+  function _markJobDone(job, status, errorMsg, details, outputPaths) {
     job.status = status;
     job.finishedAt = new Date();
     if (errorMsg) job.error = String(errorMsg).slice(0, 500);
+    if (Array.isArray(outputPaths)) job.outputPaths = outputPaths.slice();
     job._cancellable = false;
     if (job.logEventId != null && typeof window.LogService !== 'undefined') {
       // Update the primary row's status classes + add an "ok"/"err"
@@ -178,8 +327,17 @@
       window.LogService.appendLogDetails && window.LogService.appendLogDetails(job.logEventId, details);
     }
     _emit('jobrunner:job-updated', job);
-    _emit('jobrunner:job-removed', job);
+    // Bug-fix M2 (_temp5.md 360° audit): do NOT emit 'job-removed'
+    // here. The job is still in `_jobs` (intentionally — finished
+    // jobs stay queryable for scrollback/`await ctrl.done` lookups,
+    // and are only evicted later by _pruneFinishedJobs once the
+    // FINISHED_JOB_KEEP cap is crossed). Emitting 'job-removed' for
+    // a job that's still in the map was a semantic trap for any
+    // listener that treats the event as "this id is gone from
+    // state.jobs" — and it caused every finishing job to fire
+    // 'job-removed' twice (once here, once when eventually pruned).
     _syncLegacyGenerating();
+    _pushJobSnapshot(job);
   }
 
   // Attach a free-form log line to a job's primary row (not as its own
@@ -200,7 +358,16 @@
   // listeners on the returned job before the first event fires.
   function run(opts) {
     opts = opts || {};
-    if (_jobs.size >= HARD_CAP) {
+    // bug-fix H2 (_temp4.md): the one-time assignment below (outside
+    // this function, at script-load time) silently no-ops if
+    // window.state doesn't exist yet — JobRunner.js loads before
+    // section24_State.js defines it. Re-assert it here too: by the
+    // time run() is called a real generation is starting, so state is
+    // guaranteed to exist. Idempotent and cheap.
+    if (typeof window !== 'undefined' && window.state && window.state.jobs !== _jobs) {
+      window.state.jobs = _jobs;
+    }
+    if (_wipJobCount() >= HARD_CAP) {
       const msg = `Too many jobs running (limit ${HARD_CAP}). Wait for one to finish and try again.`;
       if (typeof window !== 'undefined' && window.toast) window.toast(msg, 'err', 5000);
       return Promise.reject(new Error(msg));
@@ -218,13 +385,25 @@
 
     const job = _createJob(opts);
     _jobs.set(job.id, job);
+    // bug-fix B7 (_temp5.md): bound finished-job history so a long
+    // batch session can't grow `_jobs` without limit. The new job
+    // (still wip here) is always retained; only old FINISHED jobs
+    // past FINISHED_JOB_KEEP are evicted.
+    _pruneFinishedJobs();
     _emit('jobrunner:job-added', job);
     _syncLegacyGenerating();
 
     // Append the primary log row up front. The caller gets a stable
     // logEventId back so it can attach stderr chunks etc.
+    // bug-fix Phase1 (_temp4.md): opts.suppressLogRow lets a caller that
+    // already does its OWN manual logging (the legacy tab handlers,
+    // pre-migration) register with JobRunner for ActiveJobsWidget /
+    // jobId-scoped cancel WITHOUT also getting a second, redundant
+    // primary row — job.logEventId stays null, and every downstream
+    // LogService call in _markJobDone is already guarded on
+    // `logEventId != null`, so it safely no-ops.
     let logEventId = null;
-    if (typeof window !== 'undefined' && window.LogService && window.LogService.addLogEvent) {
+    if (!opts.suppressLogRow && typeof window !== 'undefined' && window.LogService && window.LogService.addLogEvent) {
       logEventId = window.LogService.addLogEvent({
         category: opts.logCategory || 'gen',
         headline: opts.title || 'Generation',
@@ -260,16 +439,26 @@
         } catch (e) {
           threw = e;
         }
+        const outputPaths = (result && Array.isArray(result.outputPaths)) ? result.outputPaths : [];
         if (ac.signal.aborted) {
-          _markJobDone(job, 'cancel', threw ? (threw.message || String(threw)) : null, ['Cancelled by user.']);
+          _markJobDone(job, 'cancel', threw ? (threw.message || String(threw)) : null, ['Cancelled by user.'], outputPaths);
         } else if (threw) {
-          _markJobDone(job, 'err', threw.message || String(threw), ['Error: ' + (threw.message || String(threw))]);
+          _markJobDone(job, 'err', threw.message || String(threw), ['Error: ' + (threw.message || String(threw))], outputPaths);
         } else if (result && result.status === 'warn') {
-          _markJobDone(job, 'warn', null, result.details || []);
+          _markJobDone(job, 'warn', null, result.details || [], outputPaths);
         } else if (result && result.status === 'err') {
-          _markJobDone(job, 'err', result.error || null, result.details || []);
+          _markJobDone(job, 'err', result.error || null, result.details || [], outputPaths);
+        } else if (result && result.status === 'cancel') {
+          // v1.1 (audit AUDIT-13): in the rare case a runFn returns
+          // {status: 'cancel'} WITHOUT going through the abort
+          // signal (e.g. a programmatic cancel), map it to
+          // 'cancel' instead of falling through to 'ok'. The abort
+          // path above covers the common case (user clicks Cancel
+          // → ac.signal.aborted === true), but this branch
+          // protects future callers.
+          _markJobDone(job, 'cancel', null, ['Cancelled.'], outputPaths);
         } else {
-          _markJobDone(job, 'ok', null, result && result.details ? result.details : []);
+          _markJobDone(job, 'ok', null, result && result.details ? result.details : [], outputPaths);
         }
         resolve({ job, status: job.status, error: job.error });
       });
@@ -288,11 +477,15 @@
     // delete the job here — _markJobDone will fire when the runFn
     // resolves / rejects and the cleanup below keeps the row visible
     // long enough for the user to see the cancel colour.
-    if (typeof window !== 'undefined' && window.api && typeof window.api.mmxCancel === 'function' && job.tab) {
-      // Best-effort: ask main to kill any in-flight mmx child for this
-      // tab. Phase A keeps the legacy `mmx:cancel` (panic) behaviour
-      // for simplicity; the per-proc cancel is Phase B+.
-      try { window.api.mmxCancel(); } catch (_) { /* ignore */ }
+    if (typeof window !== 'undefined' && window.api && typeof window.api.mmxCancel === 'function') {
+      // bug-fix H4/Phase1 (_temp4.md): pass the jobId so main can kill
+      // ONLY this job's mmx proc (src/mmx.js#cancelByJobId), not every
+      // in-flight generation on every tab. Requires the tab handler to
+      // route its mmx call through mmxRunJob({ args, jobId: job.id })
+      // — if it doesn't (legacy mmxRun, no jobId tracked on the main
+      // side), main falls through to a no-op for this jobId rather
+      // than silently cancelling unrelated jobs.
+      try { window.api.mmxCancel({ jobId: job.id }); } catch (_) { /* ignore */ }
     }
   }
 
@@ -306,6 +499,25 @@
     }
   }
 
+  // bug-fix H3 (_temp4.md): app.js's graceful-shutdown handler already
+  // calls window.JobRunner.flushBatchSummaries() (guarded by
+  // typeof === 'function'), but the method never existed — a silent
+  // no-op, so in-flight jobs' summaries were never flushed on quit.
+  // Any job still wip when the app is about to exit is interrupted
+  // (its mmx child is about to be killed along with the process), so
+  // we persist an honest 'cancel' record rather than silently
+  // dropping it from history.
+  function flushBatchSummaries() {
+    for (const job of _jobs.values()) {
+      if (job.status === 'wip') {
+        job.status = 'cancel';
+        job.finishedAt = new Date();
+        if (!job.error) job.error = 'Interrupted by app shutdown.';
+        _pushJobSnapshot(job);
+      }
+    }
+  }
+
   // ---- expose ----
   window.JobRunner = {
     run,
@@ -315,6 +527,7 @@
     isTabRunning,
     activeJobs,
     attachSecondaryToJob,
+    flushBatchSummaries,
     on,
     off,
     HARD_CAP,

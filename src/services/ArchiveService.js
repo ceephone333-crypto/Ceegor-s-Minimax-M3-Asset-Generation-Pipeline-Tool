@@ -25,13 +25,19 @@
 //     groupId:   string | null,
 //   }
 //
-// Crash-safety: every `append()` call writes a single line and
-// fsyncs the file descriptor. A partial final line (process
-// killed mid-write) is detected on the next `append()` and
-// silently dropped by rewriting the file without it. We never
-// use the temp-file + rename pattern (that would defeat the
-// append-only simplicity and the gain is zero for a stream of
-// small appends).
+// Crash-safety: every `append()` call writes a single line to the
+// OS page cache via `fs.appendFileSync`. Bug-fix LOW-1 (_temp5.md
+// 360° audit): the header used to claim we `fsync` the file
+// descriptor, but the implementation never did — on power loss
+// (not process kill) the last few appended lines may be lost. We
+// don't add a real fsync here because (a) the archive is a
+// best-effort history, not critical state, and (b) an fsync per
+// append would dominate the save path's latency. A partial final
+// line (process killed mid-write) is detected on the next
+// `append()` and silently dropped by rewriting the file without
+// it. We never use the temp-file + rename pattern (that would
+// defeat the append-only simplicity and the gain is zero for a
+// stream of small appends).
 // ============================================================================
 
 const fs = require('fs');
@@ -64,11 +70,16 @@ function append(configDir, summary) {
 // { lines, nextOffset, hasMore }. The caller can pass the
 // returned `nextOffset` to read the next chunk.
 //
-// The implementation reads the whole file (it's small — see
-// the archive size estimates in the file header) and walks
-// the lines starting at `offset` (in BYTES) up to `limit`
-// lines. The next offset is the byte position just after the
-// last returned line's trailing newline.
+// Bug-fix LOW-2 (_temp5.md 360° audit): the header used to claim
+// `offset` is "in BYTES", but the implementation decodes the file
+// to a UTF-16 JS string and walks by CHARACTER position. For
+// ASCII-only content (the existing test) byte and char positions
+// coincide and the bug is invisible; for non-ASCII job titles
+// (CJK, accented Latin, emoji — routine in production) the offsets
+// diverge. The only caller (ArchiveViewer) treats `nextOffset` as
+// opaque (passes the previous return value straight back), so the
+// round-trip is consistent. The cursor is a character-position
+// cursor, NOT a byte offset — do not compute it from fs.statSync.
 function readChunk(configDir, opts) {
   opts = opts || {};
   const offset = Math.max(0, parseInt(opts.offset, 10) || 0);
@@ -80,19 +91,17 @@ function readChunk(configDir, opts) {
   const text = fs.readFileSync(p, 'utf8');
   const lines = [];
   let pos = 0;
-  let cur = 0;
   while (pos < text.length) {
     const nl = text.indexOf('\n', pos);
     const end = nl === -1 ? text.length : nl;
-    if (cur >= offset) {
+    if (pos >= offset) {
       if (lines.length >= limit) break;
       const line = text.slice(pos, end);
       if (line) {
         try { lines.push(JSON.parse(line)); } catch (_) { /* skip malformed */ }
       }
     }
-    if (nl === -1) { pos = text.length; cur = text.length; }
-    else { pos = nl + 1; cur = pos; }
+    pos = nl === -1 ? text.length : nl + 1;
   }
   const nextOffset = pos;
   return { lines, nextOffset, hasMore: nextOffset < text.length };

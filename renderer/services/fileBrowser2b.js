@@ -84,9 +84,17 @@ function notifyImageGenerated(p) {
 //   4. Refresh the folder explorer's items snapshot.
 let _genPollTimer = null;
 let _genPollBusy = false;
+// v1.1 (audit L8): the pre-v1.1 `if (_genPollTimer) return;` guard
+// failed during the tick's `await fbList(...)` window (tick nulls
+// _genPollTimer on entry, line ~105). Two rapid startGenPolling
+// calls in that window scheduled two tick chains. The new
+// _genPollActive flag is only cleared in stopGenPolling, so it
+// covers the await window too.
+let _genPollActive = false;
 async function startGenPolling() {
   // Defensive: never start two pollers at once.
-  if (_genPollTimer) return;
+  if (_genPollActive) return;
+  _genPollActive = true;
   // Snapshot the current items so the first tick doesn't see
   // "everything is new" (the generation might have started
   // with files already in the folder).
@@ -123,9 +131,23 @@ async function startGenPolling() {
       const fresh = newPaths.filter((p) => !prev.has(p.toLowerCase()));
       // 1. Re-render the file-browser list so the new file is
       //    visible + get the new state._fbItems snapshot.
+      //    v1.1 (audit L7): preserve the user's scroll position.
+      //    renderFbList does ul.innerHTML='' + rebuild, which
+      //    snapped the list back to the top every second during
+      //    long generations. We capture scrollTop before the
+      //    re-render and restore it after so the user can scroll
+      //    freely while polling runs.
+      const ul = $('#fb-list');
+      const savedScroll = ul ? ul.scrollTop : 0;
       const sorted = sortFbItems(visibleItems, state.fbSort);
       renderFbList(sorted);
       applyFileSearch();
+      if (ul && savedScroll > 0) {
+        // Clamp to the new scrollHeight in case the list shrank
+        // (rare during generation, but possible if the user
+        // deleted files in another Explorer window).
+        ul.scrollTop = Math.min(savedScroll, ul.scrollHeight);
+      }
       state._lastPolledItems = newPaths;
       // 2. For each newly-discovered file, run it through the
       //    same live-update pipeline the gen handler uses. This
@@ -161,6 +183,7 @@ async function startGenPolling() {
 }
 function stopGenPolling() {
   if (_genPollTimer) { clearTimeout(_genPollTimer); _genPollTimer = null; }
+  _genPollActive = false;
   state._lastPolledItems = null;
 }
 
@@ -184,6 +207,11 @@ function previewAudioFromFile(p) {
   markFbItemActive(p);
   const url = fileUrl(p);
   const filename = (p || '').split(/[\\/]/).pop() || 'audio';
+  // v1.1 (audit H6): pause any previously-playing media before
+  // we replace the pane. The audio element we created for the
+  // previous file is detached by the innerHTML='' below; without
+  // an explicit pause it kept playing in the background.
+  if (typeof window._stopPreviewMedia === 'function') window._stopPreviewMedia();
   root.innerHTML = '';
   // Hidden audio element. The user never sees the native
   // controls; the Play/Stop button below drives playback.
@@ -261,6 +289,8 @@ function previewVideoFromFile(p) {
   markFbItemActive(p);
   const url = fileUrl(p);
   const filename = (p || '').split(/[\\/]/).pop() || 'video';
+  // v1.1 (audit H6): pause any previously-playing media first.
+  if (typeof window._stopPreviewMedia === 'function') window._stopPreviewMedia();
   root.innerHTML = '';
   // Thumbnail-style video preview: a <video> with `controls`
   // AND `preload="metadata"` so the first frame is fetched

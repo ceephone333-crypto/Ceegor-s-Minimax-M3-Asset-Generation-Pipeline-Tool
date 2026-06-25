@@ -25,7 +25,11 @@ async function uniqueOutputPath(basePath) {
   const ext = dot > 0 ? basePath.slice(dot) : '';
   for (let i = 1; i < 1000; i++) {
     const candidate = i === 1 ? basePath : `${stem} (${i})${ext}`;
-    if (!await window.api.fbExists(candidate)) return candidate;
+    // v1.1 (audit BUG-R2-09): fbExists now returns
+    // { ok, exists } — pull the boolean out of .exists so the
+    // truthy check below actually means "does not exist".
+    const exRes = await window.api.fbExists(candidate);
+    if (!exRes || !exRes.exists) return candidate;
   }
   return `${stem}_${Date.now()}${ext}`;
 }
@@ -88,22 +92,8 @@ async function upscaleStep(src, w, h) {
 // is enough.
 let _reEsrganNotified = false;
 
-// Cache the isnetbg availability probe. The IPC is cheap (just a
-// `which` + an fs.stat on the binary + model) but the right-click
-// context menu re-asks the main process every time it's opened, and
-// probing 5 times / second when the user is hammering the menu adds
-// up. One probe per session, refreshed only on user request
-// (e.g. after a future "install isnetbg" flow that calls
-// `resetCache()` on the main side).
-let _isnetbgStatusCache = null;
-async function probeIsnetbgStatus(forceRefresh = false) {
-  if (!forceRefresh && _isnetbgStatusCache) return _isnetbgStatusCache;
-  let st = { available: false, binaryPath: null, modelPath: null, modelPresent: false, version: '', checked: true };
-  try { st = await window.api.isnetbgAvailable(); st.checked = true; }
-  catch (_) { st.checked = false; }
-  _isnetbgStatusCache = st;
-  return st;
-}
+// isnetbg availability probe + cache live in section26_IsnetbgProbe.js
+// (extracted to keep this file under the lint size cap).
 
 // Run the optional isnetbg binary on a local image and return the
 // path to the transparent PNG it wrote. Refuses to do anything when
@@ -123,6 +113,11 @@ async function removeBackgroundFile(srcPath, opts = {}) {
   if (!st.modelPresent) throw new Error('Background-removal model file missing. Run `npm run setup` (or place isnet-general-use.onnx in ./bin/models/ by hand).');
 
   const useGpu = (opts.useGpu !== undefined) ? !!opts.useGpu : (state.removeBackgroundUseGpu !== false);
+  // v1.1 (advanced pipeline settings): forward the IS-Net
+  // session knobs (intra/inter-op threads, execution mode)
+  // when present. The wrapper passes them to the Node.js
+  // backend; the external binary backend silently ignores them.
+  const adv = (state.pipelineAdvancedSettings && state.pipelineAdvancedSettings.isnetbg) || {};
   const sep = srcPath.includes('\\') ? '\\' : '/';
   const lastSep = srcPath.lastIndexOf(sep);
   const dir = lastSep >= 0 ? srcPath.slice(0, lastSep) : '';
@@ -133,7 +128,12 @@ async function removeBackgroundFile(srcPath, opts = {}) {
   // always PNG inside, since the isnetbg binary writes a PNG).
   const baseName = lastDot > lastSep ? srcPath.slice(lastSep + 1, lastDot) : srcPath.slice(lastSep + 1);
   const target = await uniqueOutputPath(`${dir}${sep}${baseName}_nobg.png`);
-  const r = await window.api.isnetbgRun(srcPath, target, { useGpu });
+  const r = await window.api.isnetbgRun(srcPath, target, {
+    useGpu,
+    intraOpNumThreads: adv.intraOpNumThreads,
+    interOpNumThreads: adv.interOpNumThreads,
+    executionMode: adv.executionMode,
+  });
   if (!r || !r.ok) {
     const msg = (r && r.stderr) || (r && ('isnetbg exited with code ' + r.code)) || 'isnetbg failed';
     // v1.1.15: log the failure to the structured log pane
@@ -193,11 +193,11 @@ async function upscaleImageFile(srcPath, multiplier) {
   // function (with a groupId so the start + end cluster
   // visually).
   const upGroup = 'up-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
-  const addLog = (opts) => {
-    if (typeof window.addLogEvent === 'function') {
-      try { window.addLogEvent(opts); } catch (_) { /* best-effort */ }
-    }
-  };
+  // v1.1 (audit BUG-N6): see makeResilientAddLog in section08Helpers.
+  // The full fallback chain (window.addLogEvent → LogService →
+  // console.log) lives in the helper so this section stays
+  // under the 500-line HARD lint cap.
+  const addLog = window.Section08Helpers.makeResilientAddLog();
   addLog({
     category: 'upscale',
     groupId: upGroup,
@@ -336,9 +336,18 @@ async function upscaleImageFileRealesrgan(srcPath, multiplier, reStatus) {
 
   let r;
   try {
+    // v1.1 (advanced pipeline settings): forward the user-tuned
+    // Real-ESRGAN CLI knobs. tileSize 0 / ttaMode false / gpuId
+    // 'auto' are no-ops — the wrapper only emits the corresponding
+    // CLI flag when the value differs from the binary's default,
+    // so unchanged defaults produce the same argv as before.
+    const adv = (state.pipelineAdvancedSettings && state.pipelineAdvancedSettings.realesrgan) || {};
     r = await window.api.realesrganRun(srcPath, tempOut, {
       model,
       scale: 4,
+      tileSize: adv.tileSize,
+      ttaMode: adv.ttaMode,
+      gpuId: adv.gpuId,
     });
   } catch (e) {
     throw new Error('Real-ESRGAN run threw: ' + (e.message || e));

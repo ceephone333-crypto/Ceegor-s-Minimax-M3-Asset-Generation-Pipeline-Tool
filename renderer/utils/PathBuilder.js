@@ -51,7 +51,10 @@ async function resolveUniqueOutputPath(srcPath, maxAttempts = 1000) {
   const tryN = nextFreeName(srcPath);
   for (let i = 0; i < maxAttempts; i++) {
     const cand = tryN(i);
-    const exists = await window.api.fbExists(cand);
+    // v1.1 (audit BUG-R2-09): fbExists now returns
+    // { ok, exists } — pull the boolean out of .exists.
+    const exRes = await window.api.fbExists(cand);
+    const exists = !!(exRes && exRes.exists);
     if (!exists) return cand;
   }
   // Fallback: Zufalls-Suffix

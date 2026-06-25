@@ -98,6 +98,27 @@ function isItemVisibleInList(it) {
 let _refreshInFlight = null;
 let _refreshPending = false;
 async function refreshBrowser(opts = {}) {
+  // BUG-9-04 (user-reported, 2026-06-25): push the renderer's
+  // current file-browser location to the main process on EVERY
+  // navigation, so the main-process write gate (activeDir) is
+  // always in sync with what the user is looking at. The user
+  // wants "the generated image may always only be written in
+  // the folder shown in the folder explorer" — this is the
+  // wire that makes that true. The call is fire-and-forget:
+  // a stale activeDir for one tick is harmless (the next write
+  // IPC either lands in the still-trusted prev folder, or
+  // fails with a clear "outside the allowed directories"
+  // error which the renderer surfaces in the log).
+  // We deliberately skip the '__DRIVES__' sentinel (it's not a
+  // real path the user could write into) and an empty fbDir
+  // (which would CLEAR the active dir, breaking generation).
+  try {
+    const cur = String(state && state.fbDir || '');
+    if (cur && cur !== '__DRIVES__'
+        && window.api && typeof window.api.fbSetActiveDir === 'function') {
+      window.api.fbSetActiveDir(cur).catch(() => {});
+    }
+  } catch (_) {}
   if (_refreshInFlight) {
     // Mark a single follow-up; the in-flight refresh will re-run
     // with the latest state (state.fbDir will reflect the user's
@@ -683,7 +704,18 @@ function renderFbDrivesList(drives) {
   for (const drv of drives) {
     // Drive rows: emoji icon (💽 for the hard-disk glyph) +
     // a label like "C:" + the full path as the title tooltip.
-    const driveIcon = process.platform === 'win32' ? '💽' : '🖴';
+    // BUG-9-01b fix (_temp9.md): the renderer is a browser
+    // (contextIsolation:true, nodeIntegration:false) — `process`
+    // does NOT exist there. The previous `process.platform === 'win32'`
+    // branch threw `ReferenceError: process is not defined` on the
+    // first iteration, so the drives list NEVER rendered. Detect
+    // the platform by the drive's NAME shape: a Windows drive
+    // name is `C:\` (or `D:/`, `C:`), a POSIX root is `/`. This
+    // mirrors the fix in app.js's isDriveRoot() — single idea,
+    // shape-based, no `process` reference.
+    const drvName = String((drv && drv.name) || '');
+    const isWinDrive = /^[A-Za-z]:[\\\/]?$/.test(drvName);
+    const driveIcon = isWinDrive ? '💽' : '🖴';
     const li = el('li', {
       class: 'fb-item fb-drive-row',
       'data-path': drv.name,

@@ -160,17 +160,22 @@ const helpTopics = {
 };
 
 function helpButton(topic) {
-  // Build a clickable `?` icon that opens the help modal for
-  // the given topic. Returns an HTMLElement you can drop
-  // inline next to a label.
+  // Build a HOVER-ONLY `?` icon that shows the help text for
+  // the given topic on mouseover (via the HelpTooltip system).
+  // BUG-9-05 (user-reported, 2026-06-25): the previous version
+  // opened a modal on click. The user asked: "the ones relating
+  // to ? buttons [should] only [be] shown while hovering over
+  // them." So the click handler is removed entirely; the
+  // `data-help` attribute carries the text (topic-keyed or
+  // inline-summary), and the HelpTooltip shows it on hover.
   //
   // `topic` can be either:
   //   - a string (treated as a key into helpTopics), or
   //   - an object with `{ text, topic }` for an inline
   //     1-line summary that ALSO links to the full topic.
-  // The existing `def.help = "..."` strings (e.g. in
-  // buildParamRow) are passed through unchanged; we just
-  // upgrade them to a clickable button.
+  // We resolve the topic key to its full help text (when
+  // available) and use that as the hover tooltip body. The
+  // previous click-to-open-modal path is gone.
   let helpKey = null;
   let inlineText = null;
   if (typeof topic === 'string') {
@@ -180,21 +185,22 @@ function helpButton(topic) {
     inlineText = topic.text || '';
     helpKey = topic.topic || null;
   }
-  const titleAttr = inlineText
-    ? (inlineText.length > 200 ? inlineText.slice(0, 197) + '…' : inlineText)
+  // Prefer the topic-keyed version (richer text) when
+  // available; fall back to the inline summary. HelpTooltip
+  // shows the text on hover.
+  const fullText = (helpKey && helpTopics[helpKey] && helpTopics[helpKey].text)
+    || inlineText
+    || '';
+  const titleAttr = fullText
+    ? (fullText.length > 200 ? fullText.slice(0, 197) + '…' : fullText)
     : 'Show help';
   const b = el('button', {
     type: 'button',
     class: 'help-btn',
     title: titleAttr,
     'aria-label': 'Show help',
-    onclick: (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      // Prefer the topic-keyed version (richer text) when
-      // available; fall back to the inline summary.
-      showHelp(helpKey, inlineText);
-    },
+    'data-help': fullText,
+    // No click handler. Hover-only.
   }, '?');
   return b;
 }

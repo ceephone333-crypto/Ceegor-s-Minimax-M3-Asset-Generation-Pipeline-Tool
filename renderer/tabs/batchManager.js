@@ -11,6 +11,18 @@
 // and read via window.BatchManager below — NOT re-declared here (a global
 // const of the same name would collide and break this script).
 
+// bug-fix Phase2 (_temp4.md): per-tab abort flags. `_batchAbort` used to
+// be a single bare (implicitly global, shared by ALL tabs) variable —
+// `startBatchGen('music')` and `startBatchGen('image')` are two
+// independent entry points (separate "Start BatchGen" buttons per tab,
+// app.js:930), and with Phase1's JobRunner migration they now genuinely
+// run in parallel. Sharing one abort flag meant clicking "■ Stop batch"
+// on EITHER tab's overlay silently aborted the OTHER tab's batch too —
+// directly undermining the user's core ask ("a music batch + image
+// batch... can run simultaneously"). Keyed by tabKey so each tab's
+// Stop button only ever affects its own run.
+window._batchAbortByTab = window._batchAbortByTab || {};
+
 // Phase A: the per-tab "is anything running?" gate. Replaces the old
 // `state.generating === tabKey` check which couldn't tell which tab
 // a job belonged to once the new multi-job model landed.
@@ -181,7 +193,7 @@ async function startBatchGen(tabKey) {
     if (!confirm(`This batch has ${items.length} videos. Your Token Plan includes only 3 free video generations per week — the rest will fail with a quota error. Continue?`)) return;
   }
 
-  _batchAbort = false;
+  window._batchAbortByTab[tabKey] = false;
   // v1.1.14 (reported by user): default behaviour is now to
   // remove a successful item from state.batches[tabKey]
   // immediately after it finishes, so the list always
@@ -191,13 +203,51 @@ async function startBatchGen(tabKey) {
   // decides whether to retry or skip them.
   const autoRemove = state.batchesAutoRemove !== false;
   const tabName = tabKey.charAt(0).toUpperCase() + tabKey.slice(1);
+  // bug-fix (spawned follow-up, _temp4.md Phase2): represent the WHOLE
+  // batch as one parent JobRunner job (so ActiveJobsWidget shows a
+  // single "Batch: Music (12/20)" row instead of N individual jobs
+  // flickering by) and feed JobSummary.emit() at the end (previously
+  // built but never wired to anything — see _temp4.md's "the new Phase
+  // A/B/C modules work in isolation" finding).
+  //
+  // tabKey: null is deliberate: JobRunner.run()'s per-tab gate
+  // (isTabRunning(tabKey)) checks ANY job on that tab, regardless of
+  // parent/child relationship. Each ITEM's own genBtn.click() ALSO
+  // calls JobRunner.run({tabKey}) for the SAME tab (via the migrated
+  // tab handlers, Phase1) — if the parent occupied that tab's "wip"
+  // slot, every child item would immediately self-reject. The parent
+  // is tracked (shows in ActiveJobsWidget, gets a progress bar, is
+  // cancellable) without participating in the per-tab mutual exclusion
+  // that only makes sense between actual generation attempts.
+  const batchResults = [];
+  let batchCtrl;
+  batchCtrl = window.JobRunner.run({
+    tabKey: null,
+    type: tabKey,
+    title: `Batch: ${tabName} (${items.length} item${items.length === 1 ? '' : 's'})`,
+    subtitle: '',
+    typeIcon: '∑',
+    runFn: async (ctx) => {
+      // External cancellation (ActiveJobsWidget ✕ on the parent row)
+      // must behave exactly like clicking "■ Stop batch" in the
+      // overlay — both ultimately just flip the same per-tab flag the
+      // loop below already polls.
+      ctx.signal.addEventListener('abort', () => { window._batchAbortByTab[tabKey] = true; });
   const tabRoot = $(`#tab-${tabKey}`);
   const promptTa = tabRoot.querySelector('textarea');        // first textarea = main prompt
   const styleSel = tabRoot.querySelector('.row select');      // first select = style preset
   const genBtn = tabRoot.querySelector('button.primary');
   const preview = tabRoot.querySelector('.preview');
   const lastCmd = tabRoot.querySelector('.lastcmd');
-  if (!promptTa || !genBtn) { toast('Could not locate tab controls.', 'err'); return; }
+  if (!promptTa || !genBtn) { toast('Could not locate tab controls.', 'err'); return { status: 'err', error: 'Could not locate tab controls.' }; }
+  // v1.1 (audit L3): guard preview + lastCmd — they CAN be null in
+  // edge cases (e.g. a future tab layout that omits .preview, or a
+  // DOM mutation race). The previous code dereferenced
+  // preview.parentNode unconditionally on line ~282, which would
+  // throw outside the try block (it starts at line ~309) and reject
+  // runFn directly. Fall back to a no-op stub so the rest of the
+  // batch still runs even when the per-tab preview is missing.
+  const previewEl = preview || { parentNode: null, innerHTML: '' };
 
   // Save current state
   const savedPrompt = promptTa.value;
@@ -217,9 +267,37 @@ async function startBatchGen(tabKey) {
   const elapsed = el('div', { class: 'batch-overlay-elapsed' }, '');
   const log = el('div', { class: 'batch-overlay-log' });
   const stopBtn = el('button', { class: 'danger' }, '■ Stop batch');
-  stopBtn.addEventListener('click', () => { _batchAbort = true; stopBtn.disabled = true; stopBtn.textContent = 'Stopping…'; });
+  stopBtn.addEventListener('click', () => {
+    window._batchAbortByTab[tabKey] = true;
+    // Route through the parent job's own cancel() (not just the abort
+    // flag) so JobRunner marks the parent job 'cancel' instead of 'ok'
+    // when it settles — _markJobDone only sees 'cancel' if ac.signal
+    // was actually aborted; setting the flag alone leaves the signal
+    // un-aborted and the job would otherwise log as a false "ok".
+    if (batchCtrl && typeof batchCtrl.cancel === 'function') batchCtrl.cancel();
+    stopBtn.disabled = true;
+    stopBtn.textContent = 'Stopping…';
+  });
   overlay.append(counter, currentPrompt, elapsed, log, stopBtn);
-  preview.appendChild(overlay);
+  // bug-fix (spawned follow-up, _temp4.md Phase2): the overlay used to be
+  // appended INSIDE .preview, but the tab's own generate handler writes
+  // its per-variant status text via `preview.innerHTML = '<spinner...>'`
+  // during generation — which replaces ALL of .preview's children,
+  // wiping the overlay (and its "■ Stop batch" button) out of the DOM
+  // within the first item's generation, almost immediately. Insert it
+  // as a SIBLING of .preview instead (same parent, .tab-footer for every
+  // tab) so the tab's own preview updates can never touch it.
+  // v1.1 (audit L3): only insert the overlay when preview.parentNode
+  // exists. The previous code dereferenced preview.parentNode
+  // unconditionally; a null preview (e.g. a future tab layout
+  // without .preview) would throw outside the try block.
+  if (previewEl.parentNode) {
+    previewEl.parentNode.insertBefore(overlay, previewEl);
+  } else {
+    // Fallback: append the overlay to the tab root so the user
+    // still sees the batch progress + Stop button.
+    try { tabRoot.appendChild(overlay); } catch (_) { /* best-effort */ }
+  }
   const t0 = Date.now();
   const updateElapsed = () => { const s = Math.round((Date.now() - t0) / 1000); elapsed.textContent = `Elapsed: ${Math.floor(s / 60)}m ${s % 60}s`; };
   const elapsedTimer = setInterval(updateElapsed, 1000);
@@ -247,12 +325,13 @@ async function startBatchGen(tabKey) {
   // FIRST successful item was ever removed.
   const removedIdx = new Set();
   try {
-    for (let i = 0; i < items.length && !_batchAbort; i++) {
+    for (let i = 0; i < items.length && !window._batchAbortByTab[tabKey]; i++) {
       const item = items[i];
       const isObj = typeof item === 'object';
       const itemPrompt = isObj ? (item.prompt || item.text || '') : item;
 
       counter.textContent = `${i + 1} / ${items.length}`;
+      ctx.onProgress(i + 1, items.length);
       currentPrompt.textContent = itemPrompt.slice(0, 200) + (itemPrompt.length > 200 ? '…' : '');
       // Update the "items left" counter for the per-tab ETA so the
       // user can see the queue draining in real time.
@@ -331,16 +410,16 @@ async function startBatchGen(tabKey) {
 
       // Run N variants for this batch item
       for (let vi = 0; vi < currentVariantsCount; vi++) {
-        if (_batchAbort) break;
+        if (window._batchAbortByTab[tabKey]) break;
         // Wait until no other generation is in progress for THIS tab.
         // (Phase A: replaced the old `state.generating` single-slot
         // check with _isTabRunningNow(tabKey) so a parallel job on a
         // different tab doesn't block the batch.)
         while (_isTabRunningNow(tabKey)) {
-          if (_batchAbort) break;
+          if (window._batchAbortByTab[tabKey]) break;
           await new Promise((r) => setTimeout(r, 50));
         }
-        if (_batchAbort) break;
+        if (window._batchAbortByTab[tabKey]) break;
         // Reset the per-tab run-outcome signal so we read THIS item's
         // result (not a stale 'ok' from the previous item). The gen
         // handlers set state.genLastResult[tabKey] = 'ok' | 'err' at the
@@ -354,15 +433,15 @@ async function startBatchGen(tabKey) {
         genBtn.click();
         const startDeadline = Date.now() + 8000;
         while (!_isTabRunningNow(tabKey)) {
-          if (_batchAbort) break;
-          if (Date.now() > startDeadline) { logLine(`✗ Gen did not start for item ${i + 1}.`, 'err'); fail++; break; }
+          if (window._batchAbortByTab[tabKey]) break;
+          if (Date.now() > startDeadline) { logLine(`✗ Gen did not start for item ${i + 1}.`, 'err'); fail++; batchResults.push({ status: 'err', error: `item ${i + 1} did not start` }); break; }
           await new Promise((r) => setTimeout(r, 20));
         }
-        if (_batchAbort || !_isTabRunningNow(tabKey)) break;
+        if (window._batchAbortByTab[tabKey] || !_isTabRunningNow(tabKey)) break;
         // Wait for the generation to finish (armGenBtnWithCancel's cleanup
         // resets state.generating to null when the gen handler returns).
         while (_isTabRunningNow(tabKey)) {
-          if (_batchAbort) break;
+          if (window._batchAbortByTab[tabKey]) break;
           await new Promise((r) => setTimeout(r, 100));
         }
         // Determine success. PRIMARY signal: the per-tab run outcome the
@@ -375,11 +454,15 @@ async function startBatchGen(tabKey) {
         // reported EVERY image batch item as failed and auto-remove never
         // fired — this is the fix for that bug.
         const outcome = state.genLastResult && state.genLastResult[tabKey];
+        // v1.1 (audit L3): guard the DOM-scrape fallback for a null
+        // preview. Pre-v1.1 this would throw when outcome was null
+        // AND preview was null (rare, but possible in a future tab
+        // layout without .preview).
         const looksOk = outcome === 'ok'
-          || (outcome == null && preview.querySelector('img, video, audio'));
+          || (outcome == null && preview && preview.querySelector('img, video, audio'));
         const variantTag = currentVariantsCount > 1 ? ` v${vi + 1}/${currentVariantsCount}` : '';
-        if (looksOk) { ok++; logLine(`✓ ${i + 1}/${items.length}${variantTag} OK`, 'ok'); }
-        else { fail++; logLine(`✗ ${i + 1}/${items.length}${variantTag} FAILED`, 'err'); }
+        if (looksOk) { ok++; logLine(`✓ ${i + 1}/${items.length}${variantTag} OK`, 'ok'); batchResults.push({ status: 'ok' }); }
+        else { fail++; logLine(`✗ ${i + 1}/${items.length}${variantTag} FAILED`, 'err'); batchResults.push({ status: 'err', error: `item ${i + 1}${variantTag} failed` }); }
         // v1.1.14 (reported by user): default behaviour is to
         // remove successful items from state.batches[tabKey]
         // immediately. We do this after the LAST variant of the
@@ -426,7 +509,7 @@ async function startBatchGen(tabKey) {
         }
       }
 
-      if (_batchAbort) { logLine(`Aborted at item ${i + 1}.`, 'warn'); break; }
+      if (window._batchAbortByTab[tabKey]) { logLine(`Aborted at item ${i + 1}.`, 'warn'); break; }
     }
   } catch (e) {
     batchError = e;
@@ -476,6 +559,34 @@ async function startBatchGen(tabKey) {
   if (typeof _refreshBatchButtons === 'function') _refreshBatchButtons();
   await refreshBrowser();
   await refreshQuota();
+      // Mirrors the toast logic 3 lines up so the parent job's logged
+      // outcome (ActiveJobsWidget colour, history row) agrees with what
+      // the user was just shown. When aborted, JobRunner's own
+      // ac.signal.aborted check overrides this to 'cancel' regardless
+      // of what we return here (see _markJobDone in JobRunner.js).
+      if (batchError) return { status: 'err', error: batchError.message || String(batchError), details: [`${ok} ok, ${fail} failed${skipNote}`] };
+      if (fail > 0 || skipped > 0) return { status: 'warn', details: [`${ok} ok, ${fail} failed${skipNote}`] };
+      return { status: 'ok', details: [`${ok} ok, ${fail} failed${skipNote}. (variants ×${variantsCount})`] };
+    },
+  });
+  if (batchCtrl && typeof batchCtrl.catch === 'function') {
+    // Hard-cap rejection (Promise.reject from JobRunner.run itself,
+    // before runFn ever ran) — the toast was already shown by run().
+    batchCtrl.catch(() => {});
+  } else {
+    await batchCtrl.done;
+    // bug-fix (spawned follow-up, _temp4.md Phase2): JobSummary.emit
+    // was built (renderer/jobs/JobSummary.js) but had zero call sites
+    // anywhere in the codebase. Called AFTER (not during) runFn so the
+    // parent row has already settled out of 'wip' — addLogEvent's
+    // fold-into-primary-row routing only applies while a jobId's
+    // status is still 'wip', so emitting here creates a genuinely
+    // separate "Batch finished: N/M ok" summary row instead of
+    // silently merging into the row that's about to disappear.
+    if (batchResults.length && window.JobSummary && typeof window.JobSummary.emit === 'function') {
+      window.JobSummary.emit(batchCtrl.jobId, batchResults);
+    }
+  }
 }
 
 function buildAddToBatchBtn(tabKey) {

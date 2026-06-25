@@ -13,8 +13,14 @@ const cfgMod = require('../../src/config');
  */
 function register(deps) {
   ipcMain.handle('batches:get', () => {
+    // Bug-fix M3 (_temp5.md 360° audit): the error path used to return
+    // `[]`, which violates the BatchesState contract (an object keyed
+    // by tab). The renderer's defensive reads happened not to crash on
+    // an empty array, but any future code that spread state.batches
+    // would silently produce junk keys. Return the proper default
+    // shape (same as batchMod.read's own error fallback).
     try { return batchMod.read(); }
-    catch (e) { return []; }
+    catch (e) { return batchMod.defaultBatches(); }
   });
   ipcMain.handle('batches:set', (_e, batches) => {
     try { batchMod.write(batches); return { ok: true }; }

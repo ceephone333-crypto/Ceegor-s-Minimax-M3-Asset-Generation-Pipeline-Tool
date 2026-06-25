@@ -50,11 +50,20 @@ async function optimizeImageFile(srcPath, opts) {
   const out = overwrite
     ? srcPath
     : await uniqueOutputPath(derivedOutputPath(srcPath, '_optimized' + (fmt ? ('.' + fmt) : '')));
+  // v1.1 (advanced pipeline settings): forward the per-format
+  // encoder knobs when present. The Sharp wrapper applies only
+  // the knobs relevant to the active output format, so passing
+  // the entire `optimize` sub-object is safe (jpeg knobs are
+  // ignored when the format is png, etc.). When the advanced
+  // overlay has never been opened, the sub-object is undefined
+  // and the wrapper falls back to the documented defaults.
+  const encoders = (state.pipelineAdvancedSettings && state.pipelineAdvancedSettings.optimize) || {};
   const r = await window.api.optimizeImage(srcPath, {
     quality: opts.quality,
     format: fmt,
     stripMetadata: opts.stripMetadata !== false,
     outputPath: out,
+    encoders,
   });
   // v1.1.15 (reported by user): log the optimization to the
   // structured log pane so the user can see every step.
@@ -554,7 +563,14 @@ function showUpscaleSettings() {
         format: ['keep', 'jpeg', 'png', 'webp', 'avif'].includes(fmtSel.value) ? fmtSel.value : 'keep',
         stripMetadata: !!stripCb.checked,
       };
-      state.upscaleEnabled = true;
+      // Bug-fix (C5): this modal only configures upscale/bg-removal/
+      // optimize SETTINGS. Whether upscaling is actually enabled is
+      // owned exclusively by the dedicated "🔍 Upscale" checkbox in
+      // the tab action bar (imageTab.js upscaleCb), which is how the
+      // user opened this modal in the first place (clicking the label
+      // next to that checkbox). Force-enabling it here meant opening
+      // this modal just to turn on background-removal (with upscale
+      // left unchecked) silently turned upscaling on too.
       await scheduleStateSave();
       if (typeof refreshUpscaleCheckboxUI === 'function') refreshUpscaleCheckboxUI();
       const extras = [];
@@ -895,7 +911,11 @@ async function showUpscaleDirect(srcPath) {
       // off; making it sticky avoids re-checking the same box on
       // the next image.
       state.removeBackgroundEnabled = !!noBgCb.checked;
-      state.upscaleEnabled = true;
+      // Bug-fix (C5 secondary): this is a one-off action on a single
+      // already-generated file — it must NOT flip the tab's "🔍
+      // Upscale" auto-upscale-on-generate switch (state.upscaleEnabled
+      // is owned exclusively by that dedicated checkbox). Setting it
+      // true here used to leak into every future Generate click.
       upscaleBtn.disabled = true; upscaleBtn.textContent = 'Upscaling…';
       // `final` is the path to the file we want to preview at the
       // end of the pipeline. It gets reassigned by the optional

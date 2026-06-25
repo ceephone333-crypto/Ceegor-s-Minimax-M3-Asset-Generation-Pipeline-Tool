@@ -47,17 +47,28 @@
       window.ActiveJobsWidget.init();
     }
   } catch (e) { console.warn('ActiveJobsWidget.init failed:', e); }
-  // Phase C: render the persisted L2 list (state.jobs.snapshot) as
-  // collapsed, non-interactive rows at the bottom of the log. This
-  // gives the user context ("here's what you did in the previous
-  // session") without requiring them to open the History pane.
-  // Rendered rows are visually muted (lower opacity, ↻ icon) and
-  // CANNOT be clicked for re-run in Phase C — re-running requires
-  // parameter round-tripping, which is a deliberate non-goal.
+  // LogService wiring — the log pane needs two pieces of setup:
+  //   (a) the click + keyboard listener on #log that toggles
+  //       row expansion when the user clicks the chev (the `>`
+  //       glyph on the right of each log row) — BUG-9-06
+  //       (user-reported, 2026-06-25): the previous render of
+  //       this file forgot to call LogService.init(), so the
+  //       chev click was a dead button and the log text was
+  //       not selectable. Wire it up here.
+  //   (b) the toolbar wiring (#log-collapse-all, #log-expand-all,
+  //       #log-clear, #log-copy, #log-jump-newest, #log-jump-oldest)
+  //       — `setupLogToolbar()` (already called from app.js init).
   try {
-    if (window.LogService && typeof window.LogService.renderPersistedL2 === 'function'
-        && window.state && Array.isArray(window.state.jobsSnapshot)) {
-      window.LogService.renderPersistedL2(window.state.jobsSnapshot);
+    if (window.LogService && typeof window.LogService.init === 'function') {
+      window.LogService.init();
     }
-  } catch (e) { console.warn('renderPersistedL2 failed:', e); }
+  } catch (e) { console.warn('LogService.init failed:', e); }
+  // Phase C (bug-fix B1b, _temp5.md): the persisted-L2 render call
+  // used to live HERE — at script-parse time. But the disk state is
+  // loaded later in app.js init() (on DOMContentLoaded, well after
+  // this IIFE runs), so state.jobsSnapshot was ALWAYS null/undefined
+  // at the moment renderPersistedL2 ran, and the call was never
+  // repeated. The "previous session" log rows therefore never
+  // showed. The call now lives in init() right after the
+  // persist-keys load loop populates state.jobsSnapshot.
 })();

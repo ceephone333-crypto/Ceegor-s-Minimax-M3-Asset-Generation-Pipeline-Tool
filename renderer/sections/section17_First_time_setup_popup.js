@@ -3,18 +3,46 @@
 // Source: app.js L825..943
 
 // ----------------- First-time setup popup -----------------
-// Shown right after the greetings popup if either the API key or the
-// output directory is missing. Fields are pre-filled with whatever
-// values are already in config.txt so the user only has to fix the
-// gaps. The "Save" button validates that both required fields are
-// present and writes the config before closing. "Skip for now" closes
-// without saving — the user can fill the values in later from ⚙
-// Settings.
-function openFirstTimeSetup() {
+// Guided form for the two required settings (API key + output
+// directory). Reachable in two ways:
+//   1) Manually from ⚙ Settings → Account → "Run first-time
+//      setup" (see buildSettingsAccountPane in section03).
+//   2) Via the auto-open path inside openGatedPopup() below,
+//      which respects the user's popup policy (state.popupPolicy).
+//
+// The "Save" button validates that both required fields are
+// present and writes the config before closing. "Skip for now"
+// closes without saving — the user can fill the values in later
+// from ⚙ Settings.
+//
+// Bug-fix (reported by user — "we still see lots of popups, even
+// though they are turned off"): the previous implementation used
+// `force: true` so the popup would bypass the popup policy. That
+// was wrong: the user has an explicit "default off" preference in
+// ⚙ Settings → Popups, and forcing an onboarding modal on every
+// launch with a fresh install contradicted that preference. The
+// popup is now policy-gated like every other informational
+// dialog. A user who skipped first-time setup but wants it back
+// can re-open it from ⚙ Settings → "Run first-time setup".
+function openFirstTimeSetup(opts) {
   // Enter the startup-popup chain so the pending tab-intro
   // popup stays deferred while the first-time setup form is open.
   if (typeof _enterIntroStartupChain === 'function') _enterIntroStartupChain();
   const _exit = () => { if (typeof _exitIntroStartupChain === 'function') _exitIntroStartupChain(); };
+  // `opts.force` — when the user explicitly invokes first-time
+  // setup from ⚙ Settings (the "Run first-time setup" button),
+  // bypass the popup policy. The user just asked for this
+  // dialog; suppressing it would be wrong. The auto-open path
+  // (e.g. the showStartupPopup chain) does NOT pass `force` and
+  // is therefore subject to the popup policy, so a user with
+  // 'never' is not nagged on every fresh install.
+  const force = !!(opts && opts.force);
+  // No `force: true` here — the popup policy is honoured. With
+  // the new default of 'never' and a fresh install, the
+  // first-time setup is silent; the user opts in from Settings.
+  // The optional-addons follow-up (in onClose below) is also
+  // policy-gated and additionally requires the binaries to be
+  // missing, so it never nags a configured user either.
   openGatedPopup('first-time-setup', (m, close, markSeen) => {
     m.classList.add('first-time-setup-modal');
     m.appendChild(el('h2', {}, 'First-time setup'));
@@ -87,7 +115,18 @@ function openFirstTimeSetup() {
       if (!api_key) { toast('API key is required. Paste it into the API key field above, or click "Skip for now" and set it later in ⚙ Settings.', 'err', 5000); return; }
       if (!output_dir) { toast('Output directory is required. Pick a folder with the Browse… button, or click "Skip for now".', 'err', 5000); return; }
       const newCfg = { ...state.config, api_key, output_dir, region };
-      state.config = await window.api.setConfig(newCfg);
+      const result = await window.api.setConfig(newCfg);
+      // Bug-fix M2 (_temp5.md 360° audit): config:set now returns
+      // `{ ok, config, error }`. A write failure used to return null
+      // (then refreshQuota crashed on state.config.api_key). Branch
+      // on ok and surface the real error to the user.
+      if (!result || result.ok !== true) {
+        const msg = (result && result.error) || 'Could not write config.txt (disk full, read-only, or permission denied).';
+        toast('Save failed: ' + msg, 'err', 8000);
+        if (result && result.config) state.config = result.config;
+        return;
+      }
+      state.config = result.config;
       toast('Settings saved.', 'ok');
       markSeen();
       close();
@@ -105,23 +144,24 @@ function openFirstTimeSetup() {
       else if (!cfg.output_dir) outInput.focus();
       else apiInput.focus();
     }, 0);
-  }, { onClose: _exit });
-
-  // After the first-time setup popup (Save or Skip), walk the user
-  // through the optional Real-ESRGAN install. Without this, a user
-  // who picked the built-in upscaler without ever opening ⚙
-  // Settings would never see the one-click installer, and would
-  // wonder "why doesn't this upscale as well as the screenshots
-  // show?" later. The install IS automated (one click) — the issue
-  // is purely discoverability. The popup is gated on
-  //   - Real-ESRGAN binary not present
-  //   - user hasn't already dismissed it
-  // so it never nags. It is intentionally NOT gated on
-  // "config was just set on this launch" — a user who already had a
-  // valid config but a fresh install (no ./bin/) should still see
-  // it on first launch.
-  if (!state.realesrganFirstRunDismissed) {
-    openOptionalAddons({ autoOpened: true }).catch(() => {});
-  }
+    // `force` is forwarded to openGatedPopup — see comment at
+    // the top of this function. The auto-open path (no `force`)
+    // honours the popup policy; the manual open from ⚙ Settings
+    // passes `force: true` to bypass it.
+  }, {
+    force,
+    onClose: () => {
+      _exit();
+      // The optional add-ons follow-up is fired AFTER the
+      // first-time-setup modal closes so the two modals don't
+      // stack on top of each other. It is intentionally NOT
+      // gated on "config was just set on this launch" — a user
+      // who already had a valid config but a fresh install (no
+      // ./bin/) should still see it on first launch.
+      if (!state.realesrganFirstRunDismissed) {
+        openOptionalAddons({ autoOpened: true }).catch(() => {});
+      }
+    },
+  });
 }
 

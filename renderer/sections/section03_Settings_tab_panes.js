@@ -29,6 +29,33 @@ function buildSettingsGeneralPane() {
   root.appendChild(el('p', { style: 'color: var(--fg-2); font-size: 12px; margin: 0 0 8px;' },
     'Your core settings — the tool needs (1) a working API key and (2) an output folder before it can generate anything. The rest has safe defaults.'));
 
+  // v1.1.16 (reported by user — "we still see lots of popups, even
+  // though they are turned off"): the first-time-setup modal used
+  // to auto-open whenever the welcome popup was suppressed and the
+  // config was incomplete. That contradicted the user's explicit
+  // "default off" popup policy. The popup is now policy-gated, so
+  // a fresh install no longer shows it automatically. To keep the
+  // guided setup reachable, the General pane exposes a "Run
+  // first-time setup" button that re-opens the modal (with
+  // `force: true` so the policy is bypassed — the user just asked
+  // for it). Without this button, a user who turned popups off
+  // AND skipped the initial setup would have no in-app way to
+  // walk through the API key + output folder fields together.
+  const runFirstTimeSetupBtn = el('button', { class: 'btn-mini' }, '🚀 Run first-time setup');
+  runFirstTimeSetupBtn.addEventListener('click', () => {
+    if (typeof openFirstTimeSetup === 'function') {
+      // force: true — the user explicitly asked for this dialog
+      // from the General settings pane; suppressing it would
+      // be wrong. The same dialog is also reachable via the
+      // "?" tooltips on the API key / output dir rows below.
+      openFirstTimeSetup({ force: true });
+    }
+  });
+  root.appendChild(el('div', { class: 'row' }, [
+    el('label', {}, ['Guided setup', helpButton('settings.firstTimeSetup')]),
+    el('div', { class: 'combo' }, [runFirstTimeSetupBtn, el('span', { style: 'color: var(--fg-3); font-size: 11px;' }, 'Re-opens the first-run form (API key + output folder).')]),
+  ]));
+
   // ---- Section 1: Authentication ----
   root.appendChild(el('h4', { class: 'settings-group-title' }, '🔐 Authentication'));
   const apiKeyRow = showRevealableKey(state.config.api_key || '', {
@@ -68,6 +95,13 @@ function buildSettingsGeneralPane() {
   noSaveCb.addEventListener('change', () => {
     state.apiKeyNoSave = noSaveCb.checked;
     syncNoSaveStyle();
+    // Bug-fix L1 (_temp5.md 360° audit): persist immediately so the
+    // checkbox state survives a restart even if the user clicks
+    // Cancel (which doesn't go through the Save button's collect()
+    // path). The sibling B5 settings all call scheduleStateSave()
+    // in their change handlers; this one was missing it, so the
+    // checkbox silently reverted on the next launch.
+    if (typeof scheduleStateSave === 'function') scheduleStateSave();
   });
   syncNoSaveStyle();
   root.appendChild(apiKeyRow.row);
@@ -238,6 +272,8 @@ function buildSettingsImagePane() {
         } else {
           installProgress.textContent = 'Downloading…';
         }
+      } else if (data.phase === 'verify') {
+        installProgress.textContent = 'Verifying checksum…';
       } else if (data.phase === 'extract') {
         installProgress.textContent = 'Extracting…';
       } else if (data.phase === 'done') {
@@ -277,6 +313,34 @@ function buildSettingsImagePane() {
   root.appendChild(el('div', { class: 'row' }, [
     el('label', {}, ['Optional add-ons', helpButton('settings.optionalAddons')]),
     openAddonsBtn,
+  ]));
+
+  // ---- Advanced pipeline settings (v1.1 research-driven) ----
+  // Opens the section25 overlay that exposes the low-level
+  // parameters the special features' libraries actually accept
+  // (Real-ESRGAN -t/-x/-g, IS-Net intra/inter-op threads,
+  // Sharp per-format encoder knobs, ffmpeg silence threshold +
+  // codec bitrates). Lives behind a button so the pane stays
+  // scannable; power users who need to tune a specific knob
+  // know where to find it.
+  const advBtn = el('button', { class: 'btn-mini' }, '🔧 Advanced pipeline settings…');
+  advBtn.title = 'Open the overlay with low-level parameters for the upscaler, background remover, image optimiser, and audio cutter';
+  if (typeof openAdvancedPipelineSettings === 'function') {
+    advBtn.addEventListener('click', () => {
+      try { openAdvancedPipelineSettings(); } catch (e) {
+        if (typeof toast === 'function') toast('Could not open advanced settings: ' + (e && e.message || e), 'err', 5000);
+      }
+    });
+  } else {
+    // Defensive: the section file failed to load (rare — the
+    // script tag in index.html is unconditional). Disable the
+    // button instead of crashing on click.
+    advBtn.disabled = true;
+    advBtn.title = 'Advanced settings module not loaded — check that renderer/sections/section25_*.js is reachable.';
+  }
+  root.appendChild(el('div', { class: 'row' }, [
+    el('label', {}, ['Advanced parameters', helpButton('settings.advancedPipeline')]),
+    advBtn,
   ]));
 
   // The pane does not modify config.txt directly — its writes
@@ -384,12 +448,12 @@ function buildSettingsPopupsPane() {
   root.appendChild(el('h4', { class: 'settings-group-title' }, '💬 Behaviour'));
   const polSel = el('select', { class: 'popup-policy-select' });
   for (const [val, lbl] of [
-    ['once-fresh',  'Show once to fresh users, then never (default)'],
+    ['never',       'Never show these popups (default)'],
+    ['once-fresh',  'Show once to fresh users, then never'],
     ['per-session', 'Show first time each app start'],
-    ['never',       'Never show these popups'],
     ['always',      'Always show (even after dismissal)'],
   ]) polSel.appendChild(el('option', { value: val }, lbl));
-  polSel.value = state.popupPolicy || 'once-fresh';
+  polSel.value = state.popupPolicy || 'never';
   polSel.addEventListener('change', () => { state.popupPolicy = polSel.value; scheduleStateSave(); });
   root.appendChild(el('div', { class: 'row' }, [
     el('label', {}, ['Popup behaviour', helpButton('settings.popupPolicy')]),

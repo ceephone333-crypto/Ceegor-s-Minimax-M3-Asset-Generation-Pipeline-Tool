@@ -134,22 +134,64 @@
   // only when the widget is visible (the list rebuild is O(active
   // jobs) which is bounded by HARD_CAP = 16).
   let _tickTimer = null;
+  // Bug-fix L2 (_temp5.md 360° audit): keep the unsubscribe functions
+  // returned by JobRunner.on() so a future re-init (hot-reload /
+  // second init() call) can tear down the old listeners before
+  // registering new ones — otherwise every re-init would double the
+  // listeners and render() would fire N times per event.
+  let _offs = [];
   function startTicker() {
     if (_tickTimer) return;
     _tickTimer = setInterval(render, 500);
+  }
+  // v1.1 (audit BUG-N2): stopTicker() was missing. The interval
+  // kept firing forever even if the widget DOM was removed (e.g.
+  // via a hot-reload, a tab switch, or a future SPA-style route
+  // change). Each tick called render() which queried the DOM;
+  // when the widget was detached, render() was a no-op but the
+  // timer kept the event loop alive. The init() function now
+  // calls stopTicker() before re-adding listeners, and the
+  // public surface exposes destroy() so a future caller (or the
+  // smoke test's hot-reload path) can tear down the widget
+  // cleanly.
+  function stopTicker() {
+    if (_tickTimer) {
+      clearInterval(_tickTimer);
+      _tickTimer = null;
+    }
   }
 
   // Subscribe to JobRunner events so we re-render on every change.
   function init() {
     if (!window.JobRunner) return;
+    // Idempotent: if init() is called again, tear down the previous
+    // listeners first so we don't accumulate duplicates.
+    for (const off of _offs) { try { off(); } catch (_) { /* best-effort */ } }
+    _offs = [];
+    // v1.1 (audit BUG-N2): also stop the ticker so a second
+    // init() call doesn't restart it before startTicker()'s
+    // _tickTimer guard has a chance to fire (the guard works
+    // because we ALSO clear _offs above, but defensive
+    // belt-and-suspenders).
+    stopTicker();
     // Re-render on every event.
-    window.JobRunner.on('jobrunner:job-added', render);
-    window.JobRunner.on('jobrunner:job-removed', render);
-    window.JobRunner.on('jobrunner:job-updated', render);
+    _offs.push(window.JobRunner.on('jobrunner:job-added', render));
+    _offs.push(window.JobRunner.on('jobrunner:job-removed', render));
+    _offs.push(window.JobRunner.on('jobrunner:job-updated', render));
     startTicker();
     render();
   }
 
+  // v1.1 (audit BUG-N2): destroy() tears down the widget cleanly
+  // — unregisters the JobRunner listeners AND stops the
+  // ticker. Call this on hot-reload / SPA route change / before
+  // re-init to avoid leaking intervals.
+  function destroy() {
+    for (const off of _offs) { try { off(); } catch (_) { /* best-effort */ } }
+    _offs = [];
+    stopTicker();
+  }
+
   // Public surface.
-  window.ActiveJobsWidget = { init, render };
+  window.ActiveJobsWidget = { init, render, destroy };
 })();

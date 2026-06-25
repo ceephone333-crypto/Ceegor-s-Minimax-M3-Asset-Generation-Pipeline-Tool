@@ -22,18 +22,27 @@ window.el = window.createElement || (window.DomHelpers && window.DomHelpers.crea
 // sichtbar — gleicher Trick wie bei 'state' in section24_State.js.
 var el = window.el;
 
-// Render a small "?" button next to a label. Click opens a
-// modal with the help text for the given topic. The topic can
-// be a string (1-line hover summary) or a key into the central
-// helpTopics map (richer text).
+// Render a small "?" button next to a label. BUG-9-05
+// (user-reported, 2026-06-25): the previous version opened a
+// modal on click. The user asked: "the ones relating to ?
+// buttons [should] only [be] shown while hovering over them" —
+// so the ? icon is now HOVER-ONLY. The click handler is removed
+// entirely; the `data-help` attribute carries the full text so
+// the HelpTooltip system (renderer/components/HelpTooltip.js,
+// wired in bootstrap.js) shows a tooltip on mouseover. No modal,
+// no popup, no interruption.
 function helpButton(topic) {
-  const b = el('button', { type: 'button', class: 'help-button', title: 'Help' }, '?');
-  b.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    // The shim (app.js) is the authoritative showHelp impl.
-    if (window.showHelp) window.showHelp(topic);
-  });
+  const b = el('button', {
+    type: 'button',
+    class: 'help-button',
+    title: 'Help',
+    'aria-label': 'Help',
+    // The inline topic text (1-line summary) is rendered as a
+    // hover tooltip via HelpTooltip. HelpTooltip reads
+    // `data-help` first, falling back to `title` (see
+    // renderer/components/HelpTooltip.js).
+    'data-help': topic,
+  }, '?');
   return b;
 }
 
@@ -65,25 +74,63 @@ function buildParamRow(label, def, id) {
     if (def.allowCustom !== false) {
       sel.appendChild(el('option', { value: '__custom__' }, 'Custom…'));
     }
-    const num = el('input', { type: 'number', value: def.customDefault ?? '', placeholder: 'value', min: def.min, max: def.max, step: def.step ?? 1 });
+    // v1.1.17 (reported by user): the previous "Custom… + OK" affordance
+    // was actively harmful — the OK button ran a min/max clamp that
+    // silently replaced a typed value of 10 (for an --n dropdown with
+    // max 4) with 4, with only a brief toast. The user's request is
+    // clear: "The OK buttons are not needed actually, as long as the
+    // tool reads the typed values after starting generation." So the
+    // new behaviour is:
+    //   - NO OK button — the typed value is what gets read.
+    //   - NO client-side clamp on the typed value — the preflight
+    //     validateValues() (renderer/specs/modelSpecs.js) already
+    //     checks against the spec's min/max, AND the mmx CLI itself
+    //     rejects out-of-range values with a clear error.
+    //   - On Generate, if the typed value is empty / NaN, the
+    //     preflight warn fires ("Value must be a number") and the
+    //     user can fix it without ever losing what they typed.
+    //   - The dropdown still offers the whitelisted preset values
+    //     (1/2/3/4 for --n, the supported sample-rates for
+    //     --sample-rate, etc.) so the user has a fast path.
+    // The class kept as 'combo-select-number' (NOT renamed) because
+    // batchImportHelper.js's getTabInputValue/setTabInputValue check
+    // for this exact class name.
+    const num = el('input', {
+      type: 'number', value: def.customDefault ?? '', placeholder: 'value',
+      min: def.min, max: def.max, step: def.step ?? 1, class: 'number-custom-input',
+    });
     num.style.display = 'none';
+    const numWrap = el('div', { class: 'combo-select-number', style: 'display: flex; gap: 4px; align-items: center;' }, [sel, num]);
+    function setNumCustomVisible(visible) {
+      if (visible) {
+        num.style.display = '';
+        numWrap.classList.add('number-custom-active');
+      } else {
+        num.style.display = 'none';
+        numWrap.classList.remove('number-custom-active');
+      }
+    }
     const current = (def.options || []).find((o) => String(o.value) === String(value));
     if (current) sel.value = String(current.value);
-    else if (def.allowCustom !== false) {
+    else if (def.allowCustom !== false && String(value) !== '') {
+      // The persisted value doesn't match any dropdown option —
+      // treat it as a custom value so the user can see + edit it
+      // after a restart. An empty persisted value stays on the
+      // first preset (don't auto-open Custom for empty state).
       sel.value = '__custom__';
-      num.style.display = '';
       num.value = String(value);
+      setNumCustomVisible(true);
     }
     sel.addEventListener('change', () => {
       if (sel.value === '__custom__') {
-        num.style.display = '';
+        setNumCustomVisible(true);
         if (def.allowCustom !== false) num.focus();
       } else {
-        num.style.display = 'none';
+        setNumCustomVisible(false);
         num.value = '';
       }
     });
-    input = el('div', { class: 'combo-select-number', style: 'display: flex; gap: 4px; align-items: center;' }, [sel, num]);
+    input = numWrap;
     input.getValue = () => {
       if (sel.value === '__custom__') return num.value;
       return sel.value;
@@ -146,43 +193,42 @@ function buildParamRow(label, def, id) {
     const text = el('input', { type: 'text', value: '', placeholder: 'type custom…', class: 'enum-custom-input' });
     text.style.display = 'none';
     if (id) text.id = id + '-custom';
-    // OK button: only shown in Custom mode. Clicking it
-    // marks the custom value as "confirmed" so the
-    // rest of the UI (e.g. the model-preflight check)
-    // treats the typed value as the effective value.
-    const okBtn = el('button', {
-      type: 'button',
-      class: 'btn-mini enum-custom-ok',
-      title: 'Apply the typed custom value',
-      style: 'display: none;',
-    }, 'OK');
-    if (id) okBtn.id = id + '-custom-ok';
-    const current = (def.options || []).find((o) => String(o.value) === String(value));
-    if (current) sel.value = String(current.value);
-    else if (def.allowCustom !== false) {
-      // The persisted value doesn't match any dropdown
-      // option — treat it as a custom value so the user
-      // can see + edit it after a restart.
-      sel.value = '__custom__';
-      text.style.display = '';
-      okBtn.style.display = '';
-      text.value = String(value);
-    }
+    // v1.1.17 (reported by user): the previous "Custom… + OK" affordance
+    // was actively harmful — the OK button ran no real validation but
+    // the user thought clicking it was the only way to "lock in" the
+    // typed value. The user's request: "The OK buttons are not needed
+    // actually, as long as the tool reads the typed values after
+    // starting generation." So the new behaviour is:
+    //   - NO OK button. The text input value IS the effective value.
+    //   - On Generate, the preflight validateValues() (renderer/specs
+    //     /modelSpecs.js) + the mmx CLI both reject unknown values
+    //     with a clear error. We don't preempt that with a silent
+    //     client-side rewrite.
+    //   - The dropdown still offers the whitelisted preset values so
+    //     the user has a fast path.
+    // The CSS class 'enum-custom-active' on the wrapper still drives
+    // the 50/50 layout (dropdown shrinks to 50%, text input takes the
+    // other 50%) — only the OK button is gone.
+    const wrap = el('div', { class: 'combo-select-enum', style: 'display: flex; gap: 4px; align-items: center;' }, [sel, text]);
     function setCustomVisible(visible) {
       if (visible) {
         text.style.display = '';
-        okBtn.style.display = '';
-        // Per the user's spec: dropdown shrinks to 50% and
-        // the text input + OK button take the other 50%.
-        // We add a class on the wrapper that CSS uses to
-        // switch to 50/50 layout (the default is full-width
-        // dropdown + hidden input).
         wrap.classList.add('enum-custom-active');
       } else {
         text.style.display = 'none';
-        okBtn.style.display = 'none';
         wrap.classList.remove('enum-custom-active');
       }
+    }
+    const current = (def.options || []).find((o) => String(o.value) === String(value));
+    if (current) sel.value = String(current.value);
+    else if (def.allowCustom !== false && String(value) !== '') {
+      // The persisted value doesn't match any dropdown option —
+      // treat it as a custom value so the user can see + edit it
+      // after a restart. Empty persisted value stays on the first
+      // preset (don't auto-open Custom for empty state).
+      sel.value = '__custom__';
+      text.value = String(value);
+      setCustomVisible(true);
     }
     sel.addEventListener('change', () => {
       if (sel.value === '__custom__') {
@@ -193,27 +239,7 @@ function buildParamRow(label, def, id) {
         text.value = '';
       }
     });
-    // OK button click: focus the input (so the user can
-    // keep editing) and dispatch an 'input' event on the
-    // text field so any listener that watches for input
-    // (e.g. the preflight check) picks up the new value.
-    okBtn.addEventListener('click', () => {
-      text.focus();
-      text.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    // Enter key in the text input = click OK.
-    text.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        okBtn.click();
-      }
-    });
     if (id) sel.id = id;
-    // v1.1.15: include the OK button in the wrapper so the
-    // CSS 50/50 layout (active state) has all three elements
-    // to position. The OK button is the third flex child;
-    // it sits next to the text input on the right.
-    const wrap = el('div', { class: 'combo-select-enum', style: 'display: flex; gap: 4px; align-items: center;' }, [sel, text, okBtn]);
     input = wrap;
     input.el = sel;
     input.getValue = () => {
@@ -249,7 +275,21 @@ function buildParamRow(label, def, id) {
   } else {
     input = el('input', { type: 'text', value: String(value) });
   }
-  const row = el('div', { class: 'row' }, [lbl, input.el || input]);
+  // Bug-fix (reported by user — "we still don't see input fields for
+  // custom options"): for the COMPOSITE kinds (enum, number, enum-text,
+  // text+fileFilters) `input` is the WRAPPER div that holds the <select>
+  // PLUS the hidden custom text input, the OK button, and the Browse
+  // button, while `input.el` is just the inner <select>/<input> kept as a
+  // value-reference. The row used to append `input.el || input`, i.e. the
+  // bare inner control — so the wrapper (and therefore the "Custom…" text
+  // field, the OK button, and the Browse button) was NEVER inserted into
+  // the DOM. Selecting "Custom…" revealed nothing because the field
+  // didn't exist on the page. Append `input` itself (which for the simple
+  // kinds IS the control), and keep `input.el` only as the `.el`
+  // value-reference alias. This also restores the Browse button on
+  // file-picker rows (e.g. the image --subject-ref field) and makes
+  // batchImportHelper's `.combo-select-*` wrapper detection work.
+  const row = el('div', { class: 'row' }, [lbl, input]);
   const elAlias = input.el || input;
   const getValueAlias = input.getValue || (() => input.value);
   input.getValue = getValueAlias;
@@ -287,6 +327,19 @@ function attachImageDimGuards(aspect, width, height) {
   aspect.el.addEventListener('change', recheck);
   width.el.addEventListener('change', recheck);
   height.el.addEventListener('change', recheck);
+  // v1.1 (audit H8): also listen on the inner custom-number input.
+  // The number-kind OK button dispatches `input` on the inner input
+  // (NOT `change` on the outer select), so the guards never fired
+  // when the user typed a custom W/H and pressed OK. The user saw
+  // "no warning", clicked Generate, and got a server-side 400.
+  for (const param of [width, height]) {
+    const inner = param.input && param.input.querySelector
+      ? param.input.querySelector('.number-custom-input')
+      : null;
+    if (inner) {
+      inner.addEventListener('input', recheck);
+    }
+  }
   recheck();
   setTimeout(recheck, 0);
   return warning;

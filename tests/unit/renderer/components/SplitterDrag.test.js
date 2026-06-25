@@ -42,19 +42,24 @@ test('clampLayout: clamps sidebar to >= 200px', () => {
 
 test('clampLayout: leaves a normal sidebar value untouched', () => {
   assert.equal(clampLayout('--sidebar-w', 360), 360);
-  assert.equal(clampLayout('--sidebar-w', 9999), 9999); // upper bound is Infinity
+  // v1.1 (audit L18): MAX is now finite (3840 for sidebar/preview,
+  // 2160 for logbar) — a dragged splitter can no longer persist
+  // state.layoutSettings.sidebarW = 9999, which broke the layout
+  // on the next launch.
+  assert.equal(clampLayout('--sidebar-w', 9999), 3840); // upper bound is 3840
+  assert.equal(clampLayout('--sidebar-w', 3840), 3840);
 });
 
 test('clampLayout: clamps logbar to >= 80px', () => {
   assert.equal(clampLayout('--logbar-h', 10), 80);
   assert.equal(clampLayout('--logbar-h', 200), 200);
-  assert.equal(clampLayout('--logbar-h', 9999), 9999);
+  assert.equal(clampLayout('--logbar-h', 9999), 2160); // upper bound is 2160
 });
 
 test('clampLayout: clamps preview to >= 200px', () => {
   assert.equal(clampLayout('--preview-w', 100), 200);
   assert.equal(clampLayout('--preview-w', 540), 540);
-  assert.equal(clampLayout('--preview-w', 9999), 9999);
+  assert.equal(clampLayout('--preview-w', 9999), 3840); // upper bound is 3840
 });
 
 test('clampLayout: returns the value unchanged when no clamp bounds are registered', () => {

@@ -189,7 +189,16 @@ function makeSandbox() {
     devicePixelRatio: 1,
     elements, getOrCreate,
     _refreshBrowserCalls: refreshBrowserCalls,
-    process: { platform: 'win32' },
+    // BUG-9-01a regression guard (_temp9.md): the REAL renderer has
+    // NO `process` global (contextIsolation:true, nodeIntegration:false).
+    // An earlier version of this test injected `process: { platform: 'win32' }`
+    // to "make the handler work in Node", which silently hid a
+    // `ReferenceError: process is not defined` that fired on every Up
+    // click in the live renderer. We now deliberately do NOT inject
+    // `process` (the helper is shape-based, not platform-based), and
+    // there is a dedicated test below ("fb-up: handler must NOT
+    // reference the `process` global") that asserts the handler
+    // runs cleanly with `process` absent.
   });
   sandbox.createElement = document.createElement;
   sandbox.window = sandbox; sandbox.globalThis = sandbox; sandbox.global = sandbox;
@@ -360,4 +369,36 @@ test('fb-up: in a real subfolder of output_dir, Up climbs one level', async () =
   await flush();
   assert.equal(sandbox.state.fbDir, 'C:\\Users\\me\\Pictures\\MiniMax-Assets',
     'Up from a subfolder must climb one level');
+});
+
+// BUG-9-01a regression guard (_temp9.md): the live renderer has
+// NO `process` global. The previous version of this test file
+// injected `process: { platform: 'win32' }` into the sandbox,
+// which hid a `ReferenceError: process is not defined` that
+// fired on every Up click in the real app. We now assert the
+// handler runs cleanly WITHOUT any `process` global in the
+// sandbox — exactly the live-renderer shape.
+test('fb-up: handler must NOT reference the `process` global (real renderer has none)', async () => {
+  const sandbox = makeSandbox();
+  // Defensive: if a future change re-adds `process` to the
+  // sandbox, fail loudly so the test stops "lying" about
+  // behaviour it doesn't actually verify.
+  assert.equal(sandbox.process, undefined,
+    'this test only proves anything when the sandbox has NO `process` global — the live renderer is the same shape');
+  loadAppJs(sandbox);
+  // The exact case that threw in production: Up from a real
+  // subfolder. Pre-fix: handler reached `process.platform`,
+  // threw, try/catch swallowed it, fbDir never changed.
+  sandbox.state.fbDir = 'C:\\Users\\me\\Pictures\\MiniMax-Assets\\2024\\deeper';
+  clickFbUp(sandbox);
+  await flush();
+  assert.equal(sandbox.state.fbDir, 'C:\\Users\\me\\Pictures\\MiniMax-Assets\\2024',
+    'Up from a subfolder MUST climb one level even when `process` is undefined (live renderer has no `process`)');
+  // Drive-root case: a click on Up while at D:\ used to throw
+  // inside isDriveRoot() and the click was silently swallowed.
+  sandbox.state.fbDir = 'D:\\';
+  clickFbUp(sandbox);
+  await flush();
+  assert.equal(sandbox.state.fbDir, '__DRIVES__',
+    'Up from a drive root MUST jump to the drives list even when `process` is undefined');
 });
