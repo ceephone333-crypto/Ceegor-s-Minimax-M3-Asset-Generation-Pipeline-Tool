@@ -50,12 +50,44 @@ function showTab(name) {
   // can restore it on the next visit (per-tab folder persistence).
   const prev = state.currentTab;
   if (prev && state.fbDir) state.fbDirs[prev] = state.fbDir;
+  // v1.1.26: breadcrumb every tab switch so the file log
+  // captures the user's actual flow (which tab they were on
+  // when something broke).
+  if (typeof window.logAction === 'function') {
+    window.logAction('tab', 'switch', { from: prev || '(none)', to: name });
+  }
 
   state.currentTab = name;
   // Restore the saved folder for the tab we're entering. refreshBrowser
   // will pick it up via state.fbDirs[currentTab].
+  //
+  // Bug-fix (D3, _temp4.md): when the entering tab has no saved folder
+  // (never visited), `state.fbDir` used to be left untouched — silently
+  // inheriting whatever folder the tab we just LEFT was showing. The
+  // browser would then display (and ensureSubDir would write into) the
+  // previous tab's folder, e.g. switching image -> music (music never
+  // visited) put music files in the image folder. Reset to the
+  // output_dir root instead — refreshBrowser() below will still prefer
+  // <output_dir>/music if that subfolder already exists, so a returning
+  // user's per-tab grouping is unaffected; only the "no folder at all
+  // recorded yet" case changes.
   const saved = state.fbDirs[name];
   if (saved) state.fbDir = saved;
+  // v1.1.16 (reported by user — "we still have the behavior for
+  // new users, that if they don't setup a folder, they end up in a
+  // folder explorer view of a not existing folder, including an
+  // error message"): the previous fallback was
+  // `state.config.output_dir || ''`. For a fresh install with an
+  // empty config, that's '' and the file browser shows an
+  // "outside allowed directories" error. We now leave state.fbDir
+  // empty here when nothing is set, and let refreshBrowser() (in
+  // fileBrowser1.js) resolve the platform-default output dir
+  // (%APPDATA%\MiniMaxAssetTool\generated) as the last-ditch
+  // fallback. That path always exists and is on the
+  // `getAllowedRoots()` allow-list, so the user lands on a real
+  // folder instead of an error screen.
+  else if (state.config.output_dir) state.fbDir = state.config.output_dir;
+  else state.fbDir = '';
   for (const t of $$('.tab')) t.classList.toggle('active', t.dataset.tab === name);
   for (const p of $$('.tabpanel')) p.classList.toggle('active', p.id === `tab-${name}`);
   // Refresh file browser to the matching subfolder if present

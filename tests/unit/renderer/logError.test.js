@@ -159,3 +159,61 @@ test('debugLog: window-level error event routes to logToFile', () => {
   assert.ok(sawBoom || fileCalls.length >= 0,
     'expected debug logger to be wired (probe + global error handler)');
 });
+
+test('logAction: writes a breadcrumb to logToFile (not to console.log)', () => {
+  const sandbox = makeSandbox();
+  loadDebugLog(sandbox);
+  assert.equal(typeof sandbox.logAction, 'function');
+  // Reset the call buffer (the probe may have fired before this).
+  sandbox.calls.length = 0;
+  sandbox.logAction('tab', 'switch', { from: 'image', to: 'music' });
+  const fileCalls = sandbox.calls.filter((c) => c[0] === 'logToFile');
+  assert.ok(fileCalls.length >= 1, 'logAction must write to logToFile');
+  // The line must contain the category + action + detail.
+  const line = String(fileCalls[0][1]);
+  assert.ok(line.includes('ACT'), `logToFile line must have ACT prefix, got: ${line}`);
+  assert.ok(line.includes('tab:switch'), `line must include category:action, got: ${line}`);
+  assert.ok(line.includes('from=image'), `line must include detail kvs, got: ${line}`);
+  // logAction does NOT spam console.log (DevTools stays clean).
+  const consoleCalls = sandbox.calls.filter((c) => c[0] === 'log');
+  assert.equal(consoleCalls.length, 0, 'logAction must NOT call console.log');
+});
+
+test('logAction: tolerates missing details and bad inputs', () => {
+  const sandbox = makeSandbox();
+  loadDebugLog(sandbox);
+  sandbox.calls.length = 0;
+  assert.doesNotThrow(() => sandbox.logAction('cat', 'act'));
+  assert.doesNotThrow(() => sandbox.logAction(null, null, null));
+  assert.doesNotThrow(() => sandbox.logAction('cat', 'act', 'plain string'));
+  assert.doesNotThrow(() => sandbox.logAction('cat', 'act', { nested: { ok: true } }));
+  // All calls must have reached logToFile.
+  const fileCalls = sandbox.calls.filter((c) => c[0] === 'logToFile');
+  assert.ok(fileCalls.length >= 4);
+});
+
+test('logAction: ring buffer (getActionTrail) keeps last 500 entries', () => {
+  const sandbox = makeSandbox();
+  loadDebugLog(sandbox);
+  sandbox.calls.length = 0;
+  for (let i = 0; i < 600; i++) sandbox.logAction('cat', 'act', { i });
+  const trail = sandbox.getActionTrail();
+  assert.ok(Array.isArray(trail), 'getActionTrail must return an array');
+  assert.ok(trail.length === 500, `trail must cap at 500, got ${trail.length}`);
+  // The first entry should be #100 (oldest 100 were trimmed), the
+  // last should be #599.
+  assert.equal(trail[0].details, 'i=100');
+  assert.equal(trail[trail.length - 1].details, 'i=599');
+});
+
+test('logAction: serialises object details as key=value pairs', () => {
+  const sandbox = makeSandbox();
+  loadDebugLog(sandbox);
+  sandbox.calls.length = 0;
+  sandbox.logAction('gen', 'start', { tab: 'image', variant: 'a', n: 4 });
+  const fileCalls = sandbox.calls.filter((c) => c[0] === 'logToFile');
+  const line = String(fileCalls[0][1]);
+  assert.ok(line.includes('tab=image'));
+  assert.ok(line.includes('variant=a'));
+  assert.ok(line.includes('n=4'));
+});

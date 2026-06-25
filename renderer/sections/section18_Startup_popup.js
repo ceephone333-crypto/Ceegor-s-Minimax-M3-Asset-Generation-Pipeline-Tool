@@ -66,6 +66,15 @@ function openGatedPopup(id, build, opts) {
   // `opts.force` bypasses the policy gate for popups that are NOT
   // informational nags but required flows (the first-time setup form).
   if (!(opts && opts.force) && !shouldShowPopup(id)) {
+    // v1.1.26: log the suppression too — when the user reports
+    // "I never see the welcome popup", the breadcrumb must show
+    // the policy decision.
+    if (typeof window.logAction === 'function') {
+      window.logAction('popup', 'suppressed-by-policy', {
+        id,
+        policy: state.popupPolicy || '(unset)',
+      });
+    }
     // Bug-fix (reported by user — popups behaviour): even when the popup
     // is suppressed by policy, fire the caller's onClose hook so any
     // bookkeeping it set up BEFORE calling us is balanced. The
@@ -88,7 +97,15 @@ function openGatedPopup(id, build, opts) {
     }
     return null;
   }
-  const markSeen = () => markPopupSeen(id);
+  if (typeof window.logAction === 'function') {
+    window.logAction('popup', 'show', { id, forced: !!(opts && opts.force) });
+  }
+  const markSeen = () => {
+    if (typeof window.logAction === 'function') {
+      window.logAction('popup', 'mark-seen', { id });
+    }
+    markPopupSeen(id);
+  };
   return showModal((m, close) => {
     build(m, close, markSeen);
   }, opts || null);

@@ -44,7 +44,7 @@ const helpTopics = {
   'topbar.settingsBtn':    { title: 'Settings',                 text: 'Open the main Settings dialog: API key, output folder, region, theme, style presets, image upscaling, image optimization, and the optional add-ons manager (Real-ESRGAN, IS-Net background-removal).' },
 
   // -- Folder browser --
-  'sidebar.upBtn':         { title: 'Up',                       text: 'Go to the parent folder of the current folder browser location.' },
+  'sidebar.upBtn':         { title: 'Up one level',             text: 'Go to the parent folder of the current folder browser location.\n\nThe button has four distinct states:\n  1) Mid-tree folder — climbs one parent level.\n  2) The output_dir root — climbs one parent (or jumps to the drives list if output_dir IS a drive root).\n  3) A drive root (e.g. D:\\) — jumps to the drives list.\n  4) The drives list — DISABLED (you\'re already at the top; pick a drive to continue).\n\nThe current level is shown as a tooltip on the button. The Up button is also disabled when the folder browser is empty (no folder has been opened yet) — clicking it lands on the configured output_dir or the drives list.' },
   'sidebar.refreshBtn':    { title: 'Refresh',                  text: 'Re-scan the current folder and re-render the file list. Use this if you added or removed files in another program (e.g. Windows Explorer) and the browser is out of date.' },
   'sidebar.filter':        { title: 'Filter',                   text: 'Type to filter the file list by name. Only files whose name contains the typed text are shown. Clear the field to show everything again.' },
   'sidebar.sort':          { title: 'Sort',                     text: 'Sort the file browser. The available modes are: Name ↑/↓ (alphabetical, with "natural" number ordering so file_2.png sorts before file_10.png), Size ↑/↓ (by file size; directories always come first regardless of the chosen mode), Newest / Oldest (by last-modified date), Created ↑/↓ (by creation date — falls back to last-modified on filesystems that don\'t track creation, e.g. FAT32), and Type (by file extension). The selected sort is remembered across restarts.' },
@@ -104,6 +104,7 @@ const helpTopics = {
   // config.txt is NOT updated and the next launch starts
   // empty. Useful on shared / kiosk machines.
   'settings.apiKeyNoSave': { title: 'Don\'t save the API key', text: 'When this is checked, the entered API key is kept in memory for this session only — config.txt is NOT written, and the next launch starts with an empty key. Use this on shared / kiosk machines where you don\'t want the next user to find your key. When unchecked, behaviour is unchanged: the key is written to config.txt and re-loaded on every launch.' },
+  'settings.firstTimeSetup': { title: 'Guided setup',            text: 'Re-opens the first-run form (API key + output folder). Use this if you skipped the initial setup, want to walk through both fields together, or are handing the tool to someone else and want to start from a clean slate. The form is identical to the one a brand-new install sees — your current values are pre-filled so you only have to fix what\'s missing.' },
   'settings.outputDir':    { title: 'Output folder',            text: 'Where every generated file (image, audio, music, video) is written. Pick a folder with enough free space — videos and high-resolution images can be hundreds of megabytes each. The default is a "generated" folder next to the executable.' },
   'settings.configFile':   { title: 'Config file location',     text: 'Where config.txt lives on disk (read-only display). This is the file the tool reads at launch to load your API key, output folder, region, theme, and styles. You can back it up here, or move it manually if you want the tool to start fresh on the next launch.' },
   // v1.1.13 (reported by user): the export format the user
@@ -140,6 +141,18 @@ const helpTopics = {
   'log.clear':             { title: 'Clear log',                text: 'Erase the log. This is purely cosmetic — the next generation will start a fresh log. Useful when you are about to do a deliberate test and want a clean log of the test run only.' },
   'log.toggle':            { title: 'Collapse / expand the log', text: 'Collapse the log pane to a small button bar on the LEFT side so the picture preview can use the rest of the row. Click again to expand. The picture preview is locked to the RIGHT side of the window — there is never empty space to its right.' },
   'log.structured':        { title: 'Log events',               text: 'Each row in the log pane is one event. The columns are: time stamp, category icon (✎ generate, ⤴ upscale, ◐ background, ∇ optimize, ▤ batch, ! error, × cancel, · info), result icon (✓ for success, ✕ for error), and a one-line headline. Click anywhere on a row to select it; click the small ▸ chevron to expand and see the full details. Use Ctrl+click and Shift+click to multi-select multiple rows. The Copy button copies the selected rows (or all rows if nothing is selected) in a plain-text format that includes both the headline and the expanded details, so a support ticket gets the full picture.' },
+  // v1.1.18 (reported by user — "some popups only contain one word"):
+  // these six log-bar buttons previously had `data-help-topic` but
+  // no entry in the centralised helpTopics registry, so clicking
+  // the help (?) icon on them showed a modal titled just "Help"
+  // with the data-help-topic key as the body. Now each has a
+  // proper title + a useful description.
+  'log.jumpNewest':        { title: 'Jump to newest log row',   text: 'Scroll the log pane to the most recent row. The log auto-scrolls by default while a generation is running — this button is the manual shortcut (same as the Home key).' },
+  'log.jumpOldest':        { title: 'Jump to oldest log row',   text: 'Scroll the log pane to the first (oldest) row. Useful when you want to inspect the start of a long run. Same as the End key.' },
+  'log.collapseAll':       { title: 'Collapse every log row',   text: 'Fold every expanded log row back to its one-line headline. The expanded details stay in memory — clicking the ▸ chevron on a row re-expands it. Handy when you want to skim a long log.' },
+  'log.expandAll':         { title: 'Expand every log row',     text: 'Show the full details of every log row (every ▸ chevron flips to ▾). Useful when you want to copy the whole log — the Copy button copies the expanded details, so expanding first gets you the full picture.' },
+  'sidebar.typeFilter':    { title: 'Asset-type filter',        text: 'Filter the file browser by asset type. The dropdown options are: All types (default, no filter), 🖼 Images (PNG/JPG/JPEG/WebP/GIF/BMP), 🎵 Audio (MP3/WAV/FLAC/Opus/OGG/M4A/PCM), 🎬 Video (MP4/WebM/MOV), and 📄 Text (TXT, LRC, JSON, MD, SRT). The selected type is remembered across restarts. Combine with the name filter (above) to narrow further (e.g. "type=Images + name=cat" shows only image files whose name contains "cat").' },
+  'sidebar.bulkTrim':      { title: 'Bulk-trim selected audio', text: 'Trim the leading and trailing silence from every audio file currently selected in the file browser (Ctrl+click and Shift+click to select multiple). Useful when a batch generation produced files that all start/end with silence. Uses the same waveform trimmer as the per-file right-click action — opens one dialog showing the first selected file, then applies the same trim offsets to all of them. Audio files only; non-audio selections are silently skipped.' },
   'preview.clear':         { title: 'Clear picture preview',    text: 'Reset the picture preview pane to its empty state. The file in the file browser is not touched — only the preview pane is cleared.' },
   'preview.pane':          { title: 'Picture preview pane',     text: 'When you click an image in the folder browser, it is shown here. The image is fit to the pane (no cropping, no zoom). For multi-image runs (a batch of 4 variants), the pane splits into a grid of thumbnails — click any thumbnail to open it at 1:1 size.' },
   'preview.overlayNav':    { title: 'Image overlay navigation', text: 'When the image overlay is open (1:1 view from a thumbnail click), use the left and right arrow keys to switch to the previous / next image. If the overlay was opened from a multi-image batch (e.g. 4 variants from a single Generate click), the arrow keys step through the batch in order. If it was opened from a single image in the file browser, the arrow keys step through all the images in the current folder, in the same order the folder explorer shows them. The position counter ("(3 / 12)") in the overlay header tells you where you are in the sequence. The "‹" and "›" buttons in the overlay header do the same thing with the mouse.' },
@@ -190,17 +203,38 @@ function showHelp(topicKey, fallbackText) {
   // Open a modal that displays the help text for the given
   // topic key. If the key is not in the registry, fall back to
   // whatever inline text the caller supplied.
+  //
+  // v1.1.18 (reported by user — "some popups only contain one
+  // word"): when an inline string is passed as topicKey (the
+  // common case for `buildParamRow({ help: '...' })`), the
+  // previous version showed a modal titled "Help" with the
+  // text in the body. That's useless — the title is a one-word
+  // placeholder that doesn't tell the user which option they're
+  // reading about. The new behaviour: derive a proper title
+  // from the parent <label> of the ? button (i.e. the row label
+  // like "--voice" or "Sample rate") so the modal title tells
+  // the user WHICH setting this help text is for.
   let topic = null;
   if (topicKey && helpTopics[topicKey]) {
     topic = helpTopics[topicKey];
   } else if (topicKey) {
-    // Unrecognised key: synthesize a minimal entry so the
-    // user still sees *something* instead of a blank modal.
-    topic = { title: 'Help', text: topicKey };
+    // Inline help string. Synthesize a title from the
+    // parent row label so the modal isn't titled just "Help".
+    const title = deriveTitleFromDom() || 'Help';
+    topic = { title, text: topicKey };
   } else if (fallbackText) {
-    topic = { title: 'Help', text: fallbackText };
+    const title = deriveTitleFromDom() || 'Help';
+    topic = { title, text: fallbackText };
   } else {
     topic = { title: 'Help', text: 'No help text available for this option.' };
+  }
+  // v1.1.18: derive the modal title BEFORE we blur (blur moves
+  // activeElement to body, which would lose the parent-row info).
+  // Move the title derivation up here so the synthesized topic
+  // already has the right title.
+  if (!topic.title || topic.title === 'Help') {
+    const derived = deriveTitleFromDom();
+    if (derived) topic.title = derived;
   }
   // Bug-fix: the ? help button kept its :focus / :focus-visible blue
   // background after the modal opened (it stays focused until the
@@ -241,11 +275,54 @@ function showHelp(topicKey, fallbackText) {
       el('button', { class: 'primary', onclick: close }, 'Got it'),
     ]));
   }, { id: modalId });
+  // v1.1.26: log every help-modal open + the resolved topic so
+  // the file log captures which ? the user clicked. Without
+  // this, the user's "settings popup keeps appearing" reports
+  // had no breadcrumb — we couldn't tell if the modal was fired
+  // by a click or by something else.
+  if (typeof window.logAction === 'function') {
+    window.logAction('help', 'show', {
+      topic: topicKey || '(inline)',
+      title: topic.title,
+      text_len: (topic.text || '').length,
+    });
+  }
 }
 // Phase 3 Block 8: setupHelpDelegation() extrahiert nach
 // renderer/components/HelpDelegation.js. Nutzt window.showHelp
 // (gesetzt von app.js am File-Ende).
 
+
+// Derive a sensible modal title from the DOM at click-time.
+// We walk up from the active (focused / hovered) element to
+// the nearest .row > label and use its first line of text
+// (minus the trailing "?" we just clicked). Falls back to
+// document.title when nothing useful is found.
+function deriveTitleFromDom() {
+  try {
+    // The clicked button is still focused right before we blur
+    // it (see the blur() block in showHelp). Walk up to the
+    // closest .row and read the <label>.
+    let node = document.activeElement;
+    // activeElement may already be the body if the click
+    // originated from a non-focusable element. Try the
+    // hovered element next (mouseover leaves it as relatedTarget).
+    if ((!node || node === document.body) && typeof document.querySelector === 'function') {
+      node = document.querySelector('.help-btn:hover') || document.querySelector('.help-btn');
+    }
+    if (!node || typeof node.closest !== 'function') return null;
+    const row = node.closest('.row');
+    if (!row) return null;
+    const label = row.querySelector('label');
+    if (!label) return null;
+    // Strip the trailing "?" the helpButton adds and trim.
+    const text = (label.textContent || '').replace(/\?\s*$/, '').trim();
+    if (!text) return null;
+    return text;
+  } catch (_) {
+    return null;
+  }
+}
 
 // Phase 3 Block 4: setupHoverHelpTooltips() extrahiert nach
 // renderer/components/HelpTooltip.js. Shim-Alias unten.

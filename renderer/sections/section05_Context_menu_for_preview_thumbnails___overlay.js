@@ -178,6 +178,7 @@ async function promptNewFolder() {
 // 0 App-Coupling (nur escapeHtml über window).
 const { quotaSeg: _quotaSeg, formatQuotaModel: _formatQuotaModel } = window.QuotaFormatter;
 async function refreshQuota() {
+  if (typeof window.logAction === 'function') window.logAction('quota', 'refresh-start');
   const el2 = $('#quota-value');
   el2.innerHTML = '<span class="spinner"></span>';
   const r = await window.api.quota();

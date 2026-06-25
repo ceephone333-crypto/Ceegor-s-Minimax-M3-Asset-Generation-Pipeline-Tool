@@ -32,6 +32,9 @@
 // success) so the user can install all three components in one
 // sitting.
 async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
+  if (typeof window.logAction === 'function') {
+    window.logAction('install', 'open-addons', { autoOpened, force });
+  }
   // Probe both backends BEFORE opening the modal. If everything
   // is already installed (e.g. the developer pre-bundled the
   // files in ./bin/ before building the portable .exe), skip the
@@ -221,6 +224,8 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
           } else {
             reProgress.textContent = 'Downloading…';
           }
+        } else if (data.phase === 'verify') {
+          reProgress.textContent = 'Verifying checksum…';
         } else if (data.phase === 'extract') {
           reProgress.textContent = 'Extracting…';
         } else if (data.phase === 'done') {
@@ -253,27 +258,45 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
       window.api.installOpenUrl('https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0');
     });
     rePick.addEventListener('click', async () => {
-      const r = await window.api.installPickAndCopy('realesrgan-binary');
-      if (r && r.ok) {
-        toast('Real-ESRGAN binary installed.', 'ok', 2500);
-        await refreshAll();
-      } else if (r && r.canceled) {
-        // Silent — user just cancelled the dialog.
-      } else {
-        toast('Install failed: ' + ((r && r.error) || 'unknown'), 'err', 6000);
+      // v1.1 (audit L2): wrap in try/catch — the sibling download
+      // handler already had this; a rejected IPC (rare but possible
+      // on main-process crash mid-call) would otherwise surface as
+      // an unhandled promise rejection with no user feedback.
+      reDownload.disabled = true; rePick.disabled = true; reOpenPage.disabled = true;
+      try {
+        const r = await window.api.installPickAndCopy('realesrgan-binary');
+        if (r && r.ok) {
+          toast('Real-ESRGAN binary installed.', 'ok', 2500);
+          await refreshAll();
+        } else if (r && r.canceled) {
+          // Silent — user just cancelled the dialog.
+        } else {
+          toast('Install failed: ' + ((r && r.error) || 'unknown'), 'err', 6000);
+        }
+      } catch (e) {
+        toast('Install failed: ' + ((e && e.message) || String(e)), 'err', 6000);
+      } finally {
+        reDownload.disabled = false; rePick.disabled = false; reOpenPage.disabled = false;
       }
     });
 
     // IS-Net binary: pick file (user built it from the README's C# ref) + open README.
     isBinPick.addEventListener('click', async () => {
-      const r = await window.api.installPickAndCopy('isnetbg-binary');
-      if (r && r.ok) {
-        toast('isnetbg binary installed.', 'ok', 2500);
-        await refreshAll();
-      } else if (r && r.canceled) {
-        // Silent.
-      } else {
-        toast('Install failed: ' + ((r && r.error) || 'unknown'), 'err', 6000);
+      isBinPick.disabled = true; isBinOpenReadme.disabled = true;
+      try {
+        const r = await window.api.installPickAndCopy('isnetbg-binary');
+        if (r && r.ok) {
+          toast('isnetbg binary installed.', 'ok', 2500);
+          await refreshAll();
+        } else if (r && r.canceled) {
+          // Silent.
+        } else {
+          toast('Install failed: ' + ((r && r.error) || 'unknown'), 'err', 6000);
+        }
+      } catch (e) {
+        toast('Install failed: ' + ((e && e.message) || String(e)), 'err', 6000);
+      } finally {
+        isBinPick.disabled = false; isBinOpenReadme.disabled = false;
       }
     });
     isBinOpenReadme.addEventListener('click', () => {
@@ -290,14 +313,21 @@ async function openOptionalAddons({ autoOpened = false, force = false } = {}) {
 
     // IS-Net model: pick file + open HuggingFace mirror.
     isModelPick.addEventListener('click', async () => {
-      const r = await window.api.installPickAndCopy('isnetbg-model');
-      if (r && r.ok) {
-        toast('isnet-general-use.onnx installed.', 'ok', 2500);
-        await refreshAll();
-      } else if (r && r.canceled) {
-        // Silent.
-      } else {
-        toast('Install failed: ' + ((r && r.error) || 'unknown'), 'err', 6000);
+      isModelPick.disabled = true; isModelOpenPage.disabled = true;
+      try {
+        const r = await window.api.installPickAndCopy('isnetbg-model');
+        if (r && r.ok) {
+          toast('isnet-general-use.onnx installed.', 'ok', 2500);
+          await refreshAll();
+        } else if (r && r.canceled) {
+          // Silent.
+        } else {
+          toast('Install failed: ' + ((r && r.error) || 'unknown'), 'err', 6000);
+        }
+      } catch (e) {
+        toast('Install failed: ' + ((e && e.message) || String(e)), 'err', 6000);
+      } finally {
+        isModelPick.disabled = false; isModelOpenPage.disabled = false;
       }
     });
     isModelOpenPage.addEventListener('click', () => {

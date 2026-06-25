@@ -90,6 +90,12 @@ async function init() {
   // body is intentionally inline (not a separate function) so
   // the fbUpButtonBehavior.test.js extraction still matches.
   $('#fb-up').addEventListener('click', () => {
+    // v1.1.26: log the click BEFORE the handler runs so the
+    // breadcrumb is present even if the handler silently does
+    // nothing (the user reported this exact symptom).
+    if (typeof window.logAction === 'function') {
+      window.logAction('file-browser', 'click-up', { fbDir: state.fbDir || '', output_dir: state.config.output_dir || '' });
+    }
     try {
       // Disabled at the drives list — the user must pick a drive
       // first to continue. The button is also disabled visually
@@ -162,7 +168,17 @@ async function init() {
   updateFbUpButton();
   // File browser live filter
   const fbSearch = $('#fb-search');
-  if (fbSearch) fbSearch.addEventListener('input', window.applyFileSearch || applyFileSearch);
+  if (fbSearch) fbSearch.addEventListener('input', (e) => {
+    // v1.1.26: breadcrumb per keystroke (rate-limited — every 5th
+    // keystroke to avoid spamming the file log on a fast typer).
+    if (typeof window.logAction === 'function') {
+      const v = e && e.target ? e.target.value : '';
+      if (v.length === 0 || v.length % 5 === 0 || v.length > 50) {
+        window.logAction('file-browser', 'filter-input', { len: v.length });
+      }
+    }
+    (window.applyFileSearch || applyFileSearch)();
+  });
   // v1.1.11: asset-type filter (Images / Audio / Video / Text).
   // Re-apply the live filter on change so the list shrinks /
   // expands to match the new type.
@@ -171,6 +187,9 @@ async function init() {
     fbTypeFilter.value = state.fbTypeFilter || '';
     fbTypeFilter.addEventListener('change', () => {
       state.fbTypeFilter = fbTypeFilter.value;
+      if (typeof window.logAction === 'function') {
+        window.logAction('file-browser', 'type-filter', { value: fbTypeFilter.value || '(all)' });
+      }
       scheduleStateSave();
       (window.applyFileSearch || applyFileSearch)();
     });
@@ -187,6 +206,9 @@ async function init() {
     fbSort.value = state.fbSort || 'name-asc';
     fbSort.addEventListener('change', () => {
       state.fbSort = fbSort.value;
+      if (typeof window.logAction === 'function') {
+        window.logAction('file-browser', 'sort-change', { mode: fbSort.value });
+      }
       scheduleStateSave();
       if (Array.isArray(state._fbItems) && state._fbItems.length) {
         const sorted = window.FbSort
@@ -197,15 +219,26 @@ async function init() {
       }
     });
   }
-  $('#fb-refresh').addEventListener('click', () => refreshBrowser());
-  $('#fb-new').addEventListener('click', () => promptNewFolder());
-  $('#fb-open').addEventListener('click', () => window.api.fbReveal(state.fbDir || state.config.output_dir || ''));
+  $('#fb-refresh').addEventListener('click', () => {
+    if (typeof window.logAction === 'function') window.logAction('file-browser', 'click-refresh', { fbDir: state.fbDir || '' });
+    refreshBrowser();
+  });
+  $('#fb-new').addEventListener('click', () => {
+    if (typeof window.logAction === 'function') window.logAction('file-browser', 'click-new-folder', { fbDir: state.fbDir || '' });
+    promptNewFolder();
+  });
+  $('#fb-open').addEventListener('click', () => {
+    const target = state.fbDir || state.config.output_dir || '';
+    if (typeof window.logAction === 'function') window.logAction('file-browser', 'click-open-explorer', { target });
+    window.api.fbReveal(target);
+  });
   // Bug-fix (2026-06-20): the "⚙ Options" button (folder columns /
   // thumbnails) had its handler defined (openFolderOptions in
   // fileBrowser1.js) but it was never wired to the button, so clicking
   // it did nothing. The matching modal opens via showModal.
   const fbOptionsBtn = $('#fb-options');
   if (fbOptionsBtn) fbOptionsBtn.addEventListener('click', () => {
+    if (typeof window.logAction === 'function') window.logAction('file-browser', 'click-options');
     if (typeof openFolderOptions === 'function') openFolderOptions();
   });
   // Bug-fix (2026-06-20, reported by user): the 📂 button was added to
@@ -220,8 +253,13 @@ async function init() {
   // inside the main-process handler) so subsequent reads / writes /
   // moves work without any extra "allow" gesture.
   $('#fb-pick').addEventListener('click', async () => {
+    if (typeof window.logAction === 'function') window.logAction('file-browser', 'click-pick-folder');
     const picked = await window.api.pickFolder();
-    if (!picked) return;
+    if (!picked) {
+      if (typeof window.logAction === 'function') window.logAction('file-browser', 'pick-cancelled');
+      return;
+    }
+    if (typeof window.logAction === 'function') window.logAction('file-browser', 'picked', { path: picked });
     state.fbDir = picked;
     if (state.currentTab) state.fbDirs[state.currentTab] = picked;
     scheduleStateSave();
@@ -411,6 +449,19 @@ async function init() {
   if (!Array.isArray(state.config.styles)) state.config.styles = [];
   if (!state.config.theme) state.config.theme = 'dark';
   applyTheme(state.config.theme);
+  // v1.1.26: log what config.txt actually contains (masked API
+  // key) so the file log captures the boot state without DevTools.
+  if (typeof window.logAction === 'function') {
+    const c = state.config || {};
+    window.logAction('boot', 'config-loaded', {
+      api_key_set: !!(c.api_key && c.api_key.length > 0),
+      api_key_len: (c.api_key && c.api_key.length) || 0,
+      output_dir: c.output_dir || '(empty)',
+      region: c.region || '(empty)',
+      theme: c.theme || '(empty)',
+      styles: Array.isArray(c.styles) ? c.styles.length : 0,
+    });
+  }
   if (!state.config.api_key) {
     toast('No API key. Click ⚙ to add one.', 'warn', 6000);
   }
@@ -418,6 +469,19 @@ async function init() {
   // Build tabs (assign ids + load saved state + start autosave)
   const savedState = await window.api.stateGet() || {};
   state.tabSettings = savedState.tabs || {};
+  // v1.1.26: log which persisted keys came back from disk so a
+  // bug like "popupPolicy silently reset to default" leaves a
+  // breadcrumb in renderer-error.log.
+  if (typeof window.logAction === 'function') {
+    const present = Object.keys(savedState || {}).filter((k) => savedState[k] != null);
+    window.logAction('boot', 'state-loaded', {
+      keys: present.join(',') || '(empty)',
+      popupPolicy: String(savedState.popupPolicy || '(default)'),
+      lastSeenVersion: String(savedState.lastSeenVersion || '(none)'),
+      currentTab: String(savedState.currentTab || '(none)'),
+      seenPopups: Object.keys(savedState.seenPopups || {}).length,
+    });
+  }
   // Bug-fix #1+#2 (2026-06-19): round-trip every persisted key through
   // the canonical STATE_PERSIST_KEYS list (defined in section24_State.js).
   // Previously only ~5 of ~18 keys were loaded, and the upscaleSettings
@@ -468,11 +532,43 @@ async function init() {
   // Load batches
   state.batches = await window.api.batchesGet();
   _refreshBatchButtons();
+  if (typeof window.logAction === 'function') {
+    window.logAction('boot', 'batches-loaded', {
+      image: (state.batches && state.batches.image) ? state.batches.image.length : 0,
+      speech: (state.batches && state.batches.speech) ? state.batches.speech.length : 0,
+      music: (state.batches && state.batches.music) ? state.batches.music.length : 0,
+      video: (state.batches && state.batches.video) ? state.batches.video.length : 0,
+    });
+  }
+
+  // v1.1.26: detect addons at boot so the file log captures which
+  // optional binaries are present. Previously a missing
+  // Real-ESRGAN or IS-Net silently degraded upscale/remove-bg
+  // with no breadcrumb.
+  try {
+    const reAvail = await window.api.realesrganAvailable();
+    if (typeof window.logAction === 'function') {
+      window.logAction('boot', 'addon-realesrgan', { available: !!(reAvail && reAvail.ok && reAvail.available) });
+    }
+  } catch (e) {
+    if (typeof window.logWarn === 'function') window.logWarn('boot', 'addon-realesrgan-detect', e);
+  }
+  try {
+    const isnetAvail = await window.api.isnetbgAvailable();
+    if (typeof window.logAction === 'function') {
+      window.logAction('boot', 'addon-isnetbg', { available: !!(isnetAvail && isnetAvail.ok && isnetAvail.available) });
+    }
+  } catch (e) {
+    if (typeof window.logWarn === 'function') window.logWarn('boot', 'addon-isnetbg-detect', e);
+  }
 
   // Install global keyboard shortcuts
   installKeyboardShortcuts();
   setupLastCmdTooltips();
   setStatus('Ready');
+  if (typeof window.logAction === 'function') {
+    window.logAction('boot', 'init-complete', { startTab });
+  }
 
   // Initial values
   // Bug-fix (2026-06-19): the previous fallback was
@@ -573,6 +669,9 @@ function applyTheme(theme) {
 
 function toggleTheme() {
   const next = state.theme === 'light' ? 'dark' : 'light';
+  if (typeof window.logAction === 'function') {
+    window.logAction('theme', 'toggle', { from: state.theme, to: next });
+  }
   applyTheme(next);
   // Persist immediately
   state.config.theme = next;
@@ -1018,35 +1117,47 @@ function installKeyboardShortcuts() {
       const genBtn = $(`#tab-${tab} button.primary`);
       const tabRunning = !!(window.JobRunner && typeof window.JobRunner.isTabRunning === 'function'
         && window.JobRunner.isTabRunning(tab));
+      if (typeof window.logAction === 'function') {
+        window.logAction('shortcut', 'Ctrl+Enter', { tab, tabRunning, btn_state: genBtn ? genBtn.textContent : '(none)' });
+      }
       if (genBtn && !tabRunning && state.generating !== tab && genBtn.textContent !== 'Cancel') { genBtn.click(); e.preventDefault(); }
       return;
     }
     if (cmd && ['1','2','3','4'].includes(e.key)) {
       const tabs = ['image','speech','music','video'];
       const idx = parseInt(e.key, 10) - 1;
+      if (typeof window.logAction === 'function') {
+        window.logAction('shortcut', `Ctrl+${parseInt(e.key, 10)}`, { to: tabs[idx] || '(unknown)' });
+      }
       if (tabs[idx]) { showTab(tabs[idx]); e.preventDefault(); }
       return;
     }
     if (cmd && (e.key === 'b' || e.key === 'B')) {
+      if (typeof window.logAction === 'function') window.logAction('shortcut', 'Ctrl+B', { tab: state.currentTab });
       openBatchManager(state.currentTab); e.preventDefault(); return;
     }
     if (cmd && (e.key === 's' || e.key === 'S')) {
+      if (typeof window.logAction === 'function') window.logAction('shortcut', 'Ctrl+S');
       openSettings(); e.preventDefault(); return;
     }
     if (cmd && (e.key === 't' || e.key === 'T')) {
+      if (typeof window.logAction === 'function') window.logAction('shortcut', 'Ctrl+T');
       openStyleSettings(); e.preventDefault(); return;
     }
     if (cmd && (e.key === 'l' || e.key === 'L')) {
+      if (typeof window.logAction === 'function') window.logAction('shortcut', 'Ctrl+L', { from: state.theme });
       toggleTheme(); e.preventDefault(); return;
     }
     if (cmd && (e.key === 'f' || e.key === 'F') && !inField) {
       // Focus the file browser filter
+      if (typeof window.logAction === 'function') window.logAction('shortcut', 'Ctrl+F');
       const s = $('#fb-search');
       if (s) { s.focus(); s.select(); e.preventDefault(); }
       return;
     }
     if (cmd && (e.key === 'r' || e.key === 'R')) {
       // Refresh quota
+      if (typeof window.logAction === 'function') window.logAction('shortcut', 'Ctrl+R');
       refreshQuota(); toast('Quota refreshed.', 'ok', 1500); e.preventDefault(); return;
     }
   });
@@ -1589,10 +1700,16 @@ function scheduleStateSave() {
   clearTimeout(_stateSaveTimer);
   return new Promise((resolve) => {
     _pendingStateSaveResolvers.push(resolve);
+    if (typeof window.logAction === 'function') {
+      window.logAction('state-save', 'scheduled', { debounce_ms: 500 });
+    }
     _stateSaveTimer = setTimeout(() => {
       _stateSaveTimer = null;
       try {
         const r = saveAllStates();
+        if (typeof window.logAction === 'function') {
+          window.logAction('state-save', 'fired');
+        }
         if (r && typeof r.then === 'function') {
           r.then(_flushPendingStateSaveResolvers, _flushPendingStateSaveResolvers);
         } else {

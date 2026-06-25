@@ -397,6 +397,10 @@ window.TABS.music = {
     root.appendChild(tabFooter);
 
     genBtn.addEventListener('click', async () => {
+      // v1.1.26: breadcrumb the click BEFORE guards.
+      if (typeof window.logAction === 'function') {
+        window.logAction('generate', 'click-generate', { tab: 'music', has_api_key: !!state.config.api_key });
+      }
       // Bug-fix (2026-06-20): wrap the WHOLE click handler in a
       // try/catch. The previous layout only caught errors inside the
       // variant for-loop, so a ReferenceError thrown during pre-flight
@@ -415,10 +419,25 @@ window.TABS.music = {
       // key (set/cleared by armGenBtnWithCancel in app.js), so comparing
       // to 'music' (not just truthiness) keeps the Phase A per-tab gate
       // intact — a job on image/speech/video must NOT block music.
-      if ((window.JobRunner && window.JobRunner.isTabRunning('music')) || state.generating === 'music') return;
-      if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
+      if ((window.JobRunner && window.JobRunner.isTabRunning('music')) || state.generating === 'music') {
+        if (typeof window.logAction === 'function') {
+          window.logAction('generate', 'guard-blocked', { reason: 'already-running', tab: 'music' });
+        }
+        return;
+      }
+      if (!state.config.api_key) {
+        if (typeof window.logAction === 'function') {
+          window.logAction('generate', 'guard-blocked', { reason: 'no-api-key', tab: 'music' });
+        }
+        toast('No API key configured. Click ⚙ to open Settings.', 'err'); return;
+      }
       const promptText = buildFinalPrompt(styleRow.sel, prompt.input, extraPrefix());
-      if (!promptText) { toast('Prompt is required (style or manual input).', 'warn'); return; }
+      if (!promptText) {
+        if (typeof window.logAction === 'function') {
+          window.logAction('generate', 'guard-blocked', { reason: 'no-prompt', tab: 'music' });
+        }
+        toast('Prompt is required (style or manual input).', 'warn'); return;
+      }
       // Validate lyrics-mode input once, before looping variants
       if (mode.input.getValue() === 'lyrics') {
         // Bug-fix (2026-06-20, reported by user): `lyricsFile` is a

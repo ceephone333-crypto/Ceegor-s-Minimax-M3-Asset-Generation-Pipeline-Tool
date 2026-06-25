@@ -8,7 +8,8 @@ window.TABS.speech = {
     root.innerHTML = '';
 
     const text = buildParamRow('Text to read (prefilled, editable)',
-      { kind: 'textarea', value: this.prefilled, help: 'What the voice will say. Up to 10 000 characters across all models.' });
+      { kind: 'textarea', value: this.prefilled,
+        help: 'The text the voice will read aloud. Plain text — no special formatting, no Markdown.\n\nTips:\n  • Punctuation controls pacing — commas = short pause, periods = longer pause, question marks = rising intonation. They really do change how the voice sounds.\n  • Newlines = ~0.5s pause.\n  • "double quotes" to emphasize, CAPS for shouting.\n  • Some models support sound tags like (laughter) inline.\n  • Max 10 000 characters. The counter below shows the remaining quota.' });
     const styleRow = buildStyleRow('speech', 'Select a style preset. Its value is prepended (with a comma) to your text before the request is sent. Useful for narration tone, language hints, etc.');
     // v1.1.15 (reported by user): the previous version also
     // rendered a `buildStylePreviewBlock()` element under
@@ -42,24 +43,24 @@ window.TABS.speech = {
     const voice = buildParamRow('--voice', {
       kind: 'enum', default: 'English_expressive_narrator',
       options: [{ value: 'English_expressive_narrator', label: 'English_expressive_narrator (default)' }],
-      help: 'Which voice speaks. 300+ voices available — list loaded from `mmx speech voices`.',
+      help: 'Which voice speaks the text. Populated from `mmx speech voices` (300+ voices across many languages — each voice has a different age, gender, accent, personality).\n\nTips:\n  • Click the ▶ button next to the dropdown to preview a voice without consuming quota.\n  • Narrative voices for long-form reading, energetic voices for ads, calm voices for meditation.\n  • Some voices support emotions / sound effects; the dropdown only lists what is available for the current model.\n  • Default is a good neutral narrator for most uses.',
     });
     const speed = buildParamRow('--speed', {
       kind: 'number', default: 1.0, step: 0.05,
       options: [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0].map((v) => ({ value: v, label: String(v) })),
-      help: 'Playback speed multiplier. 1.0 = normal.',
+      help: 'Playback speed multiplier. 1.0 = normal speed.\n\n  • 0.5 = half speed (slow, deliberate — audiobooks / meditation).\n  • 0.75 = conversational pace.\n  • 1.0 = default.\n  • 1.25 = slightly fast.\n  • 1.5 = clearly fast (podcast-style).\n  • 2.0 = double speed (chipmunk — only for skimming).\n\nFor most uses 0.9–1.1 is the natural range. Above 1.5 noticeably distorts the voice.',
     });
     const volume = buildParamRow('--volume', {
       // API range is (0, 10] — 0 is NOT accepted (the request errors), so
       // the dropdown starts at 1.
       kind: 'number', default: 1, min: 1, max: 10, step: 1,
       options: [1, 2, 3, 5, 7, 10].map((v) => ({ value: v, label: String(v) })),
-      help: 'Volume level 1–10 (must be greater than 0).',
+      help: 'Output loudness gain, applied at generation time.\n\n  • 1 = normal (default).\n  • 2–3 = noticeably louder, good for noisy environments.\n  • 5–7 = very loud (use sparingly — clipping at peaks).\n  • 10 = maximum; expect audible distortion.\n\nNOT a final-stage normaliser — scales the model output. For precise loudness matching across clips, use the audio cutter\'s "Normalize" step after generation (LUFS-based true-peak limiting).',
     });
     const pitch = buildParamRow('--pitch', {
       kind: 'number', default: 0, min: -12, max: 12, step: 1,
       options: [-12, -6, -3, 0, 3, 6, 12].map((v) => ({ value: v, label: String(v) })),
-      help: 'Pitch shift in semitones. 0 = no change.',
+      help: 'Pitch shift in semitones (each = one piano key). 0 = no change.\n\n  • -12 = one octave down (deep-voiced narrator).\n  • -6 = half-octave down.\n  • 0 = default.\n  • +6 = half-octave up.\n  • +12 = one octave up (chipmunk / child voice).\n\nStick to ±2 for subtle changes. Beyond ±6 sounds unnatural, beyond ±10 has artifacts.',
     });
     const format = buildParamRow('--format', {
       kind: 'enum', default: 'mp3',
@@ -72,14 +73,14 @@ window.TABS.speech = {
         { value: 'pcmu_raw', label: 'pcmu_raw' },
         { value: 'pcmu_wav', label: 'pcmu_wav' },
       ],
-      help: 'Output audio container.',
+      help: 'Output audio file container / codec.\n\n  • mp3 (default) — most compatible, plays on every device, reasonable file size. Use this unless you have a specific reason not to.\n  • wav — uncompressed PCM, large file, no quality loss. Good for further editing.\n  • pcm — raw PCM (no WAV header). Most players can\'t open it directly.\n  • flac — lossless compression (~half the size of WAV, same quality).\n  • opus — modern codec, smaller than MP3 at the same quality. Less universal.\n  • pcmu_raw / pcmu_wav — narrow-band (8 kHz) telephony format. Only useful for IVR / phone-system work.',
     });
     const sampleRate = buildParamRow('--sample-rate', {
       // Allowed by the T2A API: 8000/16000/22050/24000/32000/44100.
       // 48000 is NOT accepted (was previously offered and would error).
       kind: 'number', default: 32000, step: 1000,
       options: [8000, 16000, 22050, 24000, 32000, 44100].map((v) => ({ value: v, label: String(v) })),
-      help: 'Sample rate in Hz. Allowed: 8000, 16000, 22050, 24000, 32000, 44100.',
+      help: 'Audio sample rate in Hz — samples per second of audio. Higher = captures higher frequencies, larger file.\n\n  • 8000 — telephone quality (muffled).\n  • 16000 — AM-radio quality.\n  • 22050 — FM-radio quality.\n  • 24000 — podcasts / audiobooks.\n  • 32000 (default) — high-quality speech.\n  • 44100 — CD quality (overkill for speech but fine).\n\nFor speech the default 32000 is the sweet spot. The API rejects 48000.',
     });
     const bitrate = buildParamRow('--bitrate', {
       kind: 'number', default: 128000, step: 1000,
@@ -89,12 +90,12 @@ window.TABS.speech = {
       // Restrict to the four accepted values so a non-default pick can't
       // silently break generation.
       options: [32000, 64000, 128000, 256000].map((v) => ({ value: v, label: String(v) })),
-      help: 'Bitrate in bits/second. The API accepts 32000, 64000, 128000, or 256000.',
+      help: 'Bitrate in bits per second — average bits to encode one second of audio. Only meaningful for lossy formats (mp3, opus).\n\n  • 32000 — low (voice / podcast, smallest file).\n  • 64000 — medium (good for most speech).\n  • 128000 (default) — high (transparent for most listeners).\n  • 256000 — maximum (overkill for most music).\n\nAPI rejects other values with "audio bitrate: N is not allowed". For FLAC / WAV / PCM the value is ignored (lossless codecs).',
     });
     const channels = buildParamRow('--channels', {
       kind: 'enum', default: 1,
       options: [{ value: 1, label: '1 (mono)' }, { value: 2, label: '2 (stereo)' }],
-      help: 'Number of audio channels.',
+      help: 'Number of audio channels.\n\n  • 1 (mono, default) — single channel, smallest file. Best for speech.\n  • 2 (stereo) — left + right channels, 2× the file size. Best for music.\n\nFor speech always use mono — stereo speech sounds identical but wastes half your quota and storage.',
     });
     const language = buildParamRow('--language (boost)', {
       kind: 'enum-text', default: '',
@@ -114,18 +115,20 @@ window.TABS.speech = {
         { value: 'ar', label: 'ar' },
         { value: 'hi', label: 'hi' },
       ],
-      help: 'Boost recognition for a specific language code (e.g. "en", "zh").',
+      help: 'Boost the model\'s recognition of a specific language (BCP-47 code).\n\n  • (none) — the model uses the text itself to guess the language.\n  • auto — auto-detects from the first few words.\n  • en / zh / ja / ko / es / fr / de / pt / ru / it / ar / hi — explicit codes.\n\nThe language hint mainly helps with mixed-language text (e.g. English narration that drops a French phrase) — without it, the model may switch pronunciation rules mid-sentence.',
     });
     const subtitles = buildParamRow('--subtitles', {
-      kind: 'boolean', default: false, help: 'Also save an .srt subtitle file alongside the audio.',
+      kind: 'boolean', default: false,
+      help: 'Also save a .srt subtitle file alongside the audio. The .srt has the same base filename as the audio (e.g. speech_xxx.mp3 + speech_xxx.srt) and contains sentence-level timestamps.\n\nUseful for:\n  • Video projects (you can mux the .srt into an MP4 with ffmpeg).\n  • Accessibility (captioning for hearing-impaired viewers).\n  • Searchable transcripts (the .srt is plain text, easy to grep).',
     });
     const soundEffect = buildParamRow('--sound-effect', {
       kind: 'enum-text', default: '',
       options: [{ value: '', label: '(none)' }],
-      help: 'Optional background sound effect (model-dependent).',
+      help: 'Optional background sound effect, mixed under the voice. The dropdown lists the effects available for the selected voice + model — many voices don\'t support sound effects, in which case the dropdown is empty (and the model silently ignores the flag).\n\nCommon effects: birds, crowd, traffic, white-noise. Pick one for a more natural-sounding narration, or leave at "(none)" for a clean studio voice.',
     });
     const pronunciation = buildParamRow('--pronunciation (repeatable)', {
-      kind: 'text', default: '', help: 'Custom pronunciation rule in the form from=to. Add multiple via comma.',
+      kind: 'text', default: '',
+      help: 'Custom pronunciation rule in the form "from=to". Tells the model to always read "from" as "to".\n\nExamples:\n  • "GIF=Gif" — say GIF as "gif" (not "jiff")\n  • "SQL=sequel" — say SQL as "sequel"\n  • "NGO=en-gee-oh" — spell out an acronym\n\nTo add multiple rules, separate them with a comma: "GIF=Gif,SQL=sequel". The "repeatable" in the label means the API accepts the flag multiple times for separate rules.',
     });
 
     root.appendChild(el('div', { class: 'section' }, [
@@ -160,25 +163,25 @@ window.TABS.speech = {
     const tabFooter = el('div', { class: 'tab-footer' }, [preview, actions]);
     root.appendChild(tabFooter);
 
-    // Populate voices list
-    this.populateVoices(voice.input).catch(() => {});
+    // v1.1.17: pass voice.input.el (the inner <select>); the wrapper
+    // would no-op fillVoices' innerHTML/appendChild calls.
+    this.populateVoices(voice.input.el || voice.input).catch(() => {});
 
     genBtn.addEventListener('click', async () => {
-      // Bug-fix (2026-06-20): wrap the WHOLE click handler in a
-      // try/catch. The previous layout only caught errors inside the
-      // variant for-loop, so a ReferenceError thrown during pre-flight
-      // (e.g. the missing `emotion` row, or any other helper that
-      // wasn't loaded yet) would reject the async handler silently
-      // and the user saw no progress. With this outer guard any
-      // unexpected throw surfaces as a toast (and the button is reset
-      // by the re-entrancy guard because we never set state.generating
-      // on a pre-flight failure).
+      // v1.1.26: breadcrumb the click BEFORE guards.
+      if (typeof window.logAction === 'function') window.logAction('generate', 'click-generate', { tab: 'speech', has_api_key: !!state.config.api_key });
+      // Whole-handler try/catch (Bug-fix 2026-06-20): a pre-flight throw
+      // (e.g. missing helper) used to reject silently. Per-tab re-entrancy
+      // guard via JobRunner + state.generating (Bug-fix C3: see app.js).
       try {
-      // Re-entrancy guard: another generation is in progress.
-      // Phase A: per-tab gate so a job on a different tab does NOT block speech.
-      if (window.JobRunner && window.JobRunner.isTabRunning('speech')) return;
-      if (!window.JobRunner && state.generating) return;
-      if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
+      if ((window.JobRunner && window.JobRunner.isTabRunning('speech')) || state.generating === 'speech') {
+        if (typeof window.logAction === 'function') window.logAction('generate', 'guard-blocked', { reason: 'already-running', tab: 'speech' });
+        return;
+      }
+      if (!state.config.api_key) {
+        if (typeof window.logAction === 'function') window.logAction('generate', 'guard-blocked', { reason: 'no-api-key', tab: 'speech' });
+        toast('No API key configured. Click ⚙ to open Settings.', 'err'); return;
+      }
       const txt = text.input.value.trim();
       if (!txt) { toast('Text is required.', 'warn'); return; }
       // Pre-flight: validate visible parameters against MODEL_SPECS.
@@ -214,7 +217,6 @@ window.TABS.speech = {
         '--emotion': null,
       };
       const speechModel = model.input.getValue();
-      const speechErrs = [];
       for (const k of Object.keys(speechParams)) {
         if (!speechParams[k]) { delete speechParams[k]; continue; }
       }
@@ -226,7 +228,7 @@ window.TABS.speech = {
       // Authoritative allowed-value / range check (warns + lets the user
       // proceed) so an out-of-range value can't silently waste a request.
       if (typeof mmxPreflightConfirm === 'function' && !mmxPreflightConfirm('speech', {
-        model: model.input.getValue(), format: format.input.value,
+        model: model.input.getValue(), format: format.input.getValue(),
         'sample-rate': sampleRate.input.getValue(), bitrate: bitrate.input.getValue(),
         channels: channels.input.getValue(), speed: speed.input.getValue(),
         volume: volume.input.getValue(), pitch: pitch.input.getValue(), text: txt,
@@ -237,13 +239,16 @@ window.TABS.speech = {
       // useless --bitrate send when the user picked WAV / PCM /
       // FLAC, otherwise the API may reject it or ignore it
       // silently.
-      const speechFormat = (format.input.value || 'mp3').split('_')[0];
-      if (!['mp3', 'opus'].includes(speechFormat)) {
-        // Clear the value so appendFlag skips it (we keep the
-        // dropdown visible because the spec is "always show,
-        // greyed when irrelevant").
-        bitrate.input.value = '';
-      }
+      // Bug-fix H2 (_temp5.md 360° audit): `format` is `kind: 'enum'`,
+      // so `format.input` is the `combo-select-enum` wrapper — `.value`
+      // is undefined. The previous code always read 'mp3' (the fallback),
+      // so the bitrate-suppression branch never fired for WAV/PCM/FLAC,
+      // and `--bitrate` was sent for lossless formats.
+      const speechFormat = (format.input.getValue() || 'mp3').split('_')[0];
+      // v1.1 (audit M4+L6): gate --bitrate for lossless formats at the
+      // call site (not by mutating the select). Captured at runFn start
+      // (UI is locked during the run so the value can't change mid-loop).
+      const lossyFormat = ['mp3', 'opus'].includes(speechFormat);
       const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
       let outDir;
       try { outDir = await ensureSubDir('speech'); }
@@ -253,7 +258,11 @@ window.TABS.speech = {
         return;
       }
       const slug = slugify(txt).slice(0, 60) || 'speech';
-      const ext = (format.input.value || 'mp3').split('_')[0];
+      // Bug-fix H2 (_temp5.md 360° audit): `format.input` is the enum
+      // wrapper — use .getValue() so the file extension matches the
+      // user's actual --format choice (was always 'mp3' before, so a
+      // WAV/PCM/FLAC output got misnamed with a .mp3 extension).
+      const ext = (format.input.getValue() || 'mp3').split('_')[0];
       // Total assets this run will produce. The per-tab ETA timer reads
       // this from state.genQueueSize[tabKey] to compute a "remaining
       // time for the whole batch" estimate that ticks down as each
@@ -262,7 +271,25 @@ window.TABS.speech = {
       if (!state.genQueueDone) state.genQueueDone = { image: 0, speech: 0, music: 0, video: 0 };
       state.genQueueSize.speech = variantsCount;
       state.genQueueDone.speech = 0;
-      const cancel = armGenBtnWithCancel(genBtn, 'Generate');
+      // bug-fix Phase1 (_temp4.md): wrap the existing generation flow in
+      // JobRunner.run() so ActiveJobsWidget shows it during the run and
+      // its inline ✕ can cancel just this job. suppressLogRow:true keeps
+      // every existing addLogEvent call below unchanged — JobRunner is
+      // purely a tracking/cancellation layer here. `ctrl` is assigned by
+      // the run() call itself; runFn only executes in a later microtask,
+      // by which time the assignment has completed, so it can safely
+      // read ctrl.jobId via closure.
+      const txtShort0 = (txt || '').replace(/\s+/g, ' ').slice(0, 120);
+      let ctrl;
+      ctrl = window.JobRunner.run({
+        tabKey: 'speech',
+        type: 'speech',
+        title: `Speech generation: ${txtShort0}${txt && txt.length > 120 ? '…' : ''}`,
+        subtitle: `Variants: ${variantsCount}`,
+        suppressLogRow: true,
+        runFn: async (ctx) => {
+      const cancel = armGenBtnWithCancel(genBtn, 'Generate', ctrl.jobId);
+      ctx.signal.addEventListener('abort', () => cancel.cancel());
       // v1.1.15 (reported by user): the "force prefix only"
       // counter is per-run (NOT per-prefix) so the first
       // variant of the first item is 000001. We allocate the
@@ -281,16 +308,21 @@ window.TABS.speech = {
         category: 'gen',
         groupId: runGroupId,
         headline: `Speech generation started: ${txtShort}${txt && txt.length > 120 ? '…' : ''}`,
+        fullText: txt,
         details: [
           `Variants: ${variantsCount}`,
           `Model: ${model.input.getValue() || '(default)'}`,
           `Voice: ${voice.input.getValue() || '(default)'}`,
-          `Format: ${format.input.value || '(default)'}`,
+          `Format: ${format.input.getValue() || '(default)'}`,
         ],
       });
       let allOk = true;
       let lastPreview = null;
       let lastOutFile = null;
+      // v1.1 (audit M5): track every successful output file so a
+      // partial-success run (some variants failed, some succeeded)
+      // routes through the success path instead of the failure path.
+      const outFiles = [];
       let threw = null;
       try {
         for (let v = 1; v <= variantsCount; v++) {
@@ -305,7 +337,13 @@ window.TABS.speech = {
           appendFlag(args, pitch.input);
           appendFlag(args, format.input);
           appendFlag(args, sampleRate.input);
-          appendFlag(args, bitrate.input);
+          // v1.1 (audit M4): only append --bitrate for lossy codecs.
+          // WAV / PCM / FLAC have fixed bitrates; sending --bitrate
+          // is either ignored or rejected. The gate now happens at
+          // the call site instead of by mutating the select's value
+          // (which was leaking state and dropping the user's chosen
+          // bitrate after a single format switch).
+          if (lossyFormat) appendFlag(args, bitrate.input);
           appendFlag(args, channels.input);
           if (language.input.getValue()) args.push('--language', String(language.input.getValue()));
           appendBoolFlag(args, subtitles.input, '--subtitles');
@@ -324,7 +362,7 @@ window.TABS.speech = {
           // counter>.<ext>` with the counter starting at
           // 000001 per Generate click.
           const outFile = state.filePrefixForceOnly
-            ? uniquePath(outDir, buildForcePrefixFileName(forceCounter, prefix, ext))
+            ? await nextFreeForcePrefixPath(outDir, forceCounter, prefix, ext)
             : uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.${ext}`);
           args.push('--out', outFile);
           lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
@@ -333,14 +371,16 @@ window.TABS.speech = {
             : 'Generating speech…';
           setStatus(statusMsg, true);
           preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(statusMsg)}</div>`;
-          const r = await window.api.mmxRun(args);
+          const r = await window.api.mmxRunJob({ args, jobId: ctrl.jobId });
           if (cancel.wasCancelled()) { allOk = false; break; }
           if (!r.ok) {
             const msg = formatMmxError(r);
             preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}).</div><div class="meta">${escapeHtml(msg)}</div>`;
             toast('Speech generation failed: ' + msg, 'err', 6000);
             allOk = false;
-            break;
+            // v1.1 (audit M5): continue with remaining variants
+            // (was: break — image tab already does this).
+            continue;
           }
           // Update the per-item average + advance the queue counter so
           // the ETA ticks down per item. See the image-tab comment
@@ -353,6 +393,7 @@ window.TABS.speech = {
           refreshTabEtas();
           lastPreview = r.parsed;
           lastOutFile = outFile;
+          outFiles.push(outFile);
         }
       } catch (e) {
         threw = e;
@@ -364,66 +405,85 @@ window.TABS.speech = {
         // BatchGen runner (which polls state.generating) always reads the
         // final result, never a stale value left over from a prior item.
         state.genLastResult = state.genLastResult || { image: null, speech: null, music: null, video: null };
-        state.genLastResult.speech = (allOk && !threw && !cancel.wasCancelled()) ? 'ok' : 'err';
+        // v1.1 (audit M5 + L1): partial-success gate — a cancel after
+        // partial success still leaves real files on disk, so mark 'ok'.
+        state.genLastResult.speech = (outFiles.length > 0 && !threw) ? 'ok' : 'err';
         cancel.cleanup();
         setStatus('Ready', false);
         try { await refreshBrowser(); } catch {}
         try { await refreshQuota(); } catch {}
       }
-      if (threw) return;
+      if (threw) return { status: 'err', error: (threw && threw.message) || String(threw), outputPaths: outFiles };
       if (cancel.wasCancelled()) {
         preview.innerHTML = '<div class="empty">Generation cancelled.</div>';
         toast('Cancelled.', 'warn');
-        return;
+        // v1.1 (audit H1+L1): return EVERY successful file on cancel
+        // (was: only [lastOutFile]); status 'ok' when partial success
+        // so BatchGen does not retry the variants that already landed.
+        return { status: outFiles.length > 0 ? 'ok' : 'cancel', outputPaths: outFiles };
       }
       if (allOk && lastOutFile) {
         showAudioPreview(preview, lastOutFile, lastPreview);
         bumpGenerationCounter('speech', variantsCount);
-        // v1.1.15: log the success of the speech run so
-        // the structured log pane shows the "Generated N
-        // audio" row with the output files. (The image
-        // tab already does this; the speech tab was
-        // missing it.)
         addLogEvent({
-          category: 'gen',
-          groupId: runGroupId,
-          result: 'ok',
+          category: 'gen', groupId: runGroupId, result: 'ok',
           headline: `Generated ${variantsCount} audio file${variantsCount === 1 ? '' : 's'}`,
           details: [`• ${lastOutFile}`],
         });
+      } else if (outFiles.length > 0 && lastOutFile) {
+        // v1.1 (audit M5): partial-success path.
+        showAudioPreview(preview, lastOutFile, lastPreview);
+        bumpGenerationCounter('speech', outFiles.length);
+        addLogEvent({
+          category: 'gen', groupId: runGroupId, result: 'warn',
+          headline: `Generated ${outFiles.length}/${variantsCount} audio file${outFiles.length === 1 ? '' : 's'} (${variantsCount - outFiles.length} failed)`,
+          details: outFiles.map((p) => '• ' + p),
+        });
       }
-      if (allOk) {
-        toast(variantsCount > 1
-          ? `Speech generated. ${variantsCount} variants saved.`
-          : 'Speech generated.', 'ok');
+      // v1.1 (audit M5): a run with ANY successful variant returns 'ok'.
+      if (outFiles.length > 0) {
+        const failCount = variantsCount - outFiles.length;
+        toast(failCount > 0
+          ? `Speech generated. ${outFiles.length}/${variantsCount} variants saved (${failCount} failed — see log).`
+          : (variantsCount > 1 ? `Speech generated. ${variantsCount} variants saved.` : 'Speech generated.'),
+          failCount > 0 ? 'warn' : 'ok');
+        return { status: 'ok', outputPaths: outFiles };
+      }
+      return { status: 'err', outputPaths: [] };
+        },
+      });
+      if (ctrl && typeof ctrl.catch === 'function') {
+        // JobRunner.run() rejected synchronously (hard cap, or the same
+        // tab somehow started a second job in the gap since the guard
+        // above ran) — there is no job and runFn above never executes.
+        // Swallow it here so it doesn't surface as an unhandled
+        // rejection; JobRunner.run() already shows its own toast.
+        ctrl.catch(() => {});
+      } else {
+        await ctrl.done;
       }
       } catch (e) {
-        // Outer guard: any error thrown by pre-flight (state lookups,
-        // helpers that weren't loaded yet, etc.) lands here as a
-        // visible toast instead of a silent async-reject. The
-        // re-entrancy guard above is unaffected because state.generating
-        // is only set inside armGenBtnWithCancel (which we may not
-        // have reached).
+        // Surface pre-flight errors as a visible toast instead of a silent async-reject.
         console.error('Speech generation pre-flight failed:', e);
         toast('Generation failed before starting: ' + (e && e.message || String(e)), 'err', 6000);
       }
     });
   },
   async populateVoices(sel) {
-    if (state.voicesLoaded) { fillVoices(sel, state.voices); return; }
+    // v1.1.18: populateVoices + fillVoices extracted to
+    // speechTabVoices.js (500-line HARD limit). Fallback below
+    // covers the case where the helper script didn't load.
+    if (window.speechVoices && typeof window.speechVoices.populateVoices === 'function') {
+      return window.speechVoices.populateVoices(sel, state);
+    }
     const v = await window.api.voices();
     if (Array.isArray(v) && v.length) {
-      state.voices = v; state.voicesLoaded = true;
-      fillVoices(sel, v);
+      state.voices = v;
+      state.voicesLoaded = true;
+      const selInner = sel.querySelector('select') || sel;
+      selInner.innerHTML = '';
+      for (const voice of v) selInner.appendChild(el('option', { value: voice }, voice));
     }
   },
 };
-
-function fillVoices(sel, voices) {
-  const current = sel.value;
-  sel.innerHTML = '';
-  for (const v of voices) sel.appendChild(el('option', { value: v }, v));
-  if (voices.includes(current)) sel.value = current;
-}
-
 window.SpeechTab = window.TABS.speech;

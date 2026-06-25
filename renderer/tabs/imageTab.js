@@ -9,7 +9,7 @@ window.TABS.image = {
 
     // Prompt
     const prompt = buildParamRow('Prompt (prefilled, editable)',
-      { kind: 'textarea', value: this.prefilled, help: 'The description of the image to generate. Sent as --prompt. Max 1500 characters.' });
+      { kind: 'textarea', value: this.prefilled, help: 'The description of the image you want. This text is sent to the API as the --prompt flag.\n\nTips for best results:\n  • Be specific — include subject, setting, lighting, mood, camera angle, artistic style.\n  • Avoid negative instructions ("no cats"); use the model\'s --negative-prompt if available, or rephrase positively ("dogs playing in a sunny park").\n  • For style consistency across a series, set a Style preset (the dropdown above) — it prepends a fixed prefix to every prompt.\n  • Max 1500 characters. The counter below the textarea shows the remaining quota.' });
     const styleRow = buildStyleRow('image', 'Select a style preset. Its value is prepended (with a comma) to your manual prompt before the request is sent.');
     // v1.1.15 (reported by user): the previous version also
     // rendered a `buildStylePreviewBlock()` element under
@@ -54,7 +54,7 @@ window.TABS.image = {
     const n = buildParamRow('--n (count)', {
       kind: 'number', default: 1, min: 1, max: 4, customDefault: 1, step: 1,
       options: [1, 2, 3, 4].map((v) => ({ value: v, label: String(v) })),
-      help: 'How many images to generate in one call.',
+      help: 'How many images to generate in ONE mmx call. Each unit counts as one generation against your quota.\n\nFor --n > 1, the tool uses --out-dir instead of --out (the mmx CLI rejects the per-file --out when --n > 1). You can also use the "Variants" dropdown (further down) for an alternative multi-generation workflow that re-spawns mmx N times with the same prompt — useful when you want each variant in its own file with its own seed.',
     });
     const width = buildParamRow('--width (px)', {
       kind: 'number', default: '', min: 512, max: 2048, step: 8,
@@ -95,13 +95,15 @@ window.TABS.image = {
         { value: 1337, label: '1337' },
         { value: 9999, label: '9999' },
       ],
-      help: 'Random seed for reproducible generation. Same seed + prompt = identical output.',
+      help: 'Random seed for reproducible generation. Same prompt + same seed always produces (approximately) the same image. Useful when you want to iterate on a prompt — change one word, keep the seed, and the result changes in a predictable way.\n\nBest practices:\n  • Pick a memorable seed (e.g. 42, 1337, your birthday) so you can recreate the look later.\n  • When "Variants" is set > 1 the seed field is locked (variants + seed would defeat the purpose — you\'d get N copies of the same image).\n  • Different models / aspect ratios / resolutions produce DIFFERENT images from the same (prompt, seed) pair. The seed pins the random pattern, not the image itself.',
     });
     const promptOpt = buildParamRow('--prompt-optimizer', {
-      kind: 'boolean', default: false, help: 'Let the model rewrite your prompt for better results.',
+      kind: 'boolean', default: false,
+      help: 'Let the model rewrite your prompt before sending it to the API.\n\nON (recommended for short or vague prompts): the model expands your prompt with extra descriptive detail (lighting, composition, style) — usually produces a noticeably better image, costs one extra API step.\n\nOFF (use for precise control): the tool sends your exact prompt text. Recommended when you have a carefully crafted prompt and don\'t want the model to second-guess you, or when you\'re testing exact prompt wording.',
     });
     const watermark = buildParamRow('--aigc-watermark', {
-      kind: 'boolean', default: false, help: 'Embed an AI-generated content watermark into the output image.',
+      kind: 'boolean', default: false,
+      help: 'Embed an invisible AI-generated content watermark in the output image.\n\nThe watermark is metadata-only — invisible to the human eye, no visual quality change, no extra file size. Used by content moderation systems to identify AI-generated images.\n\nRecommended ON for public-facing content (the watermark helps with platform compliance in the EU, China, and other jurisdictions that require AI disclosure). OFF for private / personal use where the metadata isn\'t needed.',
     });
     const subjRef = buildParamRow('--subject-ref', {
       kind: 'text', default: '',
@@ -119,7 +121,7 @@ window.TABS.image = {
         { value: 'url', label: 'url (CDN, downloaded to disk)' },
         { value: 'base64', label: 'base64 (no CDN)' },
       ],
-      help: 'How the image bytes come back. base64 bypasses the CDN.',
+      help: 'How the image bytes come back from the API.\n\nurl (default): the API uploads the image to a CDN and returns a URL. The tool then downloads it to your output folder. Faster (the model finishes sooner), works behind corporate firewalls that block arbitrary CDN domains.\n\nbase64: the API embeds the image bytes directly in the JSON response (no CDN round-trip). Slower end-to-end (the response is bigger), but no external CDN dependency. Useful when debugging CDN-blocked networks, or for offline workflows.',
     });
 
     root.appendChild(el('div', { class: 'section' }, [
@@ -192,13 +194,42 @@ window.TABS.image = {
 
     // ---- Generate handler ----
     genBtn.addEventListener('click', async () => {
+      // v1.1.26: log the click as soon as we know the user pressed
+      // Generate, BEFORE the guards (re-entrancy / api_key). A
+      // guarded-out click is still a real user intent and should
+      // appear in the breadcrumb so "I clicked Generate and nothing
+      // happened" leaves a trail.
+      if (typeof window.logAction === 'function') {
+        window.logAction('generate', 'click-generate', {
+          tab: 'image',
+          has_api_key: !!state.config.api_key,
+          upscale_enabled: !!state.upscaleEnabled,
+        });
+      }
       // Re-entrancy guard: another generation is in progress. The cancel
       // click handler (added by armGenBtnWithCancel) will run for clicks
       // that should cancel instead. Phase A: per-tab gate so a job on
       // the music / speech / video tab does NOT block the image tab.
-      if (window.JobRunner && window.JobRunner.isTabRunning('image')) return;
-      if (!window.JobRunner && state.generating) return;
-      if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
+      // Bug-fix (C3): window.JobRunner always exists but never has jobs in
+      // production (only unit tests populate it), so the old two-line guard
+      // (`JobRunner && isTabRunning` / `!JobRunner && state.generating`) was
+      // always false on both lines — no re-entrancy protection at all. This
+      // single condition restores the legacy guard. state.generating holds
+      // the busy tab's key (set/cleared by armGenBtnWithCancel in app.js),
+      // so comparing to 'image' (not just truthiness) keeps the Phase A
+      // per-tab gate intact — a job on music/speech/video must NOT block image.
+      if ((window.JobRunner && window.JobRunner.isTabRunning('image')) || state.generating === 'image') {
+        if (typeof window.logAction === 'function') {
+          window.logAction('generate', 'guard-blocked', { reason: 'already-running', tab: 'image' });
+        }
+        return;
+      }
+      if (!state.config.api_key) {
+        if (typeof window.logAction === 'function') {
+          window.logAction('generate', 'guard-blocked', { reason: 'no-api-key', tab: 'image' });
+        }
+        toast('No API key configured. Click ⚙ to open Settings.', 'err'); return;
+      }
       const promptText = buildFinalPrompt(styleRow.sel, prompt.input);
       if (!promptText) { toast('Prompt is required (style or manual input).', 'warn'); return; }
       // Pre-flight: validate every visible parameter against the
@@ -229,7 +260,7 @@ window.TABS.image = {
       if (typeof mmxPreflightConfirm === 'function' && !mmxPreflightConfirm('image', {
         model: model.input.getValue(), 'aspect-ratio': aspect.input.getValue(),
         n: n.input.getValue(), width: width.input.getValue(), height: height.input.getValue(),
-        'response-format': respFmt.input.getValue ? respFmt.input.getValue() : respFmt.input.value,
+        'response-format': respFmt.input.getValue(),
         prompt: promptText,
       })) return;
       const variantsCount = Math.max(1, Math.min(5, parseInt(variants.sel.value, 10) || 1));
@@ -250,15 +281,56 @@ window.TABS.image = {
         toast('Cannot resolve output folder: ' + msg, 'err', 6000);
         return;
       }
+      // Bug-fix (reported by user): pre-flight the --subject-ref reference
+      // image. A stale/missing path used to reach the mmx subprocess and
+      // fail with a cryptic "File system error: ENOENT … reference.jpeg"
+      // that was then retried 4×. Catch it here with a clear, actionable
+      // message and never spawn a doomed run. http(s) URLs are validated
+      // server-side, so refImageExists reports them as present.
+      const subjRefPreflight = (subjRef.input.getValue() || '').trim();
+      if (subjRefPreflight && window.api && typeof window.api.refImageExists === 'function') {
+        try {
+          const ex = await window.api.refImageExists(subjRefPreflight);
+          if (ex && ex.ok && !ex.exists) {
+            toast(`Reference image not found:\n${subjRefPreflight}\nPick a new file (Browse…) or clear the field, then Generate again.`, 'err', 8000);
+            return;
+          }
+        } catch (_) { /* probe unavailable — fall through and let mmx report */ }
+      }
       const slug = slugify(promptText).slice(0, 60) || 'image';
-      const cancel = armGenBtnWithCancel(genBtn, 'Generate');
+      const promptShort = (promptText || '').replace(/\s+/g, ' ').slice(0, 120);
+      // bug-fix Phase1 (_temp4.md): wrap the existing generation flow in
+      // JobRunner.run() so ActiveJobsWidget shows it during the run and
+      // its inline ✕ can cancel just this job (not every in-flight
+      // generation on every tab). suppressLogRow:true keeps every
+      // existing addLogEvent call below completely unchanged — no
+      // duplicate primary row is created; JobRunner is purely a
+      // tracking/cancellation layer here, not a logging one. `ctrl` is
+      // declared with `let` and assigned by the JobRunner.run() call
+      // itself, but runFn (below) only executes in a later microtask,
+      // by which time the assignment has already completed — so runFn
+      // can safely read ctrl.jobId via closure.
+      let ctrl;
+      ctrl = window.JobRunner.run({
+        tabKey: 'image',
+        type: 'image',
+        title: `Image generation: ${promptShort}${promptText && promptText.length > 120 ? '…' : ''}`,
+        subtitle: `Variants: ${variantsCount}`,
+        suppressLogRow: true,
+        runFn: async (ctx) => {
+      const cancel = armGenBtnWithCancel(genBtn, 'Generate', ctrl.jobId);
+      // External cancellation (ActiveJobsWidget ✕, or the Cancel button
+      // which now routes through armGenBtnWithCancel -> JobRunner.cancel)
+      // aborts ctx.signal — bridge that into the legacy `cancel` token so
+      // every existing cancel.wasCancelled() check below keeps working
+      // unchanged.
+      ctx.signal.addEventListener('abort', () => cancel.cancel());
       // Log a "generation started" event up front so the user
       // sees one row per click in the new structured log pane,
       // and so the "completed" / "failed" events below can be
       // read as part of the same group. We use the prompt text
       // (truncated) as the headline; the full prompt stays
       // available in the expand-on-click details.
-      const promptShort = (promptText || '').replace(/\s+/g, ' ').slice(0, 120);
       // v1.1.9: pin all log events for this run to the same group
       // id so the renderer tints "started" / "completed" /
       // "failed" with the same colour and the user can visually
@@ -270,17 +342,32 @@ window.TABS.image = {
         category: 'gen',
         groupId: runGroupId,
         headline: `Image generation started: ${promptShort}${promptText && promptText.length > 120 ? '…' : ''}`,
+        fullText: promptText,
         details: [
           `Variants: ${variantsCount}`,
           `Seed: ${seedVal === '' ? '(random)' : String(seedVal)}`,
           `Aspect: ${aspect.input.getValue() || '(default)'}`,
           `Model: ${model.input.getValue() || '(default)'}`,
-          `Reference: ${subjRef.input.value && subjRef.input.value.trim() ? subjRef.input.value.trim() : '(none)'}`,
+          `Reference: ${(() => { const v = subjRef.input.getValue(); return v && v.trim() ? v.trim() : '(none)'; })()}`,
         ],
       });
       let allOk = true;
       let lastPreview = null;
       let lastOutFile = null;
+      // bug-fix Phase1 (_temp4.md): carries the final file list out of
+      // the `if (allOk && lastOutFile...)` block below (where
+      // displayFiles is declared) so the JobRunner runFn wrapper can
+      // return it as the job's outputPaths after the block closes.
+      // v1.1 (audit AUDIT-11): the original assignment was INSIDE the
+      // post-process block, so a cancel BEFORE that block ran left
+      // finalOutputPaths as []. We now seed finalOutputPaths from
+      // outFiles as soon as the variants complete, so a cancel after
+      // partial success returns the real file list (not empty) as
+      // the job's outputPaths. The post-process block may later
+      // OVERWRITE this with its post-processed list — that's
+      // correct (upscaled / no-bg / optimised paths are more
+      // useful than the raw generated paths).
+      let finalOutputPaths = [];
       // outFiles tracks every image file we know about after generation
       // completes. For variants without --out-dir, each variant produces
       // one known file we push here. For --out-dir, the per-call output
@@ -355,7 +442,7 @@ window.TABS.image = {
       // is `<prefix>000001.<ext>`, the second is
       // `<prefix>000002.<ext>`, and so on.
       const forceCounter = { n: 0 };
-      function makeOutPath(v) {
+      async function makeOutPath(v) {
         if (useOutDir) return outDir;
         const ts = timestamp();
         const variantTag = variantsCount > 1 ? `_v${v}` : '';
@@ -365,8 +452,14 @@ window.TABS.image = {
           // first variant of the first item is 000001. The
           // _v tag is dropped because the user explicitly
           // asked for the counter alone (no slug, no
-          // timestamp, no variant tag).
-          return uniquePath(outDir, buildForcePrefixFileName(forceCounter, prefix, 'png'));
+          // timestamp, no variant tag). Bug-fix (C4): use the
+          // exact name (no random uniquePath suffix); collision
+          // safety comes from bumping the counter past existing
+          // files instead. Bug-fix (M6): also check sibling
+          // extensions at the same counter value, since
+          // fixImageExtension() may have renamed an earlier file
+          // from .png to its real format.
+          return nextFreeForcePrefixPath(outDir, forceCounter, prefix, 'png', ['jpg', 'jpeg', 'webp', 'gif', 'bmp']);
         }
         return uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.png`);
       }
@@ -381,7 +474,7 @@ window.TABS.image = {
           // Build the per-variant argv. The base args are identical except
           // for --out, which gets a unique filename per variant.
           const baseArgs = buildImageArgs();
-          const outFile = makeOutPath(v);
+          let outFile = await makeOutPath(v);
           const args = baseArgs.slice();
           if (!useOutDir) args.push('--out', outFile);
           lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
@@ -401,8 +494,20 @@ window.TABS.image = {
           // pattern we see in the field is almost always a backend hiccup
           // that succeeds on retry. We also detect rate-limit messages and
           // wait longer for those.
-          let r = await window.api.mmxRun(args);
-          if (!r.ok && !cancel.wasCancelled()) {
+          let r = await window.api.mmxRunJob({ args, jobId: ctrl.jobId });
+          if (!r.ok && !cancel.wasCancelled() && !isRetryableMmxError(r, formatMmxError(r))) {
+            // Bug-fix (reported by user): a missing --subject-ref image
+            // (or any permanent input/auth/quota error) used to be retried
+            // 3 more times with exponential backoff, turning one clear
+            // "File or directory not found" into a 4×-repeated, confusing
+            // failure. Permanent errors can't succeed on retry, so surface
+            // the real reason once, immediately. The reference-image path
+            // is pre-flighted before we even get here (see the
+            // existence check above buildImageArgs), so this mainly
+            // catches server-side input rejections.
+            const permMsg = formatMmxError(r);
+            toast(`Image variant ${v}/${variantsCount} failed: ${permMsg}`, 'err', 7000);
+          } else if (!r.ok && !cancel.wasCancelled()) {
             const firstMsg = formatMmxError(r);
             const isRateLimit = /rate|limit|throttl|too many|429/i.test(firstMsg);
             const maxRetries = 3;
@@ -414,7 +519,7 @@ window.TABS.image = {
               if (cancel.wasCancelled()) break;
               setStatus(`Retrying image variant ${v}/${variantsCount} (attempt ${attempt + 1}/${maxRetries + 1})…`, true);
               preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(`Retrying variant ${v}/${variantsCount} (attempt ${attempt + 1})…`)}</div>`;
-              r = await window.api.mmxRun(args);
+              r = await window.api.mmxRunJob({ args, jobId: ctrl.jobId });
               if (r.ok) {
                 toast(`Image variant ${v}/${variantsCount} succeeded on retry ${attempt}.`, 'ok', 2500);
                 break;
@@ -461,6 +566,19 @@ window.TABS.image = {
           // images (useOutDir=false) it's 1.
           state.genQueueDone.image = (state.genQueueDone.image || 0) + nCount;
           refreshTabEtas();
+          // bug-fix M6 (_temp4.md): mmx wrote whatever bytes the CDN
+          // returned to outFile — the image API has no output-format
+          // parameter, so the CDN sometimes returns JPEG even though
+          // makeOutPath() always asks for ".png". Sniff the real
+          // format and rename before any downstream code (preview,
+          // notifyImageGenerated, the post-process chain) captures
+          // the old name.
+          if (!useOutDir) {
+            try {
+              const fix = await window.api.fixImageExtension(outFile);
+              if (fix && fix.ok && fix.renamed && fix.path) outFile = fix.path;
+            } catch (_) { /* best-effort; keep the original name on failure */ }
+          }
           lastPreview = r.parsed;
           lastOutFile = outFile;
           if (!useOutDir) outFiles.push(outFile);
@@ -499,7 +617,25 @@ window.TABS.image = {
         // promises leaked. Now the button stays as "Cancel" and the
         // state.generating guard stays set until every post-processing
         // step has completed, matching what the UI promises.
-        if (allOk && lastOutFile && !cancel.wasCancelled()) {
+        // v1.1 (HIGH-severity bug fix, audit H1): the previous
+        // version gated this whole success/post-process block on
+        // `allOk`, which meant a SINGLE failed variant (out of 5)
+        // skipped post-processing for every successful variant
+        // AND routed the user to the full-failure UI. The correct
+        // gate is "we have at least one output file" — partial
+        // success is still success from the user's point of view.
+        // BatchGen (audit H2) reads genLastResult.image, which we
+        // also fix below to mirror this gate so a 4/5-success run
+        // is not flagged as a retryable failure.
+        // v1.1 (audit AUDIT-11): seed finalOutputPaths from
+        // outFiles BEFORE the post-process block so a cancel AFTER
+        // the variants loop but BEFORE post-processing still has
+        // the real file list to return. The post-process block
+        // below may overwrite this with its post-processed list
+        // (which is the better outcome when it runs to
+        // completion).
+        if (outFiles.length > 0) finalOutputPaths = outFiles.slice();
+        if (outFiles.length > 0 && !cancel.wasCancelled()) {
         // Resolve the full list of output files. For --out-dir runs
         // (--n > 1), the per-call filenames are not known to the
         // renderer (mmx writes them with its own naming scheme), so
@@ -525,6 +661,18 @@ window.TABS.image = {
               if (matches.length) sourceFiles = matches.map((m) => m.path);
             }
           } catch (_) { /* fall back to whatever we have */ }
+          // bug-fix M6 (_temp4.md): --out-dir runs let mmx pick its
+          // own filenames per image, so the same hardcoded-extension
+          // mismatch can apply here too — fix each one up front,
+          // before the post-process chain runs on them.
+          try {
+            sourceFiles = await Promise.all(sourceFiles.map(async (f) => {
+              try {
+                const fix = await window.api.fixImageExtension(f);
+                return (fix && fix.ok && fix.renamed && fix.path) ? fix.path : f;
+              } catch (_) { return f; }
+            }));
+          } catch (_) { /* best-effort */ }
         }
         // Post-processing chain: for EVERY generated file (not just
         // the last one — that was the bug fixed in this revision),
@@ -582,6 +730,7 @@ window.TABS.image = {
             try { await refreshBrowser(); } catch (_) {}
           }
         }
+        finalOutputPaths = displayFiles.slice();
         // The last entry of displayFiles is the most recently
         // processed path — treat it as the canonical "last preview"
         // for legacy callers (toast messages that reference it, the
@@ -631,7 +780,11 @@ window.TABS.image = {
           headline: `Generated ${displayFiles.length} image${displayFiles.length === 1 ? '' : 's'}`,
           details: displayFiles.map((p) => '• ' + p),
         });
-      } else if (!allOk) {
+      } else if (outFiles.length === 0 && !cancel.wasCancelled()) {
+        // Pure failure: NO variant succeeded. Partial-success runs
+        // (outFiles.length > 0 but !allOk) now go through the success
+        // branch above with their post-process chain applied, so the
+        // user keeps the images they paid API credits for.
         // Log a "generation failed" event so the user can copy
         // the structured error from the log pane (e.g. into a
         // support ticket). The full classified error message +
@@ -770,7 +923,13 @@ window.TABS.image = {
         // pane), which made the old preview.querySelector check report
         // every image batch item as "failed".
         state.genLastResult = state.genLastResult || { image: null, speech: null, music: null, video: null };
-        state.genLastResult.image = (allOk && !threw && !cancel.wasCancelled()) ? 'ok' : 'err';
+        // v1.1 (audit H1 + L1): mark the run as 'ok' when ANY variant
+        // succeeded, so BatchGen does NOT auto-retry a partial-success
+        // run (which would waste API quota re-generating the variants
+        // that already landed). A cancel AFTER partial success still
+        // leaves real files on disk, so we treat that as 'ok' too —
+        // the cancel flag only matters for runs that produced nothing.
+        state.genLastResult.image = (outFiles.length > 0 && !threw) ? 'ok' : 'err';
         cancel.cleanup();
         setStatus('Ready', false);
         // Always refresh — even on cancel/failure, partial files may exist
@@ -778,16 +937,36 @@ window.TABS.image = {
         try { await refreshBrowser(); } catch {}
         try { await refreshQuota(); } catch {}
       }
-      if (threw) return;
+      if (threw) return { status: 'err', error: (threw && threw.message) || String(threw), outputPaths: finalOutputPaths };
       if (cancel.wasCancelled()) {
         preview.innerHTML = '<div class="empty">Generation cancelled.</div>';
         toast('Cancelled.', 'warn');
-        return;
+        return { status: 'cancel', outputPaths: finalOutputPaths };
       }
-      if (allOk) {
-        toast(variantsCount > 1
-          ? `Image generated. ${variantsCount} variants saved.`
-          : 'Image generated.', 'ok');
+      // v1.1 (audit H1): same partial-success gate as the post-process
+      // block — a 4/5-success run returns 'ok' (with a toast that names
+      // the partial outcome) so the BatchGen runner does NOT re-spawn it.
+      if (outFiles.length > 0) {
+        const okCount = outFiles.length;
+        const failCount = variantsCount - okCount;
+        toast(failCount > 0
+          ? `Image generated. ${okCount}/${variantsCount} variants saved (${failCount} failed — see log).`
+          : (variantsCount > 1 ? `Image generated. ${variantsCount} variants saved.` : 'Image generated.'),
+          failCount > 0 ? 'warn' : 'ok');
+        return { status: 'ok', outputPaths: finalOutputPaths };
+      }
+      return { status: 'err', outputPaths: finalOutputPaths };
+        },
+      });
+      if (ctrl && typeof ctrl.catch === 'function') {
+        // JobRunner.run() rejected synchronously (hard cap, or the same
+        // tab somehow started a second job in the gap since the guard
+        // above ran) — there is no job and runFn above never executes.
+        // Swallow it here so it doesn't surface as an unhandled
+        // rejection; JobRunner.run() already shows its own toast.
+        ctrl.catch(() => {});
+      } else {
+        await ctrl.done;
       }
     });
   },

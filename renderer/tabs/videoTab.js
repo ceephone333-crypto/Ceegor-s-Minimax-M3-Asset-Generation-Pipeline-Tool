@@ -74,7 +74,7 @@ window.TABS.video = {
     const duration = buildParamRow('--duration (seconds)', {
       kind: 'number', default: 6, min: 6, max: 10, step: 1,
       options: [{ value: 6, label: '6s' }, { value: 10, label: '10s' }],
-      help: 'Video length in seconds. 6s is default; 10s only on certain models/resolutions.',
+      help: 'Video length in seconds. 6s is the default; 10s is supported only on certain models and resolutions (Hailuo-2.3 at 768P and 1080P; Hailuo-02 at 512P and 768P — not at 1080P).\n\nEach extra second roughly doubles the render time and the quota cost. 6s is the sweet spot for most use cases — long enough to show motion, short enough to iterate quickly. Use 10s when you have a specific shot in mind and don\'t mind the extra cost.',
     });
     const resolution = buildParamRow('--resolution', {
       kind: 'enum', default: '768P',
@@ -84,18 +84,20 @@ window.TABS.video = {
         { value: '768P', label: '768P (recommended, default)' },
         { value: '1080P', label: '1080P (6s only on 2.3 / 2.3-Fast)' },
       ],
-      help: 'Output resolution. 1080P only works for 6s videos on Hailuo-2.3 / 2.3-Fast.',
+      help: 'Output resolution (vertical pixel count).\n\n  • 512P — Hailuo-02 only (for first+last-frame interpolation mode). Lowest quality, fastest render.\n  • 720P — legacy default, still widely supported.\n  • 768P (default) — current recommendation; best quality-vs-cost balance.\n  • 1080P — full HD, but only works for 6s videos on Hailuo-2.3 / 2.3-Fast (NOT Hailuo-02, NOT 10s videos). Expect 2× the cost of 768P.\n\nLower resolution = faster render + less quota, but less sharp on big screens. Most social-media platforms compress video anyway, so 768P is usually enough.',
     });
     const promptOpt = buildParamRow('--prompt-optimizer', {
-      kind: 'boolean', default: true, help: 'Auto-rewrite your prompt for better results (default true). Set off for precise control.',
+      kind: 'boolean', default: true,
+      help: 'Auto-rewrite your prompt before sending it to the API (default ON).\n\nON: the model adds extra descriptive detail (lighting, motion, composition). Recommended for short or vague prompts — usually produces a noticeably better video.\n\nOFF: the tool sends your exact prompt. Use this when you have a carefully crafted prompt with exact motion cues ([Push in], [Pan left], etc.) and don\'t want the model to second-guess you.',
     });
     const fastPretreat = buildParamRow('--fast-pretreatment', {
-      kind: 'boolean', default: false, help: 'Speeds up the optimizer step. Only for Hailuo-2.3, 2.3-Fast, 02. Default off.',
+      kind: 'boolean', default: false,
+      help: 'Speed up the prompt-optimizer step. Only supported on Hailuo-2.3, 2.3-Fast, and Hailuo-02.\n\nTrade-off: the optimizer runs faster (saves ~10-15s of pre-processing time) but the rewritten prompt is slightly less polished. Recommended for fast iteration loops (preview many ideas, then re-render the best ones with prompt-optimizer ON + fast-pretreatment OFF for the final cut).',
     });
     const pollInterval = buildParamRow('--poll-interval (seconds)', {
       kind: 'number', default: 5, min: 2, max: 60, step: 1,
       options: [3, 5, 10, 15, 30, 60].map((v) => ({ value: v, label: String(v) })),
-      help: 'How often to poll the API while waiting for the video. Default 5s. Lower = faster status updates but more API calls.',
+      help: 'How often the tool polls the API while waiting for the video to finish.\n\n  • Lower (2-3s) — ETA counter updates faster, but you make more API calls (each poll counts against your rate limit).\n  • Higher (15-60s) — fewer API calls, but the ETA jumps in bigger chunks.\n  • Default 5s is a good balance.\n\nOnly matters for the "waiting" phase — does NOT affect render time or output quality.',
     });
 
     root.appendChild(el('div', { class: 'section' }, [
@@ -124,10 +126,20 @@ window.TABS.video = {
     const variants = buildVariantsRow({ id: 'variants-video' });
     actions.append(genBtn, variants.row, batchControls, lastCmd);
     const preview = el('div', { class: 'preview' }, el('div', { class: 'empty' }, 'No video generated yet. Note: video generation is async and may take 1-3 minutes.'));
-    const tabFooter = el('div', { class: 'tab-footer' }, [actions, preview]);
+    const tabFooter = el('div', { class: 'tab-footer' }, [preview, actions]);
+    // v1.1 (audit M3): the footer order is now [preview, actions] —
+    // matching image / speech / music tabs and the documented
+    // contract that "the Generate / +Add / batch controls sit at
+    // the very bottom". Was [actions, preview] pre-v1.1, which
+    // floated the preview below the actions and broke the layout
+    // consistency users expect across tabs.
     root.appendChild(tabFooter);
 
     genBtn.addEventListener('click', async () => {
+      // v1.1.26: breadcrumb the click BEFORE guards.
+      if (typeof window.logAction === 'function') {
+        window.logAction('generate', 'click-generate', { tab: 'video', has_api_key: !!state.config.api_key });
+      }
       // Bug-fix (2026-06-20): wrap the WHOLE click handler in a
       // try/catch. The previous layout only caught errors inside the
       // variant for-loop, so a ReferenceError thrown during pre-flight
@@ -139,11 +151,32 @@ window.TABS.video = {
       try {
       // Re-entrancy guard: another generation is in progress.
       // Phase A: per-tab gate so a job on a different tab does NOT block video.
-      if (window.JobRunner && window.JobRunner.isTabRunning('video')) return;
-      if (!window.JobRunner && state.generating) return;
-      if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
+      // Bug-fix (C3): window.JobRunner always exists but never has jobs in
+      // production, so the old two-line guard was always false on both
+      // lines — no re-entrancy protection at all. This single condition
+      // restores the legacy guard. state.generating holds the busy tab's
+      // key (set/cleared by armGenBtnWithCancel in app.js), so comparing
+      // to 'video' (not just truthiness) keeps the Phase A per-tab gate
+      // intact — a job on image/speech/music must NOT block video.
+      if ((window.JobRunner && window.JobRunner.isTabRunning('video')) || state.generating === 'video') {
+        if (typeof window.logAction === 'function') {
+          window.logAction('generate', 'guard-blocked', { reason: 'already-running', tab: 'video' });
+        }
+        return;
+      }
+      if (!state.config.api_key) {
+        if (typeof window.logAction === 'function') {
+          window.logAction('generate', 'guard-blocked', { reason: 'no-api-key', tab: 'video' });
+        }
+        toast('No API key configured. Click ⚙ to open Settings.', 'err'); return;
+      }
       const promptText = buildFinalPrompt(styleRow.sel, prompt.input);
-      if (!promptText) { toast('Prompt is required (style or manual input).', 'warn'); return; }
+      if (!promptText) {
+        if (typeof window.logAction === 'function') {
+          window.logAction('generate', 'guard-blocked', { reason: 'no-prompt', tab: 'video' });
+        }
+        toast('Prompt is required (style or manual input).', 'warn'); return;
+      }
       // Authoritative combination check (warn + proceed). Catches e.g.
       // the Fast model without a first-frame, or a last-frame without a
       // first-frame — both of which the API rejects.
@@ -162,7 +195,25 @@ window.TABS.video = {
         return;
       }
       const slug = slugify(promptText).slice(0, 60) || 'video';
-      const cancel = armGenBtnWithCancel(genBtn, 'Generate');
+      // bug-fix Phase1 (_temp4.md): wrap the existing generation flow in
+      // JobRunner.run() so ActiveJobsWidget shows it during the run and
+      // its inline ✕ can cancel just this job. suppressLogRow:true keeps
+      // every existing addLogEvent call below unchanged — JobRunner is
+      // purely a tracking/cancellation layer here. `ctrl` is assigned by
+      // the run() call itself; runFn only executes in a later microtask,
+      // by which time the assignment has completed, so it can safely
+      // read ctrl.jobId via closure.
+      const pShort0 = (promptText || '').replace(/\s+/g, ' ').slice(0, 120);
+      let ctrl;
+      ctrl = window.JobRunner.run({
+        tabKey: 'video',
+        type: 'video',
+        title: `Video generation: ${pShort0}${promptText && promptText.length > 120 ? '…' : ''}`,
+        subtitle: `Variants: ${variantsCount}`,
+        suppressLogRow: true,
+        runFn: async (ctx) => {
+      const cancel = armGenBtnWithCancel(genBtn, 'Generate', ctrl.jobId);
+      ctx.signal.addEventListener('abort', () => cancel.cancel());
       // v1.1.15 (reported by user): the "force prefix only"
       // counter is per-run (NOT per-prefix) so the first
       // variant of the first item is 000001. We allocate the
@@ -178,16 +229,20 @@ window.TABS.video = {
         category: 'gen',
         groupId: runGroupId,
         headline: `Video generation started: ${pShort}${promptText && promptText.length > 120 ? '…' : ''}`,
+        fullText: promptText,
         details: [
           `Variants: ${variantsCount}`,
           `Model: ${model.input.getValue() || '(default)'}`,
-          `Resolution: ${resolution.input.value || '(default)'}`,
-          `Duration: ${duration.input.value || '(default)'}`,
+          `Resolution: ${resolution.input.getValue() || '(default)'}`,
+          `Duration: ${duration.input.getValue() || '(default)'}`,
         ],
       });
       let allOk = true;
       let lastPreview = null;
       let lastOutFile = null;
+      // v1.1 (audit M5): track every successful output file so a
+      // partial-success run routes through the success path.
+      const outFiles = [];
       let threw = null;
       try {
         for (let v = 1; v <= variantsCount; v++) {
@@ -226,8 +281,8 @@ window.TABS.video = {
           // counter>.<ext>` with the counter starting at
           // 000001 per Generate click.
           const outFile = state.filePrefixForceOnly
-            ? uniquePath(outDir, buildForcePrefixFileName(forceCounter, prefix, 'mp4'))
-            : uniquePath(outDir, `${ts}_${slug}${variantTag}.mp4`);
+            ? await nextFreeForcePrefixPath(outDir, forceCounter, prefix, 'mp4')
+            : uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.mp4`);
           args.push('--download', outFile);
           lastCmd.textContent = `mmx ${args.join(' ')}`;
           const statusMsg = variantsCount > 1
@@ -241,39 +296,57 @@ window.TABS.video = {
             : 'Submitting video job (may take a few seconds)…');
           const start = Date.now();
           elapsedTimer = setInterval(() => { const s = Math.round((Date.now() - start) / 1000); updateStatus(`Generating video ${v}/${variantsCount}… elapsed ${s}s (typical: 60-180s)`); }, 1000);
-          const r = await window.api.mmxRun(args);
-          clearInterval(elapsedTimer);
-          if (cancel.wasCancelled()) { allOk = false; break; }
-          if (!r.ok) {
-            const msg = formatMmxError(r);
-            preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}).</div><div class="meta">${escapeHtml(msg)}</div>`;
-            toast('Video generation failed: ' + msg, 'err', 6000);
-            allOk = false;
-            break;
+          // v1.1 (audit M2): wrap the await in try/finally so the
+          // 1-second interval is ALWAYS cleared — even if mmxRunJob
+          // rejects (IPC layer failure, main-process crash mid-call).
+          // The previous version only cleared on the happy path; a
+          // rejection left the interval firing forever, updating a
+          // stale preview long after the user gave up.
+          try {
+            const r = await window.api.mmxRunJob({ args, jobId: ctrl.jobId });
+            if (cancel.wasCancelled()) { allOk = false; break; }
+            if (!r.ok) {
+              const msg = formatMmxError(r);
+              preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}).</div><div class="meta">${escapeHtml(msg)}</div>`;
+              toast('Video generation failed: ' + msg, 'err', 6000);
+              allOk = false;
+              // v1.1 (audit M5): continue with remaining variants
+              // (mirrors imageTab + speechTab + musicTab). The
+              // finally clears elapsedTimer either way.
+              continue;
+            }
+            // v1.1.12 (reported by user): verify the file actually
+            // landed on disk. mmx returns success (exit 0) even
+            // when something downstream (e.g. the download step)
+            // fails silently, leaving the user staring at an
+            // empty folder with the tool claiming the video was
+            // generated. The fix: after a "successful" mmxRun,
+            // probe the output path via fbExists. If the file
+            // is missing, surface a clear "file not on disk"
+            // error instead of "Video generated." (which was the
+            // previous behaviour).
+            // v1.1 (audit BUG-R2-09): fbExists now returns
+            // { ok, exists } — pull the boolean out of .exists.
+            const existsRes = await window.api.fbExists(outFile);
+            const fileExists = !!(existsRes && existsRes.exists);
+            if (!fileExists) {
+              const msg = `mmx reported success but the expected output file is missing on disk.\n\n` +
+                `Expected: ${outFile}\n\n` +
+                `This usually means the API call succeeded but the download step failed silently (quota / network / etc.). ` +
+                `Try Generate again, or check ⚙ Settings → Output folder.`;
+              preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}).</div><div class="meta">${escapeHtml(msg)}</div>`;
+              toast('Video generation failed: output file missing on disk.', 'err', 6000);
+              allOk = false;
+              // v1.1 (audit M5): continue — the next variant may
+              // land cleanly even if this one's download failed.
+              continue;
+            }
+            lastPreview = r.parsed;
+            lastOutFile = outFile;
+            outFiles.push(outFile);
+          } finally {
+            clearInterval(elapsedTimer);
           }
-          // v1.1.12 (reported by user): verify the file actually
-          // landed on disk. mmx returns success (exit 0) even
-          // when something downstream (e.g. the download step)
-          // fails silently, leaving the user staring at an
-          // empty folder with the tool claiming the video was
-          // generated. The fix: after a "successful" mmxRun,
-          // probe the output path via fbExists. If the file
-          // is missing, surface a clear "file not on disk"
-          // error instead of "Video generated." (which was the
-          // previous behaviour).
-          const fileExists = await window.api.fbExists(outFile);
-          if (!fileExists) {
-            const msg = `mmx reported success but the expected output file is missing on disk.\n\n` +
-              `Expected: ${outFile}\n\n` +
-              `This usually means the API call succeeded but the download step failed silently (quota / network / etc.). ` +
-              `Try Generate again, or check ⚙ Settings → Output folder.`;
-            preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}).</div><div class="meta">${escapeHtml(msg)}</div>`;
-            toast('Video generation failed: output file missing on disk.', 'err', 6000);
-            allOk = false;
-            break;
-          }
-          lastPreview = r.parsed;
-          lastOutFile = outFile;
         }
       } catch (e) {
         threw = e;
@@ -285,17 +358,20 @@ window.TABS.video = {
         // BatchGen runner (which polls state.generating) always reads the
         // final result, never a stale value left over from a prior item.
         state.genLastResult = state.genLastResult || { image: null, speech: null, music: null, video: null };
-        state.genLastResult.video = (allOk && !threw && !cancel.wasCancelled()) ? 'ok' : 'err';
+        // v1.1 (audit M5 + L1): mirror the image-tab partial-success gate.
+        state.genLastResult.video = (outFiles.length > 0 && !threw) ? 'ok' : 'err';
         cancel.cleanup();
         setStatus('Ready', false);
         try { await refreshBrowser(); } catch {}
         try { await refreshQuota(); } catch {}
       }
-      if (threw) return;
+      if (threw) return { status: 'err', error: (threw && threw.message) || String(threw), outputPaths: outFiles };
       if (cancel.wasCancelled()) {
         preview.innerHTML = '<div class="empty">Generation cancelled.</div>';
         toast('Cancelled.', 'warn');
-        return;
+        // v1.1 (audit H1+L1): a cancel after partial success must
+        // return EVERY successful file (was: only the last).
+        return { status: outFiles.length > 0 ? 'ok' : 'cancel', outputPaths: outFiles };
       }
       if (allOk && lastOutFile) {
         showVideoPreview(preview, lastOutFile, lastPreview);
@@ -308,11 +384,35 @@ window.TABS.video = {
           headline: `Generated ${variantsCount} video file${variantsCount === 1 ? '' : 's'}`,
           details: [`• ${lastOutFile}`],
         });
+      } else if (outFiles.length > 0 && lastOutFile) {
+        // v1.1 (audit M5): partial-success path.
+        showVideoPreview(preview, lastOutFile, lastPreview);
+        bumpGenerationCounter('video', outFiles.length);
+        addLogEvent({
+          category: 'gen',
+          groupId: runGroupId,
+          result: 'warn',
+          headline: `Generated ${outFiles.length}/${variantsCount} video file${outFiles.length === 1 ? '' : 's'} (${variantsCount - outFiles.length} failed)`,
+          details: outFiles.map((p) => '• ' + p),
+        });
       }
-      if (allOk) {
-        toast(variantsCount > 1
-          ? `Video generated. ${variantsCount} variants saved.`
-          : 'Video generated.', 'ok');
+      // v1.1 (audit M5): partial-success gate — a run with ANY
+      // successful variant returns 'ok'.
+      if (outFiles.length > 0) {
+        const failCount = variantsCount - outFiles.length;
+        toast(failCount > 0
+          ? `Video generated. ${outFiles.length}/${variantsCount} variants saved (${failCount} failed — see log).`
+          : (variantsCount > 1 ? `Video generated. ${variantsCount} variants saved.` : 'Video generated.'),
+          failCount > 0 ? 'warn' : 'ok');
+        return { status: 'ok', outputPaths: outFiles };
+      }
+      return { status: 'err', outputPaths: [] };
+        },
+      });
+      if (ctrl && typeof ctrl.catch === 'function') {
+        ctrl.catch(() => {});
+      } else {
+        await ctrl.done;
       }
       } catch (e) {
         // Outer guard: any error thrown by pre-flight (state lookups,

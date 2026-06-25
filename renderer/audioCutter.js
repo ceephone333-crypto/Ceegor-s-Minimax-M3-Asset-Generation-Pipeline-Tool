@@ -38,12 +38,22 @@
     return `${m}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
   }
   // Parse "m:ss.mmm", "ss.mmm", or a bare seconds number.
+  // v1.1 (audit BUG-N5): the previous version split on EVERY
+  // `:` and took parts[0] (minutes) and parts[1] (seconds).
+  // An input like "1:2:3" would split into ["1","2","3"], and
+  // parseFloat("2") + parseFloat("3") would silently swallow
+  // the "3" — the user got 1*60 + 2 = 62 seconds when they
+  // probably meant an error or 3723 seconds. We now accept
+  // AT MOST ONE colon: anything more is rejected with NaN
+  // so the input field's onChange handler can surface a
+  // "invalid format" error.
   function parseTime(str) {
     if (str == null) return NaN;
     str = String(str).trim();
     if (!str) return NaN;
     if (str.includes(':')) {
       const parts = str.split(':');
+      if (parts.length > 2) return NaN; // v1.1: too many colons
       const m = parseFloat(parts[0]);
       const s = parseFloat(parts[1]);
       if (!isFinite(m) || !isFinite(s)) return NaN;
@@ -78,18 +88,24 @@
     return dir.replace(/[\\/]+$/, '') + sep + name;
   }
   const toast = (m, k, ms) => (typeof window.toast === 'function' ? window.toast(m, k, ms) : undefined);
+  // v1.1.26: single-line breadcrumb helper for the audio-cut
+  // modal — saves ~10 lines vs. repeating the logAction call
+  // pattern at every site.
+  const _logAct = (act, det) => { if (typeof window.logAction === 'function') window.logAction('audio-cut', act, det); };
+  const _logWarn = (act, det) => { if (typeof window.logWarn === 'function') window.logWarn('audio-cut', act, det); };
 
   async function showAudioCutter(srcPath) {
     if (!srcPath) { toast('No file selected.', 'warn'); return; }
     if (typeof showModal !== 'function') { toast('Modal system not available.', 'err'); return; }
     if (!window.api || typeof window.api.audioProbe !== 'function') {
+      _logWarn('open-failed', 'audio tools unavailable');
       toast('Audio tools are not available in this build.', 'err');
       return;
     }
+    _logAct('open', { src: srcPath });
 
     showModal((m, close) => {
       m.classList.add('audio-cutter-modal');
-
       // ---- header + meta ----
       m.appendChild(el('h2', {}, ['✂ Audio cut', el('span', { class: 'ac-status', id: '' }, '')]));
       const meta = el('div', { class: 'ac-meta' }, [
@@ -99,7 +115,6 @@
       const errBox = el('div', { class: 'ac-error' }, '');
       m.appendChild(errBox);
       const showErr = (msg) => { errBox.textContent = msg; errBox.style.display = msg ? 'block' : 'none'; };
-
       // ---- waveform stage ----
       const stage = el('div', { class: 'ac-stage' });
       const canvas = el('canvas', { class: 'ac-canvas' });
@@ -127,7 +142,6 @@
       const resetBtn = el('button', { class: 'btn-mini', type: 'button', title: 'Reset the selection to the whole file' }, '↺ Whole file');
       const playtime = el('span', { class: 'ac-playtime' }, '');
       m.appendChild(el('div', { class: 'ac-tool-row' }, [playBtn, stopBtn, silenceBtn, resetBtn, playtime]));
-
       // ---- export row ----
       const fadeCb = el('input', { type: 'checkbox' });
       fadeCb.checked = true;
@@ -154,7 +168,6 @@
 
       // close row
       m.appendChild(el('div', { class: 'footer' }, [el('button', { type: 'button', onclick: close }, 'Close')]));
-
       // ---- state ----
       let duration = 0;
       let peaks = null;       // Float32Array-like (plain array from IPC)
@@ -313,7 +326,15 @@
       silenceBtn.addEventListener('click', async () => {
         silenceBtn.disabled = true; silenceBtn.textContent = 'Detecting…';
         try {
-          const r = await window.api.audioTrimSilence(srcPath, {});
+          // v1.1 (advanced pipeline settings): forward the
+          // user-tuned silence-detection values when present.
+          // The wrapper falls back to -50 dB / 50 ms when the
+          // advanced overlay has never been opened.
+          const adv = (window.state && window.state.pipelineAdvancedSettings && window.state.pipelineAdvancedSettings.audio) || {};
+          const r = await window.api.audioTrimSilence(srcPath, {
+            thresholdDb: adv.silenceThresholdDb,
+            minSilenceMs: adv.minSilenceMs,
+          });
           if (r && r.ok) {
             startSec = r.startSec || 0;
             endSec = (r.endSec != null) ? r.endSec : duration;
@@ -335,12 +356,14 @@
 
       exportBtn.addEventListener('click', async () => {
         showErr('');
-        if (!duration) { showErr('Audio not loaded yet.'); return; }
+        _logAct('click-export', { src: srcPath, has_duration: !!duration });
+        if (!duration) { _logWarn('export-blocked', 'no-duration'); showErr('Audio not loaded yet.'); return; }
         clampSel();
-        if (endSec - startSec < 0.02) { showErr('Selection is too short (min 20 ms).'); return; }
+        if (endSec - startSec < 0.02) { _logWarn('export-blocked', 'selection-too-short'); showErr('Selection is too short (min 20 ms).'); return; }
         const outName = (nameInp.value || '').trim();
-        if (!outName) { showErr('Enter an output file name.'); return; }
+        if (!outName) { _logWarn('export-blocked', 'no-name'); showErr('Enter an output file name.'); return; }
         const dstPath = joinPath(dirName(srcPath), baseName(outName));
+        _logAct('export-start', { src: srcPath, dst: dstPath });
         exportBtn.disabled = true; exportBtn.textContent = 'Exporting…';
         stopPlay();
         // v1.1.15 (reported by user): the previous version
@@ -369,11 +392,20 @@
           ],
         });
         try {
+          // v1.1 (advanced pipeline settings): forward the
+          // user-tuned codec quality values when present.
+          const adv = (window.state && window.state.pipelineAdvancedSettings && window.state.pipelineAdvancedSettings.audio) || {};
           const r = await window.api.audioCut(srcPath, dstPath, {
             startSec, endSec,
             fade: !!fadeCb.checked,
             fadeMs: Math.max(0, parseInt(fadeMsInp.value, 10) || 0),
             copy: !!losslessCb.checked,
+            quality: {
+              mp3Quality: adv.mp3Quality,
+              oggQuality: adv.oggQuality,
+              opusBitrate: adv.opusBitrate,
+              m4aBitrate: adv.m4aBitrate,
+            },
           });
           if (r && r.ok) {
             addLog({

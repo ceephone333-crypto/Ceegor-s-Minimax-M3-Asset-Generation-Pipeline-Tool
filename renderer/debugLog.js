@@ -60,13 +60,40 @@
     try { log('CW: ' + Array.from(arguments).map(a => String(a)).join(' | ')); } catch (_) {}
     origWarn.apply(console, arguments);
   };
-  // Probe (nach allen script-Tags): pruefe ob bekannte Vars/Funcs da sind
+  // Probe (nach allen script-Tags): pruefe ob bekannte Vars/Funcs da sind.
+  // v1.1.26: extended to dump config.txt + state.json + addons
+  // detection so the file log captures what the tool loaded at
+  // startup WITHOUT requiring the user to open DevTools.
   const probe = setInterval(() => {
-    log('probe: applyFileSearch=' + (typeof applyFileSearch) +
-        ' refreshBrowser=' + (typeof refreshBrowser) +
-        ' state=' + (typeof state) + ' window.state=' + (typeof window.state) +
-        ' TABS.image=' + (typeof TABS?.image) + ' TABS.speech=' + (typeof TABS?.speech) +
-        ' init=' + (typeof init));
+    const parts = [
+      'applyFileSearch=' + (typeof applyFileSearch),
+      'refreshBrowser=' + (typeof refreshBrowser),
+      'state=' + (typeof state),
+      'window.state=' + (typeof window.state),
+      'TABS.image=' + (typeof TABS?.image),
+      'TABS.speech=' + (typeof TABS?.speech),
+      'init=' + (typeof init),
+    ];
+    // Dump a redacted config snapshot so we know what the tool
+    // actually loaded from disk. Never log the api_key value
+    // (the mask helper above strips it from log lines).
+    try {
+      if (typeof window.state !== 'undefined' && window.state && window.state.config) {
+        const c = window.state.config;
+        parts.push('cfg.api_key_set=' + (!!c.api_key && c.api_key.length > 0));
+        parts.push('cfg.output_dir=' + (c.output_dir || '(empty)'));
+        parts.push('cfg.region=' + (c.region || '(empty)'));
+        parts.push('cfg.theme=' + (c.theme || '(empty)'));
+        parts.push('cfg.styles_count=' + (Array.isArray(c.styles) ? c.styles.length : 0));
+      }
+    } catch (_) {}
+    // Addons: which optional binaries the tool found at boot.
+    try {
+      if (typeof window.state !== 'undefined' && window.state) {
+        parts.push('addons.realesrgan=' + (window.state.realesrganFirstRunDismissed ? 'dismissed' : 'pending'));
+      }
+    } catch (_) {}
+    log('probe: ' + parts.join(' '));
   }, 500);
   // Stop probing nach 30s
   setTimeout(() => clearInterval(probe), 30000);
@@ -142,5 +169,81 @@
         }
       } catch (_) {}
     } catch (_) {}
+  };
+
+  // v1.1.26: window.logAction — breadcrumb for user actions.
+  // Use from EVERY meaningful user interaction (tab switch,
+  // file-browser button, Generate click, settings save, audio
+  // cut, popup open, keyboard shortcut, install, theme toggle,
+  // …) so a developer's renderer-error.log captures the full
+  // timeline of what the user did before a problem.
+  //
+  //   logAction(category, action, details?)
+  //     category : short tag for the subsystem (e.g. 'tab',
+  //                'file-browser', 'generate', 'settings',
+  //                'audio-cut', 'image-overlay', 'popup',
+  //                'shortcut', 'install', 'theme').
+  //     action   : the verb (e.g. 'switch', 'click-up',
+  //                'save', 'export', 'open').
+  //     details  : optional string OR object. Strings become
+  //                the log detail line; objects are serialised
+  //                as key=value pairs for grep-friendliness.
+  //
+  // Lower overhead than logError/logWarn: we don't echo to the
+  // in-app log pane (that would flood the user's view during a
+  // long session). We DO write to renderer-error.log via the
+  // console.log wrapper below, AND we keep a small ring buffer
+  // in window.__actionTrail so the user (or a future "copy log"
+  // button) can see the last N actions without scrolling
+  // through thousands of file-log lines.
+  function _formatDetails(d) {
+    if (d == null) return '';
+    if (typeof d === 'string') return d;
+    if (typeof d === 'object') {
+      try {
+        const parts = [];
+        for (const k of Object.keys(d)) {
+          const v = d[k];
+          parts.push(`${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
+        }
+        return parts.join(' ');
+      } catch (_) { return String(d); }
+    }
+    return String(d);
+  }
+  window.logAction = function logAction(category, action, details) {
+    try {
+      const cat = String(category || 'action');
+      const act = String(action || '?');
+      const det = _formatDetails(details);
+      const line = det ? `ACT ${cat}:${act} ${det}` : `ACT ${cat}:${act}`;
+      // 1) Console.log → routed to renderer-error.log by the
+      //    probe-free log helper below (we don't install a probe
+      //    here, we just write to console.log + a ring buffer).
+      // 2) ring buffer for fast in-memory access.
+      try {
+        const trail = (window.__actionTrail = window.__actionTrail || []);
+        trail.push({ ts: Date.now(), cat, act, details: det });
+        if (trail.length > 500) trail.splice(0, trail.length - 500);
+      } catch (_) {}
+      // 3) File log via window.api.logToFile (same channel the
+      //    console wrappers use). We bypass console.* here so
+      //    we don't pollute the user's DevTools console with a
+      //    per-action line — DevTools is for errors, the file
+      //    log is the action trail.
+      try {
+        if (window.api && typeof window.api.logToFile === 'function') {
+          const ts = new Date().toISOString().slice(11, 23);
+          window.api.logToFile(ts + ' ' + line);
+        }
+      } catch (_) {}
+    } catch (_) { /* never throw from the logger */ }
+  };
+  // Convenience: window.getActionTrail() returns the ring buffer
+  // (a defensive copy so callers can't mutate the internal array).
+  window.getActionTrail = function getActionTrail() {
+    try {
+      return ((window.__actionTrail || []).slice());
+    } catch (_) { return []; }
   };
 })();
