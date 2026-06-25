@@ -85,18 +85,32 @@ window.TABS.music = {
     // the prompt explicitly forbids them. We auto-prepend a strong no-vocals clause.
     // (Bound here so `mode` is in scope.)
     const INSTRUMENTAL_PREFIX = 'no vocals, no lyrics, no human voice, ';
-    extraPrefix = () => (mode.input.value === 'instrumental' || instrumental.input.value === 'on')
+    // Bug-fix H1 (_temp5.md 360° audit): `mode` is `kind: 'enum'`, so
+    // `mode.input` is the `combo-select-enum` wrapper div (NOT the
+    // inner <select>). The wrapper has `.getValue()` wired up but no
+    // `.value` (divs don't have `.value`), and `.disabled` must be set
+    // on the underlying select (`mode.el`). Every previous read of
+    // `mode.input.value` returned `undefined`, making the whole vocal-
+    // mode feature dead code (the mode dropdown's value was never
+    // honoured, the dropdown was never locked when Instrumental was ON,
+    // and `--lyrics`/`--instrumental`/`--lyrics-optimizer` were never
+    // pushed to the argv).
+    extraPrefix = () => (mode.input.getValue() === 'instrumental' || instrumental.input.value === 'on')
       ? INSTRUMENTAL_PREFIX : '';
     const onInstrumentalChange = () => {
       // If the toggle is ON, force the mode to instrumental
       if (instrumental.input.value === 'on') {
-        mode.input.value = 'instrumental';
-        mode.input.disabled = true;
+        mode.el.value = 'instrumental';
+        mode.el.dispatchEvent(new Event('change', { bubbles: true }));
+        mode.el.disabled = true;
         mode.row.classList.add('locked-by-instrumental');
       } else {
-        mode.input.disabled = false;
+        mode.el.disabled = false;
         mode.row.classList.remove('locked-by-instrumental');
-        if (mode.input.value === 'instrumental') mode.input.value = 'lyrics-optimizer';
+        if (mode.input.getValue() === 'instrumental') {
+          mode.el.value = 'lyrics-optimizer';
+          mode.el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
       }
       instrBanner.style.display = instrumental.input.value === 'on' ? '' : 'none';
       counter.update();
@@ -141,7 +155,7 @@ window.TABS.music = {
     bannerBody.appendChild(document.createTextNode(' are supported.'));
     lyricsModeBanner.appendChild(bannerBody);
     function updateLyricsBanner() {
-      const isLyrics = mode.input.value === 'lyrics';
+      const isLyrics = mode.input.getValue() === 'lyrics';
       lyricsModeBanner.style.display = isLyrics ? '' : 'none';
       // Hide lyrics + lyricsFile when mode is not 'lyrics' (they'd be ignored otherwise)
       lyrics.row.style.display = isLyrics ? '' : 'none';
@@ -193,7 +207,7 @@ window.TABS.music = {
         { value: 'metal', label: 'metal' },
         { value: 'indie', label: 'indie' },
       ],
-      help: 'Music genre tag. Free-text fallback if you pick "Custom…".',
+      help: 'Music genre tag — the overall style of the track. The dropdown lists the genres the model handles best; pick "Custom…" to type your own (e.g. "drum and bass", "shoegaze", "K-pop").\n\nBest practices:\n  • Pick the closest genre; the model cross-pollinates adjacent genres naturally.\n  • Combine with the --mood dropdown for finer control (e.g. "jazz" + "melancholic" → sad jazz).\n  • Genre affects instrumentation AND arrangement — "techno" gets synthesizers + steady beat, "folk" gets acoustic guitar + strummed rhythm.',
     });
     const mood = buildParamRow('--mood', {
       kind: 'enum-text', default: '',
@@ -210,7 +224,7 @@ window.TABS.music = {
         { value: 'uplifting', label: 'uplifting' },
         { value: 'dreamy', label: 'dreamy' },
       ],
-      help: 'Mood or emotion. Free-text fallback if you pick "Custom…".',
+      help: 'Mood or emotion of the track — the FEELING the listener should get, independent of the genre.\n\n"happy" + "energetic" is upbeat dance music; "happy" + "calm" is light acoustic. Genre tells the model what instruments + structure to use; mood tells it what chord progressions + tempo feel to use. Combine for precision.',
     });
     const vocals = buildParamRow('--vocals', {
       kind: 'enum-text', default: '',
@@ -221,7 +235,7 @@ window.TABS.music = {
         { value: 'duet with harmonies', label: 'duet with harmonies' },
         { value: 'choir', label: 'choir' },
       ],
-      help: 'Vocal style descriptor. Free-text fallback if you pick "Custom…".',
+      help: 'Vocal style descriptor — only relevant if the track has vocals. Ignored when "Instrumental mode" is ON.\n\nThe dropdown gives quick picks (baritone, soprano, choir, …). Pick "Custom…" to type any voice description (e.g. "raspy male alto", "ethereal female with reverb"). The model matches voice characteristics (range, timbre) to the genre + mood.',
     });
     const instruments = buildParamRow('--instruments', {
       kind: 'enum-text', default: '',
@@ -235,7 +249,7 @@ window.TABS.music = {
         { value: 'synth', label: 'synth' },
         { value: 'orchestral', label: 'orchestral' },
       ],
-      help: 'Featured instruments. Free-text fallback if you pick "Custom…".',
+      help: 'Featured instruments — the "sound palette" of the track. The model picks supporting instruments to match, so picking just "piano" gets a piano-led track with light strings + bass, while picking "orchestral" gets a full 30-piece ensemble.\n\nFor most use cases the dropdown is enough; pick "Custom…" to type any combination ("ukulele, glockenspiel, marching snare").',
     });
     const bpm = buildParamRow('--bpm', {
       kind: 'number', default: '', min: 40, max: 220, step: 1,
@@ -245,7 +259,7 @@ window.TABS.music = {
         { value: 100, label: '100' }, { value: 110, label: '110' }, { value: 120, label: '120' },
         { value: 128, label: '128' }, { value: 140, label: '140' }, { value: 160, label: '160' },
       ],
-      help: 'Exact tempo in BPM.',
+      help: 'Exact tempo in beats per minute.\n\n  • 60-80 BPM — slow (ballads, ambient).\n  • 90-110 BPM — medium (most pop, hip-hop, R&B).\n  • 120-128 BPM — dance / house / disco standard.\n  • 140-160 BPM — drum & bass, punk, fast EDM.\n  • 180+ BPM — speedcore / metal.\n\nLeave "(unset)" to let the model pick based on the genre + mood. The dropdown is curated; pick "Custom…" (type a number) for any value 40-220 BPM.',
     });
     const key = buildParamRow('--key', {
       kind: 'enum-text', default: '',
@@ -265,7 +279,7 @@ window.TABS.music = {
         { value: 'A minor', label: 'A minor' },
         { value: 'B major', label: 'B major' },
       ],
-      help: 'Musical key. Free-text fallback if you pick "Custom…".',
+      help: 'Musical key — the root note + scale the track is written in.\n\nMajor keys (C major, D major, …) sound bright / happy. Minor keys (C minor, D minor, …) sound sad / introspective. Leave "(any)" to let the model pick. Combine with --mood for precision (e.g. "happy" + "D minor" can produce a bittersweet major-vibe track in D minor).',
     });
     const tempo = buildParamRow('--tempo', {
       kind: 'enum-text', default: '',
@@ -275,7 +289,7 @@ window.TABS.music = {
         { value: 'moderate', label: 'moderate' },
         { value: 'fast', label: 'fast' },
       ],
-      help: 'Coarse tempo hint.',
+      help: 'Coarse tempo hint — alternative to the exact --bpm value above.\n\n  • "slow" = ballads, ambient, slow jams (~60-80 BPM).\n  • "moderate" = most pop, R&B, rock (~90-120 BPM).\n  • "fast" = punk, EDM, drum & bass (~130+ BPM).\n\nIf you set both --bpm AND --tempo, --bpm wins. Use --bpm for exact control, --tempo when you just want "fast" without thinking about numbers.',
     });
     const structure = buildParamRow('--structure', {
       kind: 'enum-text', default: '',
@@ -285,13 +299,15 @@ window.TABS.music = {
         { value: 'verse-chorus-bridge-chorus', label: 'verse-chorus-bridge-chorus' },
         { value: 'intro-verse-chorus', label: 'intro-verse-chorus' },
       ],
-      help: 'Song structure description.',
+      help: 'Song structure — the high-level arrangement of sections.\n\nThe dropdown covers the most common pop structures; pick "Custom…" to type any (e.g. "intro-verse-prechorus-chorus-verse-chorus-bridge-chorus-outro"). For instrumental tracks structure mainly affects dynamic build-ups and drops; for vocal tracks it determines where the lyrics go.',
     });
     const references = buildParamRow('--references', {
-      kind: 'text', default: '', help: 'Reference tracks or artists, e.g. "similar to Ed Sheeran".',
+      kind: 'text', default: '',
+      help: 'Reference tracks or artists the model should aim for. Free-form text — comma-separated, no quotes needed.\n\nExamples:\n  • "similar to Ed Sheeran, Jason Mraz" — same vibe / genre / vocal style.\n  • "in the style of 80s synthwave" — era-specific reference.\n  • "Bohemian Rhapsody-like, dramatic structure" — single-song reference with structural hint.\n\nThe model uses these as STYLE references only — it does not copy melodies or lyrics (output is always original).',
     });
     const avoid = buildParamRow('--avoid', {
-      kind: 'text', default: '', help: 'Elements to avoid in the generated music.',
+      kind: 'text', default: '',
+      help: 'Elements to keep OUT of the generated music. The model steers AWAY from these.\n\nExamples:\n  • "no brass, no saxophone"\n  • "no heavy drums, no screaming vocals"\n  • "avoid EDM drops, no trap hi-hats"\n\nUseful when the random-seed generation keeps producing something you don\'t like. Combine with --references to nail down the style: "similar to Norah Jones" + "avoid electric guitar" = clean piano-vocal track.',
     });
     const useCase = buildParamRow('--use-case', {
       kind: 'enum-text', default: '',
@@ -302,10 +318,11 @@ window.TABS.music = {
         { value: 'jingle', label: 'jingle' },
         { value: 'podcast intro', label: 'podcast intro' },
       ],
-      help: 'Use case context.',
+      help: 'Use-case context — helps the model pick the right structure + length + energy level.\n\n  • "background music for video" — understated, repeats cleanly, doesn\'t fight narration.\n  • "theme song" — distinctive hook, builds energy.\n  • "jingle" — short (10-15s), catchy, memorable.\n  • "podcast intro" — sets the tone, usually 5-10s.\n\nFor YouTube / podcast use, "background music" gives the cleanest result.',
     });
     const extra = buildParamRow('--extra', {
-      kind: 'text', default: '', help: 'Additional fine-grained requirements not covered above.',
+      kind: 'text', default: '',
+      help: 'Additional fine-grained requirements not covered by the other fields. Appended to the prompt verbatim.\n\nExamples:\n  • "tempo shifts from 90 to 130 BPM in the second half"\n  • "ends with a fade-out over 5 seconds"\n  • "no reverb on vocals, heavy reverb on drums"\n\nUse this for one-off tweaks. For things covered by a dedicated dropdown above, prefer that dropdown (it\'s whitelisted and won\'t be rejected by the API).',
     });
     const audioFormat = buildParamRow('--format', {
       kind: 'enum', default: 'mp3',
@@ -314,14 +331,14 @@ window.TABS.music = {
         { value: 'wav', label: 'wav' },
         { value: 'pcm', label: 'pcm' },
       ],
-      help: 'Output audio container.',
+      help: 'Output audio file container / codec.\n\n  • mp3 (default) — most compatible, smallest lossy file.\n  • wav — uncompressed, largest file, no quality loss. Best for further editing.\n  • pcm — raw PCM (no header). Most players can\'t open it directly.\n\nMusic APIs don\'t accept FLAC or Opus; pick WAV if you want lossless.',
     });
     const sampleRate = buildParamRow('--sample-rate', {
       // Allowed by the music API: 16000/24000/32000/44100. 22050 and 48000
       // (previously offered) are rejected with "sample rate ... not allowed".
       kind: 'number', default: 44100, step: 1000,
       options: [16000, 24000, 32000, 44100].map((v) => ({ value: v, label: String(v) })),
-      help: 'Sample rate in Hz. Allowed: 16000, 24000, 32000, 44100.',
+      help: 'Audio sample rate in Hz.\n\n  • 16000 — telephone quality (muffled, small file).\n  • 24000 — AM-radio quality.\n  • 32000 — good for most music.\n  • 44100 (default) — CD quality. The full frequency range of human hearing.\n\nThe music API rejects 22050 and 48000 with an error — pick from the four listed values.',
     });
     const bitrate = buildParamRow('--bitrate', {
       kind: 'number', default: 128000, step: 1000,
@@ -332,10 +349,11 @@ window.TABS.music = {
       // and NO music could be generated. Restrict the dropdown to the
       // allowed set and default to 128000 (a value confirmed accepted).
       options: [32000, 64000, 128000, 256000].map((v) => ({ value: v, label: String(v) })),
-      help: 'Bitrate in bits/second. The music API accepts 32000, 64000, 128000, or 256000.',
+      help: 'Bitrate in bits per second — only meaningful for lossy formats (mp3).\n\n  • 32000 — low (smallest file, slight quality loss on complex music).\n  • 64000 — medium (good for most music).\n  • 128000 (default) — high (transparent for most listeners).\n  • 256000 — maximum (overkill for most music).\n\nThe API rejects any value outside this set with "audio bitrate: N is not allowed". For WAV / PCM the value is ignored.',
     });
     const watermark = buildParamRow('--aigc-watermark', {
-      kind: 'boolean', default: false, help: 'Embed an AI-generated content watermark in the audio.',
+      kind: 'boolean', default: false,
+      help: 'Embed an invisible AI-generated content watermark in the audio metadata.\n\nNo audible change, no file size change. Used by content moderation systems to identify AI-generated audio. Recommended ON for public-facing content (compliance with EU AI Act, China deep-synthesis rules, etc.). OFF for personal / private use.',
     });
     const outputFormat = buildParamRow('--output-format', {
       kind: 'enum', default: 'hex',
@@ -343,7 +361,7 @@ window.TABS.music = {
         { value: 'hex', label: 'hex (default, saved to file)' },
         { value: 'url', label: 'url (24h expiry — download promptly)' },
       ],
-      help: 'How audio bytes come back. hex is saved directly; url requires separate download.',
+      help: 'How the audio bytes come back from the API.\n\n  • hex (default) — the API returns the audio bytes inline (hex-encoded in the JSON). The tool decodes them and writes the file directly. Recommended; no expiry.\n  • url — the API uploads the audio to a temporary CDN and returns a URL. The tool downloads it. Faster initial response, but the URL EXPIRES after 24 hours — download promptly.',
     });
 
     root.appendChild(el('div', { class: 'section' }, [
@@ -390,13 +408,19 @@ window.TABS.music = {
       try {
       // Re-entrancy guard: another generation is in progress.
       // Phase A: per-tab gate so a job on a different tab does NOT block music.
-      if (window.JobRunner && window.JobRunner.isTabRunning('music')) return;
-      if (!window.JobRunner && state.generating) return;
+      // Bug-fix (C3): window.JobRunner always exists but never has jobs in
+      // production, so the old two-line guard was always false on both
+      // lines — no re-entrancy protection at all. This single condition
+      // restores the legacy guard. state.generating holds the busy tab's
+      // key (set/cleared by armGenBtnWithCancel in app.js), so comparing
+      // to 'music' (not just truthiness) keeps the Phase A per-tab gate
+      // intact — a job on image/speech/video must NOT block music.
+      if ((window.JobRunner && window.JobRunner.isTabRunning('music')) || state.generating === 'music') return;
       if (!state.config.api_key) { toast('No API key configured. Click ⚙ to open Settings.', 'err'); return; }
       const promptText = buildFinalPrompt(styleRow.sel, prompt.input, extraPrefix());
       if (!promptText) { toast('Prompt is required (style or manual input).', 'warn'); return; }
       // Validate lyrics-mode input once, before looping variants
-      if (mode.input.value === 'lyrics') {
+      if (mode.input.getValue() === 'lyrics') {
         // Bug-fix (2026-06-20, reported by user): `lyricsFile` is a
         // `text` row with a Browse button, so `lyricsFile.input` is
         // a div wrapper, not the inner <input>. Reading `.value` on
@@ -449,11 +473,11 @@ window.TABS.music = {
       // Map the single "Vocal mode" selector onto the API's mutually
       // exclusive instrumental / lyrics-optimizer / lyrics flags.
       if (typeof mmxPreflightConfirm === 'function') {
-        const _modeVal = mode.input.value;
+        const _modeVal = mode.input.getValue();
         if (!mmxPreflightConfirm('music', {
-          model: musicModel, format: audioFormat.input.value,
+          model: musicModel, format: audioFormat.input.getValue(),
           'sample-rate': sampleRate.input.getValue(), bitrate: bitrate.input.getValue(),
-          'output-format': outputFormat.input.value, prompt: promptText,
+          'output-format': outputFormat.input.getValue(), prompt: promptText,
           instrumental: _modeVal === 'instrumental',
           'lyrics-optimizer': _modeVal === 'lyrics-optimizer',
           lyrics: _modeVal === 'lyrics' ? (lyricsFile.input.getValue() || lyrics.input.value) : '',
@@ -476,7 +500,7 @@ window.TABS.music = {
         return;
       }
       const slug = slugify(promptText).slice(0, 60) || 'music';
-      const ext = (audioFormat.input.value || 'mp3');
+      const ext = (audioFormat.input.getValue() || 'mp3');
       // Total assets this run will produce. The per-tab ETA timer reads
       // this from state.genQueueSize[tabKey] to compute a "remaining
       // time for the whole batch" estimate that ticks down as each
@@ -485,7 +509,25 @@ window.TABS.music = {
       if (!state.genQueueDone) state.genQueueDone = { image: 0, speech: 0, music: 0, video: 0 };
       state.genQueueSize.music = variantsCount;
       state.genQueueDone.music = 0;
-      const cancel = armGenBtnWithCancel(genBtn, 'Generate');
+      // bug-fix Phase1 (_temp4.md): wrap the existing generation flow in
+      // JobRunner.run() so ActiveJobsWidget shows it during the run and
+      // its inline ✕ can cancel just this job. suppressLogRow:true keeps
+      // every existing addLogEvent call below unchanged — JobRunner is
+      // purely a tracking/cancellation layer here. `ctrl` is assigned by
+      // the run() call itself; runFn only executes in a later microtask,
+      // by which time the assignment has completed, so it can safely
+      // read ctrl.jobId via closure.
+      const pShort0 = (promptText || '').replace(/\s+/g, ' ').slice(0, 120);
+      let ctrl;
+      ctrl = window.JobRunner.run({
+        tabKey: 'music',
+        type: 'music',
+        title: `Music generation: ${pShort0}${promptText && promptText.length > 120 ? '…' : ''}`,
+        subtitle: `Variants: ${variantsCount}`,
+        suppressLogRow: true,
+        runFn: async (ctx) => {
+      const cancel = armGenBtnWithCancel(genBtn, 'Generate', ctrl.jobId);
+      ctx.signal.addEventListener('abort', () => cancel.cancel());
       // v1.1.15 (reported by user): the "force prefix only"
       // counter is per-run (NOT per-prefix) so the first
       // variant of the first item is 000001. We allocate the
@@ -503,16 +545,21 @@ window.TABS.music = {
         category: 'gen',
         groupId: runGroupId,
         headline: `Music generation started: ${pShort}${promptText && promptText.length > 120 ? '…' : ''}`,
+        fullText: promptText,
         details: [
           `Variants: ${variantsCount}`,
           `Model: ${model.input.getValue() || '(default)'}`,
-          `Format: ${audioFormat.input.value || '(default)'}`,
-          `Mode: ${mode.input.value}`,
+          `Format: ${audioFormat.input.getValue() || '(default)'}`,
+          `Mode: ${mode.input.getValue()}`,
         ],
       });
       let allOk = true;
       let lastPreview = null;
       let lastOutFile = null;
+      // v1.1 (audit M5): track every successful output file so a
+      // partial-success run routes through the success path instead
+      // of the failure path (mirrors imageTab + speechTab).
+      const outFiles = [];
       let threw = null;
       try {
         for (let v = 1; v <= variantsCount; v++) {
@@ -521,9 +568,9 @@ window.TABS.music = {
           const args = ['music', 'generate'];
           args.push('--prompt', promptText);
           // Mode
-          if (mode.input.value === 'lyrics-optimizer') args.push('--lyrics-optimizer');
-          else if (mode.input.value === 'instrumental') args.push('--instrumental');
-          else if (mode.input.value === 'lyrics') {
+          if (mode.input.getValue() === 'lyrics-optimizer') args.push('--lyrics-optimizer');
+          else if (mode.input.getValue() === 'instrumental') args.push('--instrumental');
+          else if (mode.input.getValue() === 'lyrics') {
             // Same .value-vs-.getValue() fix as the pre-flight check
             // above — lyricsFile is a `text` row with a Browse
             // button, so its input is a div wrapper.
@@ -549,10 +596,19 @@ window.TABS.music = {
           if (extra.input.value.trim()) args.push('--extra', extra.input.value.trim());
           appendFlag(args, audioFormat.input);
           appendFlag(args, sampleRate.input);
-          appendFlag(args, bitrate.input);
+          // v1.1 (audit M1 — music): gate --bitrate the same way the
+          // M4 fix did for speech. wav / pcm are lossless; sending
+          // --bitrate is either silently ignored or rejected by the
+          // API. We gate at the call site (not by mutating the
+          // select's value) so the user's choice survives a round
+          // trip when they switch back to mp3.
+          {
+            const fmt = (audioFormat.input.getValue() || 'mp3').split('_')[0];
+            if (['mp3'].includes(fmt)) appendFlag(args, bitrate.input);
+          }
           appendBoolFlag(args, watermark.input, '--aigc-watermark');
-          if (outputFormat.input.value && outputFormat.input.value !== 'hex') {
-            args.push('--output-format', outputFormat.input.value);
+          if (outputFormat.input.getValue() && outputFormat.input.getValue() !== 'hex') {
+            args.push('--output-format', outputFormat.input.getValue());
           }
           // Unique output file per variant
           const ts = timestamp();
@@ -564,8 +620,8 @@ window.TABS.music = {
           // counter>.<ext>` with the counter starting at
           // 000001 per Generate click.
           const outFile = state.filePrefixForceOnly
-            ? uniquePath(outDir, buildForcePrefixFileName(forceCounter, prefix, ext))
-            : uniquePath(outDir, `${ts}_${slug}${variantTag}.${ext}`);
+            ? await nextFreeForcePrefixPath(outDir, forceCounter, prefix, ext)
+            : uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.${ext}`);
           args.push('--out', outFile);
           lastCmd.textContent = maskLine(`mmx ${args.join(' ')}`, state.config && state.config.api_key);
           const statusMsg = variantsCount > 1
@@ -573,14 +629,16 @@ window.TABS.music = {
             : 'Generating music… (may take 30s–2min)';
           setStatus(statusMsg, true);
           preview.innerHTML = `<div class="empty"><span class="spinner"></span> ${escapeHtml(statusMsg)}</div>`;
-          const r = await window.api.mmxRun(args);
+          const r = await window.api.mmxRunJob({ args, jobId: ctrl.jobId });
           if (cancel.wasCancelled()) { allOk = false; break; }
           if (!r.ok) {
             const msg = formatMmxError(r);
             preview.innerHTML = `<div class="empty">Generation failed (variant ${v}/${variantsCount}).</div><div class="meta">${escapeHtml(msg)}</div>`;
             toast(`Music generation failed: ${msg}`, 'err', 6000);
             allOk = false;
-            break;
+            // v1.1 (audit M5): continue with remaining variants
+            // instead of aborting (mirrors imageTab + speechTab).
+            continue;
           }
           // Update the per-item average + advance the queue counter so
           // the ETA ticks down per item. See the image-tab comment
@@ -593,6 +651,7 @@ window.TABS.music = {
           refreshTabEtas();
           lastPreview = r.parsed;
           lastOutFile = outFile;
+          outFiles.push(outFile);
         }
       } catch (e) {
         threw = e;
@@ -604,17 +663,20 @@ window.TABS.music = {
         // BatchGen runner (which polls state.generating) always reads the
         // final result, never a stale value left over from a prior item.
         state.genLastResult = state.genLastResult || { image: null, speech: null, music: null, video: null };
-        state.genLastResult.music = (allOk && !threw && !cancel.wasCancelled()) ? 'ok' : 'err';
+        // v1.1 (audit M5 + L1): mirror the image-tab partial-success gate.
+        state.genLastResult.music = (outFiles.length > 0 && !threw) ? 'ok' : 'err';
         cancel.cleanup();
         setStatus('Ready', false);
         try { await refreshBrowser(); } catch {}
         try { await refreshQuota(); } catch {}
       }
-      if (threw) return;
+      if (threw) return { status: 'err', error: (threw && threw.message) || String(threw), outputPaths: outFiles };
       if (cancel.wasCancelled()) {
         preview.innerHTML = '<div class="empty">Generation cancelled.</div>';
         toast('Cancelled.', 'warn');
-        return;
+        // v1.1 (audit H1+L1): a cancel after partial success must
+        // return EVERY successful file (was: only the last).
+        return { status: outFiles.length > 0 ? 'ok' : 'cancel', outputPaths: outFiles };
       }
       if (allOk && lastOutFile) {
         showAudioPreview(preview, lastOutFile, lastPreview);
@@ -629,11 +691,35 @@ window.TABS.music = {
           headline: `Generated ${variantsCount} music file${variantsCount === 1 ? '' : 's'}`,
           details: [`• ${lastOutFile}`],
         });
+      } else if (outFiles.length > 0 && lastOutFile) {
+        // v1.1 (audit M5): partial-success path.
+        showAudioPreview(preview, lastOutFile, lastPreview);
+        bumpGenerationCounter('music', outFiles.length);
+        addLogEvent({
+          category: 'gen',
+          groupId: runGroupId,
+          result: 'warn',
+          headline: `Generated ${outFiles.length}/${variantsCount} music file${outFiles.length === 1 ? '' : 's'} (${variantsCount - outFiles.length} failed)`,
+          details: outFiles.map((p) => '• ' + p),
+        });
       }
-      if (allOk) {
-        toast(variantsCount > 1
-          ? `Music generated. ${variantsCount} variants saved.`
-          : 'Music generated.', 'ok');
+      // v1.1 (audit M5): same partial-success gate as imageTab +
+      // speechTab — a run with ANY successful variant returns 'ok'.
+      if (outFiles.length > 0) {
+        const failCount = variantsCount - outFiles.length;
+        toast(failCount > 0
+          ? `Music generated. ${outFiles.length}/${variantsCount} variants saved (${failCount} failed — see log).`
+          : (variantsCount > 1 ? `Music generated. ${variantsCount} variants saved.` : 'Music generated.'),
+          failCount > 0 ? 'warn' : 'ok');
+        return { status: 'ok', outputPaths: outFiles };
+      }
+      return { status: 'err', outputPaths: [] };
+        },
+      });
+      if (ctrl && typeof ctrl.catch === 'function') {
+        ctrl.catch(() => {});
+      } else {
+        await ctrl.done;
       }
       } catch (e) {
         // Outer guard: any error thrown by pre-flight (state lookups,
@@ -889,7 +975,11 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight, filePath) 
       e.preventDefault();
       e.stopPropagation();
       try { showItemContextMenuForPath(filePath, e.clientX, e.clientY); }
-      catch (_) { /* best-effort */ }
+      catch (err) {
+        if (typeof window.logError === 'function') {
+          window.logError('music-ctx-menu', 'renderer/tabs/musicTab.js:openImageOverlay-img-ctx', err);
+        }
+      }
     });
     // Same right-click on the header filename (the "Image.png"
     // label in the overlay's top bar) — useful when the user
@@ -898,7 +988,11 @@ function openImageOverlay(src, filename, naturalWidth, naturalHeight, filePath) 
       e.preventDefault();
       e.stopPropagation();
       try { showItemContextMenuForPath(filePath, e.clientX, e.clientY); }
-      catch (_) { /* best-effort */ }
+      catch (err) {
+        if (typeof window.logError === 'function') {
+          window.logError('music-ctx-menu', 'renderer/tabs/musicTab.js:openImageOverlay-fname-ctx', err);
+        }
+      }
     });
   }
   // Hand the close function to the next open call so a re-open

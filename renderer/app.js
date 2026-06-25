@@ -3,13 +3,13 @@
 
 // Tool version: bump / refresh this whenever you ship a build. The
 // string is read from package.json via window.api.getAppVersion()
-// at startup (added in the same change that bumped it to 1.1.1), so
+// at startup (added in the same change that bumped it to 1.1.0), so
 // the renderer always shows the version that ships in this build's
 // package.json — no risk of a stale string in the source when
 // someone forgets to bump it. The format is "<version> · <compile
 // date> <compile time>" so the user can see at a glance which
 // build they have.
-let BUILD_VERSION = '1.1.1 · loading…';
+let BUILD_VERSION = '1.1.0 · loading…';
 const TOOL_NAME = 'MiniMax Assets Tool';
 const TOOL_INFO =
   'A friendly desktop app for the MiniMax AI service. ' +
@@ -49,13 +49,117 @@ var TABS = window.TABS;
 async function init() {
   // Wire tabs
   for (const t of $$('.tab')) t.addEventListener('click', () => showTab(t.dataset.tab));
+  // v1.1 (user request): the file browser's Up button now
+  // navigates through FOUR distinct levels, with the button
+  // disabled at the lowest:
+  //   1) A real folder inside output_dir → one level up
+  //   2) output_dir itself                → one level up (parentDir)
+  //   3) A drive root                     → the DRIVES list
+  //   4) The DRIVES list                  → DISABLED (no-op)
+  // The previous version only handled (1) and (2) — a user
+  // whose output_dir was at a drive root (e.g. D:\) had no
+  // way to switch to a different drive without closing the
+  // tool. The drives list (level 3) and the disabled-at-the-
+  // bottom state (level 4) close that gap.
+  const FB_DRIVES_SENTINEL = '__DRIVES__';
+  function isDrivesList() { return state.fbDir === FB_DRIVES_SENTINEL; }
+  function isDriveRoot(p) {
+    if (!p) return false;
+    if (process.platform === 'win32') return /^[A-Z]:[\\\/]?$/i.test(p);
+    return p === '/';
+  }
+  function updateFbUpButton() {
+    const btn = $('#fb-up');
+    if (!btn) return;
+    if (isDrivesList()) {
+      btn.disabled = true;
+      btn.classList.add('fb-up-disabled');
+      btn.title = 'You are at the drives list. Pick a drive to continue.';
+    } else {
+      btn.disabled = false;
+      btn.classList.remove('fb-up-disabled');
+      btn.title = 'Up one level';
+    }
+  }
+  // v1.1.25: wrap the click handler so a synchronous throw (or
+  // an async refreshBrowser rejection) reaches the log pane AND
+  // renderer-error.log instead of disappearing silently. The
+  // user reported the button "does nothing"; without this
+  // wrapper the most common reason would be a swallowed throw
+  // from refreshBrowser, with no breadcrumb at all. The handler
+  // body is intentionally inline (not a separate function) so
+  // the fbUpButtonBehavior.test.js extraction still matches.
   $('#fb-up').addEventListener('click', () => {
-    const outRoot = state.config.output_dir || '';
-    if (!state.fbDir) return;
-    if (outRoot && state.fbDir.toLowerCase() === outRoot.toLowerCase()) return;
-    state.fbDir = parentDir(state.fbDir) || outRoot;
-    refreshBrowser({ keepCurrent: true });
+    try {
+      // Disabled at the drives list — the user must pick a drive
+      // first to continue. The button is also disabled visually
+      // (CSS .fb-up-disabled + .title) but a stale click could
+      // still reach this handler; the early-return is the
+      // authoritative guard.
+      if (isDrivesList()) return;
+      const outRoot = state.config.output_dir || '';
+      // v1.1.17 (reported by user — "the up one level button in
+      // folder explorer has no functionality (except triggering the
+      // popup)"): when state.fbDir is empty (no folder has ever
+      // been opened — e.g. a fresh install where the user just
+      // typed a prompt and hit Generate), the previous handler
+      // bailed out at `if (!state.fbDir) return;` and the click
+      // appeared to do nothing. The behaviour now is: if no
+      // current folder, the Up button jumps to the output_dir
+      // (which is always a real folder thanks to the BUG-2
+      // defaultOutputDir fallback in fileBrowser1.refreshBrowser),
+      // or the drives list when there's no output_dir either.
+      // This makes the button always do SOMETHING visible.
+      if (!state.fbDir) {
+        if (outRoot) {
+          state.fbDir = outRoot;
+        } else {
+          state.fbDir = FB_DRIVES_SENTINEL;
+        }
+        refreshBrowser();
+        updateFbUpButton();
+        return;
+      }
+      if (outRoot && state.fbDir.toLowerCase() === outRoot.toLowerCase()) {
+        // At the output root, climb one level (parentDir) so the
+        // user can see the drives (or root) on the next click.
+        const up = parentDir(state.fbDir);
+        if (up) {
+          state.fbDir = up;
+        } else {
+          // output_dir IS a drive root (or has no parent) —
+          // jump to the drives list.
+          state.fbDir = FB_DRIVES_SENTINEL;
+        }
+        refreshBrowser({ keepCurrent: true });
+        updateFbUpButton();
+        return;
+      }
+      if (isDriveRoot(state.fbDir)) {
+        // Already at a drive root, jumping up further means
+        // the drives list (you can't go above a drive root).
+        state.fbDir = FB_DRIVES_SENTINEL;
+        refreshBrowser({ keepCurrent: true });
+        updateFbUpButton();
+        return;
+      }
+      // Normal mid-tree case: one level up.
+      const up = parentDir(state.fbDir) || outRoot || FB_DRIVES_SENTINEL;
+      state.fbDir = up;
+      refreshBrowser({ keepCurrent: true });
+      updateFbUpButton();
+    } catch (e) {
+      // v1.1.25: don't swallow. Log to the in-app pane AND the
+      // file log so the user (and the next dev session) can
+      // diagnose "why did clicking Up do nothing?".
+      if (typeof window.logError === 'function') {
+        window.logError('fb-up', 'renderer/app.js:fb-up-click', e);
+      } else {
+        console.error('fb-up click threw:', e);
+      }
+    }
   });
+  updateFbUpButton();
   // File browser live filter
   const fbSearch = $('#fb-search');
   if (fbSearch) fbSearch.addEventListener('input', window.applyFileSearch || applyFileSearch);
@@ -325,6 +429,19 @@ async function init() {
     if (savedState[k] === undefined || savedState[k] === null) continue;
     state[k] = savedState[k];
   }
+  // Phase C (bug-fix B1b, _temp5.md): now that the persist-keys loop
+  // has populated state.jobsSnapshot from disk, render the "previous
+  // session" rows at the bottom of the log pane. This used to run in
+  // bootstrap.js at script-PARSE time (before state was loaded), so
+  // it silently no-op'd on every launch. Calling it here — after the
+  // disk state is in memory — is the only point in the lifecycle
+  // where the data is actually present.
+  try {
+    if (window.LogService && typeof window.LogService.renderPersistedL2 === 'function'
+        && Array.isArray(state.jobsSnapshot)) {
+      window.LogService.renderPersistedL2(state.jobsSnapshot);
+    }
+  } catch (e) { console.warn('renderPersistedL2 failed:', e); }
   if (savedState.fbDirs && typeof savedState.fbDirs === 'object') {
     for (const k of ['image', 'speech', 'music', 'video']) {
       if (typeof savedState.fbDirs[k] === 'string') state.fbDirs[k] = savedState.fbDirs[k];
@@ -420,14 +537,31 @@ async function init() {
           window.JobRunner.flushBatchSummaries();
         }
       } catch (_) { /* best-effort */ }
+      // Bug-fix HIGH-2 (_temp5.md 360° audit): call saveAllStates()
+      // DIRECTLY, not the debounced scheduleStateSave() wrapper.
+      // The debounce fires 500 ms in the future, but Electron tears
+      // the renderer down within tens of ms of `before-quit` — the
+      // debounced save never ran, so any state change in the last
+      // 500 ms (a finished job's snapshot push, a dismissed popup,
+      // a toggled setting) was silently lost on quit. saveAllStates
+      // itself only fans out to one IPC call, so calling it
+      // synchronously here is cheap and gives the main process the
+      // real final state.
       try {
-        if (typeof scheduleStateSave === 'function') scheduleStateSave();
+        if (typeof saveAllStates === 'function') saveAllStates();
       } catch (_) { /* best-effort */ }
     });
   }
 
   // First quota fetch
-  refreshQuota().catch(() => {});
+  refreshQuota().catch((e) => {
+    // v1.1.25: the first quota fetch failing is often the first
+    // sign of an offline environment, an expired token, or a
+    // broken IPC channel. Surface it instead of ignoring.
+    if (typeof window.logError === 'function') {
+      window.logError('refresh-quota', 'renderer/app.js:init', e);
+    }
+  });
 }
 
 
@@ -462,8 +596,8 @@ function toggleTheme() {
 //   directory. This was the single biggest UX regression after the
 //   refactor.
 //
-// Behaviour (v1.1.8 — bug-fix for "assets land in D:\ instead of the
-// selected subfolder"):
+// Behaviour (v1.1.16 — bug-fix D1 for "files land in output_dir\<tab>
+// when the browser shows the output_dir root"):
 //   1. If output_dir is blank → throw (caller shows the toast).
 //   2. If the file-browser's current folder (state.fbDir) is a
 //      SUBFOLDER of output_dir (e.g. the user navigated into
@@ -471,12 +605,19 @@ function toggleTheme() {
 //      per-tab default is NOT prepended (a user who explicitly
 //      navigated to a subfolder is telling us "drop it HERE").
 //   3. If the file-browser's current folder is the output_dir
-//      itself OR is empty → use <output_dir>/<tabName> as the
-//      per-tab default (NOT the output_dir root). The previous
-//      logic dropped files at the root, which clutters the
-//      user's D:\ with stray .png/.mp3 files and is almost
-//      never what the user wants when they didn't pick a
-//      subfolder.
+//      itself OR is empty → use the output_dir root directly.
+//      (v1.1.8 used to redirect this case to <output_dir>/<tabName>
+//      to avoid cluttering the root — but that meant a file could
+//      land one level deeper than the folder the browser was
+//      actually showing, which looks like the file "vanished".
+//      The hard requirement is "files must land in the folder
+//      shown in the browser", so the root — when that's what's
+//      shown — wins. refreshBrowser() already prefers navigating
+//      INTO <output_dir>/<tabName> when that subfolder already
+//      exists, so a returning user still gets the old per-tab
+//      grouping; only the very first generation for a tab, or a
+//      browser explicitly backed up to the root, writes to the
+//      root itself.)
 //   4. If the file-browser's current folder is OUTSIDE output_dir
 //      (user picked an arbitrary folder via the native dialog,
 //      e.g. E:\myproject\assets) → use that folder directly. The
@@ -493,12 +634,17 @@ async function ensureSubDir(name) {
   const normForCompare = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   const baseNorm = normForCompare(base);
   const fbNorm = normForCompare(state.fbDir || '');
+  // Bug-fix (D2, _temp4.md): remember whether the browser had nothing
+  // to show BEFORE we resolve a target, so we can warn the user their
+  // files are landing somewhere the browser wasn't actually pointed at.
+  const fbWasEmpty = !fbNorm;
   const baseSep = base.includes('\\') ? '\\' : '/';
   const join = (a, b, sep) => a.replace(/[\\/]+$/, '') + sep + b;
   // Decide which directory the generated files should land in.
   // See the comment block above for the 4 cases.
   let targetDir = null;
   let externalPicked = false;
+  let rootDefault = false;
   if (fbNorm && fbNorm.startsWith(baseNorm + '/')) {
     // Case 2: user navigated into a real subfolder of output_dir.
     targetDir = (state.fbDir || '').replace(/[\\/]+$/, '');
@@ -513,11 +659,12 @@ async function ensureSubDir(name) {
     targetDir = (state.fbDir || '').replace(/[\\/]+$/, '');
     externalPicked = true;
   } else {
-    // Case 3: fbDir is empty, equal to the output_dir root, or
-    // not a real subfolder — fall back to the per-tab default
-    // (NOT the root). This is the bug-fix: the previous logic
-    // would land files at the output_dir root in this case.
-    targetDir = join(base, name, baseSep);
+    // Case 3 (bug-fix D1): fbDir is empty or equals the output_dir
+    // root — write directly to the root, matching what the browser
+    // shows. See the comment block above for why this no longer
+    // redirects to <output_dir>/<name>.
+    targetDir = base.replace(/[\\/]+$/, '');
+    rootDefault = true;
   }
   // fbMkdir resolves with { ok, error } — it does NOT reject on failure.
   // The previous code just `await`ed it, so a { ok:false } result (e.g.
@@ -530,21 +677,32 @@ async function ensureSubDir(name) {
     if (!r || !r.ok) throw new Error((r && r.error) || `Could not create folder "${n}" in ${d}.`);
     return r;
   };
-  if (targetDir === join(base, name, baseSep)) {
-    // Default path (case 3): a single fbMkdir call. fbMkdir is
-    // idempotent (returns ok even if the dir already exists), so
-    // a benign retry is fine.
-    await mkdirOrThrow(base, name);
+  if (rootDefault) {
+    // Root default (case 3): the root may not exist yet (e.g. the
+    // very first launch, before <output_dir> has ever been written
+    // to). fbMkdir always creates a NAMED CHILD of its first
+    // argument, so it can't create the root itself — fbEnsureDir is
+    // the dedicated IPC for "create this exact (already-allowed)
+    // path if missing".
+    const r = await window.api.fbEnsureDir(targetDir);
+    if (!r || !r.ok) throw new Error((r && r.error) || `Could not create folder "${targetDir}".`);
   } else if (externalPicked) {
     // External picked folder (case 4): the picked path itself
     // is already an allowed root (the picker added it via
-    // pathSecurity.addTrusted). One fbMkdir call with
-    // (picked, tabName) creates the per-tab subdir under it.
-    // fb.mkdir does fs.mkdir(target, { recursive: true }), so the
-    // picked folder doesn't need to pre-exist; only the parent
-    // (the picked folder itself) needs to be writable.
+    // pathSecurity.addTrusted) and the user is browsing it, so
+    // files land DIRECTLY in it (targetDir === picked, NOT
+    // <picked>/<tabName>).
+    // Bug-fix B4 (_temp5.md): the previous version called
+    // mkdirOrThrow(picked, name), which created a spurious empty
+    // <picked>/<tabName> directory on every generation into an
+    // external folder — the files never went into it (they went
+    // to <picked>), contradicting the case-4 contract. The
+    // picked folder already exists (the user is browsing it),
+    // so fbEnsureDir is a no-op on disk but keeps the allow-list
+    // check consistent with the other branches.
     const picked = (state.fbDir || '').replace(/[\\/]+$/, '');
-    await mkdirOrThrow(picked, name);
+    const r = await window.api.fbEnsureDir(picked);
+    if (!r || !r.ok) throw new Error((r && r.error) || `Could not access folder "${picked}".`);
   } else {
     // Subfolder of output_dir (case 2): walk the path
     // segment-by-segment so each mkdir is individually
@@ -560,6 +718,19 @@ async function ensureSubDir(name) {
     for (const p of relParts) {
       await mkdirOrThrow(cur, p);
       cur = join(cur, p, baseSep);
+    }
+  }
+  // Bug-fix (D2, _temp4.md): the browser had nothing to show (fbDir was
+  // unset) when we resolved this target — warn so the user isn't
+  // surprised the file isn't where they were just looking, then bring
+  // the browser in sync so it stops being empty/stale. keepCurrent:true
+  // stops refreshBrowser's own "try the per-tab subfolder" heuristic
+  // from immediately navigating away from the root we just wrote to.
+  if (fbWasEmpty && typeof toast === 'function') {
+    toast(`No folder was shown in the browser — files will be saved to "${targetDir}".`, 'warn', 5000);
+    state.fbDir = targetDir;
+    if (typeof window.refreshBrowser === 'function') {
+      try { await window.refreshBrowser({ keepCurrent: true }); } catch { /* best-effort UI sync */ }
     }
   }
   return targetDir;
@@ -633,6 +804,70 @@ function buildForcePrefixFileName(counter, prefix, ext) {
   const padded = String(counter.n).padStart(6, '0');
   return `${prefix || ''}${padded}.${ext}`;
 }
+// Bug-fix (C4): force-prefix-only files must be named EXACTLY
+// `<prefix><counter>.<ext>` with no random suffix — that's the whole
+// point of the feature. The tabs used to wrap buildForcePrefixFileName's
+// result in uniquePath(), which appended a random 4-char suffix and
+// silently broke the "exact name" promise (e.g. etg000001_a3f9.png
+// instead of etg000001.png). Collision safety across separate Generate
+// clicks (the counter resets to 0 every click) is handled here instead:
+// probe the filesystem and bump the counter forward past any file that
+// already exists, rather than randomizing the name.
+// `altExts` (bug-fix M6, _temp4.md): optional sibling extensions to also
+// treat as "taken" at the same counter value. The image tab's mmx API has
+// no output-format parameter, so a generated file's real bytes don't
+// always match the ".png" we originally asked mmx to write to —
+// fixImageExtension() corrects the on-disk name afterward (e.g.
+// temp000001.png -> temp000001.jpg). Without checking siblings here, a
+// later click's fbExists('temp000001.png') would report "free" even
+// though that counter slot is really occupied by temp000001.jpg, and
+// every subsequent click would collide on the same counter value
+// forever instead of advancing past it. Callers that can't have this
+// mismatch (video/speech/music, which either have a single true
+// extension or request an honoured --format) simply omit altExts.
+async function nextFreeForcePrefixPath(dir, counter, prefix, ext, altExts) {
+  const sep = dir.includes('\\') ? '\\' : '/';
+  const base = dir.replace(/[\\/]+$/, '');
+  // v1.1 (audit L4): iteration cap. The previous `for (;;)` would
+  // loop forever if fbExists consistently returned true (corrupted
+  // FS state, an allow-list bug, a directory full of a million
+  // temp###### files). The sibling helper in section08 caps at
+  // 1000; we use the same number for consistency. On exhaustion
+  // the function falls back to a timestamp-suffixed name so the
+  // caller still gets a unique path and the user never loses a
+  // file they just paid API credits to generate.
+  const MAX_TRIES = 1000;
+  for (let i = 0; i < MAX_TRIES; i++) {
+    const name = buildForcePrefixFileName(counter, prefix, ext);
+    const full = base + sep + name;
+    let exists = false;
+    // v1.1 (audit BUG-R2-09): fbExists now returns a { ok, exists }
+    // envelope instead of a bare boolean. Pull the boolean out of
+    // .exists for the truthy-check below.
+    try {
+      const r = await window.api.fbExists(full);
+      exists = !!(r && r.exists);
+    } catch { exists = false; }
+    if (!exists && Array.isArray(altExts) && altExts.length) {
+      const padded = String(counter.n).padStart(6, '0');
+      const stem = `${prefix || ''}${padded}`;
+      for (const altExt of altExts) {
+        if (altExt === ext) continue;
+        try {
+          const r2 = await window.api.fbExists(base + sep + `${stem}.${altExt}`);
+          if (r2 && r2.exists) { exists = true; break; }
+        } catch { /* treat as not-existing on error */ }
+      }
+    }
+    if (!exists) return full;
+  }
+  // Fallback: a timestamp-suffixed name that's effectively impossible
+  // to collide with an existing file. The counter is still advanced
+  // so the next call doesn't re-scan the same million files.
+  const tsName = `${prefix || ''}${Date.now()}_${Math.floor(Math.random() * 100000)}.${ext}`;
+  return base + sep + tsName;
+}
+window.nextFreeForcePrefixPath = nextFreeForcePrefixPath;
 // Format mmx error: strip the "node.exe :" prefix PowerShell wraps
 // around stderr, then surface the most informative bit. mmx returns
 // errors in a few different shapes depending on which command failed;
@@ -664,11 +899,28 @@ function formatMmxError(r) {
 function classifyMmxError(r, msg) {
   const combined = ((msg || '') + ' ' + (r.stderr || '') + ' ' + (r.stdout || '')).toLowerCase();
   if (/401|403|unauthor|forbidden|invalid.api.key|api.key.*invalid|auth.*fail/.test(combined)) return 'auth';
+  // 'input' = a permanent, user-fixable problem with the request itself
+  // (most commonly a reference/lyrics file that doesn't exist on disk).
+  // Checked before 'network' so a local ENOENT isn't mistaken for the
+  // DNS-level ENOTFOUND. Bug-fix (reported by user): a missing
+  // --subject-ref image used to surface as a cryptic mmx ENOENT that was
+  // then retried 4×; classify it so the retry loop can skip it.
+  if (/enoent|no such file|file or directory not found|file system error/.test(combined)) return 'input';
   if (/429|rate|limit|throttl|too many/.test(combined)) return 'rate';
   if (/quota|not.in.plan|exhaust|insufficient/.test(combined)) return 'quota';
   if (/enotfound|econnrefused|econnreset|etimedout|network|dns/.test(combined)) return 'network';
   if (/500|502|503|504|server.error|system.error|internal/.test(combined)) return 'server';
   return 'unknown';
+}
+// Whether an mmx failure is worth retrying. Permanent failures (bad
+// credentials, exhausted quota, a missing input file) will fail
+// identically on every retry — retrying just wastes the user's time and,
+// for a missing reference image, hammers the same non-existent path 4×
+// (reported by user). Only the transient classes (rate-limit, network
+// blip, 5xx / "system error (HTTP 200)") are retried.
+function isRetryableMmxError(r, msg) {
+  const cls = classifyMmxError(r, msg);
+  return !(cls === 'auth' || cls === 'quota' || cls === 'input');
 }
 // Bump the in-session "N generations this session" counter shown in
 // the status bar. Called from every gen handler's success path (image /
@@ -687,7 +939,14 @@ function bumpGenerationCounter(kind, n = 1) {
 // On cleanup: the original button label is restored, state.generating
 // is cleared, the per-tab ETA average is updated (alpha=0.4, recent
 // runs weighted higher), and the tab dot flips to "done".
-function armGenBtnWithCancel(genBtn, label) {
+// bug-fix H4/Phase1 (_temp4.md): optional 3rd param `jobId`. When the
+// caller has wrapped its generation in JobRunner.run(...), passing the
+// returned jobId here makes the Cancel button drive JobRunner.cancel()
+// (which kills exactly this job's mmx proc and updates the job's
+// status/widget) instead of the legacy panic-everything mmxCancel().
+// Callers that haven't migrated simply omit jobId — behaviour for them
+// is byte-for-byte unchanged.
+function armGenBtnWithCancel(genBtn, label, jobId) {
   let cancelled = false;
   const origLabel = label || genBtn.textContent;
   const tabKey = (genBtn.closest('.tabpanel')?.id || '').replace('tab-', '') || null;
@@ -706,7 +965,11 @@ function armGenBtnWithCancel(genBtn, label) {
     if (!confirm('Cancel the current generation?')) return;
     cancelled = true;
     toast('Cancelling…', 'warn', 1500);
-    await window.api.mmxCancel();
+    if (jobId && window.JobRunner && typeof window.JobRunner.cancel === 'function') {
+      window.JobRunner.cancel(jobId);
+    } else {
+      await window.api.mmxCancel();
+    }
   };
   genBtn.addEventListener('click', onCancelClick);
   return {
@@ -740,10 +1003,22 @@ function installKeyboardShortcuts() {
     // mis-fire handlers on modifier-only events (e.g. releasing Shift).
     if (!e.key) return;
     if (cmd && e.key === 'Enter') {
-      // Generate on the active tab
+      // Generate on the active tab.
+      // Bug-fix B6 (_temp5.md): the previous gate was
+      // `!state.generating`, which is truthy whenever ANY tab is
+      // generating (state.generating is set to a tabKey or 'mixed'
+      // by JobRunner._syncLegacyGenerating). That blocked Ctrl+Enter
+      // globally during any in-flight run, even though the mouse-
+      // click Generate path correctly allows starting a job on an
+      // IDLE tab while another tab runs (per-tab isTabRunning gate).
+      // The keyboard shortcut now mirrors the per-tab gate so
+      // Ctrl+Enter works on an idle tab in parallel with another
+      // running tab.
       const tab = state.currentTab;
       const genBtn = $(`#tab-${tab} button.primary`);
-      if (genBtn && !state.generating && genBtn.textContent !== 'Cancel') { genBtn.click(); e.preventDefault(); }
+      const tabRunning = !!(window.JobRunner && typeof window.JobRunner.isTabRunning === 'function'
+        && window.JobRunner.isTabRunning(tab));
+      if (genBtn && !tabRunning && state.generating !== tab && genBtn.textContent !== 'Cancel') { genBtn.click(); e.preventDefault(); }
       return;
     }
     if (cmd && ['1','2','3','4'].includes(e.key)) {
@@ -1072,8 +1347,6 @@ function openAllBatchDashboard() {
             if (ta && ta.value) lines.push(`Default prompt: "${ta.value.slice(0, 80)}${ta.value.length > 80 ? '…' : ''}"`);
             lines.push(`Output folder: ${state.fbDirs && state.fbDirs[k] || state.config.output_dir || '(default)'}`);
             if (state.filePrefix) lines.push(`File prefix: "${state.filePrefix}"`);
-            meta.appendChild(el('div', { class: 'batch-dashboard-settings' },
-              lines.map((ln) => el('div', {}, ln)).join('') ? '' : null));
             // Render as a simple text block (one line per entry)
             const settings = el('div', { class: 'batch-dashboard-settings' });
             for (const ln of lines) settings.appendChild(el('div', {}, ln));
@@ -1298,14 +1571,57 @@ function slugifyLabel(s) {
 }
 
 function scheduleStateSave() {
-  if (_suppressStateSave > 0) return;
+  // Bug-fix MEDIUM-1 (_temp5.md 360° audit): return a Promise that
+  // resolves once the debounced saveAllStates actually completes.
+  // Previously this returned `undefined`, so callers that did
+  // `await scheduleStateSave()` (imageTab, section07, imageOverlays,
+  // section15 — 6 sites) proceeded immediately, showing a "Saved."
+  // toast before the disk write happened. Combined with the
+  // before-quit race (H4, fixed separately) that meant a user who
+  // tweaked a setting and closed the app could lose the change even
+  // though the toast said "saved".
+  //
+  // Debounce coalescing: if a second call lands within the 500 ms
+  // window, the first timer is cleared — but every caller's promise
+  // must still resolve. We collect all pending resolvers and fire
+  // them together when the single save completes.
+  if (_suppressStateSave > 0) return Promise.resolve();
   clearTimeout(_stateSaveTimer);
-  _stateSaveTimer = setTimeout(saveAllStates, 500);
+  return new Promise((resolve) => {
+    _pendingStateSaveResolvers.push(resolve);
+    _stateSaveTimer = setTimeout(() => {
+      _stateSaveTimer = null;
+      try {
+        const r = saveAllStates();
+        if (r && typeof r.then === 'function') {
+          r.then(_flushPendingStateSaveResolvers, _flushPendingStateSaveResolvers);
+        } else {
+          _flushPendingStateSaveResolvers();
+        }
+      } catch (_) {
+        _flushPendingStateSaveResolvers();
+      }
+    }, 500);
+  });
+}
+
+// Resolves all pending scheduleStateSave() callers. Called when the
+// debounced saveAllStates completes (success or failure — callers
+// don't need to know, they just need the save to have been attempted).
+function _flushPendingStateSaveResolvers() {
+  // Mutate-in-place clear (the array is const-declared, so we can't
+  // reassign it — use .length = 0 instead of = []).
+  const resolvers = _pendingStateSaveResolvers.slice();
+  _pendingStateSaveResolvers.length = 0;
+  for (const r of resolvers) {
+    try { r(); } catch (_) { /* a caller's .then threw; don't let it block the others */ }
+  }
 }
 
 // batch save state (used by scheduleStateSave)
 let _suppressStateSave = 0;
 let _stateSaveTimer = null;
+const _pendingStateSaveResolvers = [];
 // Run `fn` while the auto-save debounce is suppressed. Used by the
 // BatchGen runner to overwrite the prompt / style / parameter inputs
 // per item without overwriting the user's last-saved prompt in
@@ -1340,8 +1656,12 @@ function saveAllStates() {
     const snapshot = { tabs: state.tabSettings };
     const persistKeys = window.STATE_PERSIST_KEYS || [];
     for (const k of persistKeys) snapshot[k] = state[k];
-    window.api.stateSet(snapshot).catch(() => {});
+    // Bug-fix MEDIUM-1 (_temp5.md 360° audit): return the stateSet
+    // promise so callers that `await saveAllStates()` (and
+    // scheduleStateSave below) actually wait for the IPC to finish.
+    return window.api.stateSet(snapshot).catch(() => {});
   }
+  return Promise.resolve();
 }
 
 // v1.1.15 (reported by user): the user reported that
@@ -1418,6 +1738,15 @@ window.addEventListener('resize', () => {
 });
 
 document.addEventListener('DOMContentLoaded', () => {
-  init().catch((e) => { console.error(e); toast(String(e), 'err', 8000); });
+  init().catch((e) => {
+    // v1.1.25: surface init failures in the log pane AND the
+    // file log, not just a toast (which disappears after 8s).
+    if (typeof window.logError === 'function') {
+      window.logError('init', 'renderer/app.js:1715', e);
+    } else {
+      console.error(e);
+    }
+    toast(String(e), 'err', 8000);
+  });
 });
 

@@ -64,6 +64,16 @@ ipcMain.handle = (channel, handler) => {
       // #endregion
       return result;
     } catch (error) {
+      // v1.1.25: persist the IPC failure to renderer-error.log so
+      // the user (and the next dev session) can see WHAT went wrong
+      // without having to re-trigger the bug. Previously the error
+      // only reached the renderer's {ok:false,error} payload, which
+      // the user often dismissed without reading.
+      try {
+        const ts = new Date().toISOString().slice(11, 23);
+        const msg = `[main] ipc:${channel} threw: ${error && error.stack ? error.stack : String((error && error.message) || error)}`;
+        fs.appendFileSync(RENDERER_LOG, ts + ' ' + msg + '\n');
+      } catch (_) { /* secondary failure — never block the original throw */ }
       // #region debug-point D:ipc-throw
       reportIpcDebugEvent('pre-fix', 'D', `ipc:${channel}:throw`, `[DEBUG] throw ${channel}`, {
         channel,
@@ -139,7 +149,16 @@ app.whenReady().then(() => {
   // 1) IPC-Handler registrieren
   for (const r of ipcRegistrars) {
     try { r.register({ appRoot: PARENT_ROOT, getMainWindow }); }
-    catch (e) { console.error('[main] IPC registrar failed:', e); }
+    catch (e) {
+      // v1.1.25: also persist to renderer-error.log so a missing
+      // IPC channel is visible across sessions without DevTools.
+      try {
+        const ts = new Date().toISOString().slice(11, 23);
+        fs.appendFileSync(RENDERER_LOG, ts + ' [main] IPC registrar failed: ' +
+          (e && e.stack ? e.stack : String((e && e.message) || e)) + '\n');
+      } catch (_) {}
+      console.error('[main] IPC registrar failed:', e);
+    }
   }
 
   // 2) Haupt-Fenster

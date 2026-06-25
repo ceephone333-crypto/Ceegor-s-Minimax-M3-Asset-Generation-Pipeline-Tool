@@ -15,7 +15,17 @@
 // The popup id is 'startup'. openGatedPopup() is the central dispatcher;
 // new tab-triggered popups should reuse it with their own stable id.
 function shouldShowPopup(id) {
-  const policy = state.popupPolicy || 'once-fresh';
+  // v1.1 (user request — "make popups off default off"): the
+  // fallback when state.popupPolicy is undefined was 'once-fresh',
+  // which would actually SHOW the popup. The pre-v1.1 default in
+  // state.js / section24_State.js is 'never', so a normal install
+  // never hits this branch — but a defensive code path (e.g. a
+  // future caller that explicitly nulls state.popupPolicy) used
+  // to fall through to the wrong default. We now mirror the
+  // 'never' default so every undefined / null / empty-string case
+  // hides the popup, matching the user-visible "default off"
+  // expectation.
+  const policy = state.popupPolicy || 'never';
   if (policy === 'always') return true;
   if (policy === 'never') return false;
   if (policy === 'per-session') {
@@ -53,7 +63,31 @@ function openGatedPopup(id, build, opts) {
   // `opts` is forwarded to showModal so callers can attach an
   // `onClose` hook (e.g. the startup-popup chain uses it to
   // decrement a counter and fire the pending tab-intro popup).
-  if (!shouldShowPopup(id)) return null;
+  // `opts.force` bypasses the policy gate for popups that are NOT
+  // informational nags but required flows (the first-time setup form).
+  if (!(opts && opts.force) && !shouldShowPopup(id)) {
+    // Bug-fix (reported by user — popups behaviour): even when the popup
+    // is suppressed by policy, fire the caller's onClose hook so any
+    // bookkeeping it set up BEFORE calling us is balanced. The
+    // startup-popup chain increments _introStartupChainOpen before
+    // calling openGatedPopup and relies on onClose to decrement it;
+    // without this, a suppressed startup/first-time popup left the
+    // counter stuck > 0 and every later tab-intro popup was deferred
+    // forever (so toggling the policy back on appeared to do nothing).
+    if (opts && typeof opts.onClose === 'function') {
+      try { opts.onClose(); }
+      catch (err) {
+        // v1.1.25: a popup's onClose hook is part of the startup
+        // chain bookkeeping; if it throws (e.g. a buggy listener),
+        // we used to swallow it and end up with the chain counter
+        // stuck — every later gated popup got deferred forever.
+        if (typeof window.logError === 'function') {
+          window.logError('popup-onClose', `renderer/sections/section18_Startup_popup.js:openGatedPopup:${id}`, err);
+        }
+      }
+    }
+    return null;
+  }
   const markSeen = () => markPopupSeen(id);
   return showModal((m, close) => {
     build(m, close, markSeen);
@@ -69,6 +103,20 @@ function showStartupPopup() {
   // to open, it will re-enter the chain itself, so the counter
   // stays balanced.
   const _exit = () => { if (typeof _exitIntroStartupChain === 'function') _exitIntroStartupChain(); };
+  // Bug-fix (reported by user — "we still see lots of popups, even
+  // though they are turned off"): the previous version auto-fired
+  // `openFirstTimeSetup()` here whenever the welcome popup was
+  // suppressed by policy and the user had an incomplete config.
+  // That made "default off" a lie — the user would see the
+  // first-time-setup modal even when they had explicitly turned
+  // every informational popup off. The user's request is now
+  // honored literally: when the popup policy suppresses the
+  // welcome popup, we DO NOT trigger any follow-up popup. The
+  // user can still run the first-time setup manually from ⚙
+  // Settings → "Run first-time setup" (see
+  // buildSettingsAccountPane in section03). The follow-up addon
+  // popup (in openFirstTimeSetup's onClose) is also gated by
+  // `shouldShowPopup('optional-addons')` so it won't nag either.
   openGatedPopup('startup', (m, close, markSeen) => {
     m.classList.add('startup-modal');
     m.appendChild(el('h2', {}, TOOL_NAME));

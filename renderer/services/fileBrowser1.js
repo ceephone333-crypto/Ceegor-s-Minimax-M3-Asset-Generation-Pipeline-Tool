@@ -70,11 +70,120 @@ function isItemVisibleInList(it) {
 // Wir nutzen function declarations (NICHT expressions), weil
 // declarations HOISTED sind - sie existieren auch dann auf dem
 // globalen window wenn die Datei spaeter crasht.
+// v1.1 (audit M4): serialise concurrent refreshBrowser calls.
+// Pre-v1.1, two overlapping refreshes (user double-clicks ".."
+// right after clicking into a subfolder, or a polling tick fires
+// during a manual refresh) resolved in IPC order — the later-
+// completing one wrote state.fbDir, possibly landing the user at
+// the wrong folder. We use a shared-promise + pending-flag pattern:
+// the first caller runs the real refresh; concurrent callers await
+// the same promise; if any caller arrived during the refresh, exactly
+// ONE follow-up refresh runs after, so the user's latest intent wins.
+//
+// v1.1 (audit AUDIT-08): the M4 fix was partially broken — the
+// in-flight IIFE unconditionally wrote `state.fbDir = target.dir`
+// at the end (overwriting any user navigation that happened
+// during the await). The follow-up recursion then re-read the
+// now-stale value, and every concurrent caller landed at the
+// FIRST caller's folder, not their own. We fix it by:
+//
+//   1) Capturing the entry-time fbDir into a LOCAL const, so the
+//      IIFE knows what the user wanted at the moment of the
+//      call (the original M4 contract).
+//   2) Gating the `state.fbDir = target.dir` write on
+//      `state.fbDir === startDir` — if the user has since
+//      navigated elsewhere, the IIFE does NOT clobber their
+//      newer intent. The in-flight guard will run a follow-up
+//      refresh that reads the new state.fbDir instead.
+let _refreshInFlight = null;
+let _refreshPending = false;
 async function refreshBrowser(opts = {}) {
+  if (_refreshInFlight) {
+    // Mark a single follow-up; the in-flight refresh will re-run
+    // with the latest state (state.fbDir will reflect the user's
+    // most recent navigation by then).
+    _refreshPending = true;
+    try { await _refreshInFlight; } catch (_) {}
+    if (_refreshPending) {
+      _refreshPending = false;
+      // Recurse to run the follow-up with the freshest state. The
+      // recursion is bounded because the follow-up clears
+      // _refreshPending before awaiting.
+      return refreshBrowser(opts);
+    }
+    return;
+  }
+  _refreshPending = false;
+  _refreshInFlight = (async () => {
+  // v1.1 (user request): drives-list view. When the user clicks
+  // Up from a drive root, state.fbDir is set to the
+  // '__DRIVES__' sentinel — a non-path value that means
+  // "render the list of available drives". The list itself
+  // comes from the main process (fb:listDrives IPC) so the
+  // renderer doesn't have to know which platform it's on.
+  // Selecting a drive sets state.fbDir to the drive's path
+  // and the next refreshBrowser() call lands the user in
+  // that drive's root. The sentinel is NEVER persisted
+  // (state.fbDir is reset to the output root on restart —
+  // see also the if-block that handles fbList returning a
+  // bad path).
+  if (state.fbDir === '__DRIVES__') {
+    try {
+      const drivesRes = await window.api.fbListDrives();
+      const drives = (drivesRes && Array.isArray(drivesRes.drives)) ? drivesRes.drives : [];
+      renderFbDrivesList(drives);
+      const fbPath = $('#fb-path');
+      if (fbPath) { fbPath.textContent = '(drives)'; fbPath.title = 'Pick a drive to continue'; }
+      // Update the Up button (disabled at the drives list).
+      const upBtn = $('#fb-up');
+      if (upBtn) { upBtn.disabled = true; upBtn.classList.add('fb-up-disabled'); upBtn.title = 'You are at the drives list. Pick a drive to continue.'; }
+    } catch (e) {
+      // v1.1.25: surface the actual IPC failure so the user can
+      // see WHY the drives list is empty (typically a permission
+      // issue or a malformed preload binding). Without this, the
+      // browser just goes blank.
+      if (typeof window.logError === 'function') {
+        window.logError('fb-list-drives', 'renderer/services/fileBrowser1.js:fbListDrives', e);
+      }
+      const fbListEl = $('#fb-list');
+      if (fbListEl) fbListEl.innerHTML = '';
+      const fbPath = $('#fb-path');
+      if (fbPath) fbPath.textContent = '(could not list drives)';
+    }
+    return;
+  }
   // Prefer the per-tab saved folder (set when the user last visited this
-  // tab), then the current fbDir, then the output root.
+  // tab), then the current fbDir, then the output root, then the
+  // platform-default output dir (Electron's `userData/generated`,
+  // resolved via the main process). The final fallback exists so a
+  // brand-new install with no config, no per-tab folder, and no
+  // fbDir still lands on a real, existing folder (%APPDATA%\…
+  // \MiniMaxAssetTool\generated on Windows, …/.config/…/generated
+  // on Linux) instead of an empty string that fbList() would
+  // reject with "Path is outside the allowed directories." See
+  // src/config.js#defaultOutputDir for the canonical resolution.
   const saved = (state.currentTab && state.fbDirs[state.currentTab]) || '';
+  // v1.1 (audit AUDIT-08): capture the entry-time fbDir into a
+  // LOCAL so the IIFE can detect (after the await) whether the
+  // user has navigated away. We compare against this snapshot
+  // (not against the live value) so a navigation that happens
+  // BEFORE this refresh starts is honoured, but one that
+  // happens DURING the await is NOT clobbered.
   let startDir = state.fbDir || saved || state.config.output_dir || '';
+  if (!startDir) {
+    // Last-ditch fallback: ask the main process for the same
+    // path the IPC would default to. `window.api.defaultOutputDir`
+    // is exposed in preload and resolves to a folder that always
+    // exists (Electron creates `userData` on first access). If the
+    // IPC is missing (test context) or the call throws, fall
+    // through to '' — the !out branch below then shows a clear
+    // "no output dir" message and re-enables the Up button so the
+    // user can navigate to a real folder manually.
+    try {
+      const def = await window.api.defaultOutputDir();
+      if (def) startDir = def;
+    } catch (_) { /* best-effort */ }
+  }
   let out = await window.api.fbList(startDir);
   // If the user had a per-tab folder persisted but it's gone (deleted,
   // drive removed, etc.) — fall back to the output root instead of just
@@ -92,9 +201,42 @@ async function refreshBrowser(opts = {}) {
       out = await window.api.fbList(fallback);
     }
   }
+  // v1.1.17 (reported by user — "we still get the ENOENT issue if
+  // no path was setup during initial setup"): if even the
+  // output_dir root is gone (the user typed a path that doesn't
+  // exist, or the drive was unmounted between launches), the
+  // pre-v1.1 code stopped here and surfaced the ENOENT as a
+  // permanent error toast. Now: try the platform-default
+  // directory (the same <userData>/generated the main process
+  // uses as the canonical fallback). That folder always exists
+  // (Electron creates userData on first access). Only after
+  // THAT fails too do we surface the error.
+  if (!out.ok) {
+    try {
+      const def = await window.api.defaultOutputDir();
+      if (def && def !== startDir) {
+        const fallbackOut = await window.api.fbList(def);
+        if (fallbackOut.ok) {
+          out = fallbackOut;
+          if (state.currentTab) {
+            state.fbDirs[state.currentTab] = def;
+            scheduleStateSave();
+          }
+          state.fbDir = def;
+          startDir = def;
+        }
+      }
+    } catch (_) { /* best-effort */ }
+  }
   if (!out.ok) {
     $('#fb-list').innerHTML = '';
     $('#fb-path').textContent = out.error || '(no output dir)';
+    // v1.1 (user request): re-enable the Up button so a
+    // transient error doesn't leave the user stuck. The
+    // sentinel-driven drives-list branch (above) handles the
+    // disabled state separately.
+    const upBtn = $('#fb-up');
+    if (upBtn) { upBtn.disabled = false; upBtn.classList.remove('fb-up-disabled'); upBtn.title = 'Up one level'; }
     return;
   }
   // For the file browser, default to current tab's subfolder if it exists.
@@ -108,14 +250,27 @@ async function refreshBrowser(opts = {}) {
     const subTry = await window.api.fbList(sub);
     if (subTry.ok) target = subTry;
   }
-  state.fbDir = target.dir;
-  // Keep the per-tab slot in sync with the actual browser location so
-  // navigating within a tab (e.g. via the Up button) is remembered. Also
-  // trigger an autosave so the new folder survives an app restart even
-  // if the user never switches tabs afterwards.
-  if (state.currentTab && state.fbDirs[state.currentTab] !== target.dir) {
-    state.fbDirs[state.currentTab] = target.dir;
-    scheduleStateSave();
+  // v1.1 (audit AUDIT-08): the user's latest intent wins. The
+  // IIFE only updates state.fbDir if the live value still matches
+  // the entry-time snapshot — i.e. the user has NOT navigated
+  // elsewhere during the await. If they have, the in-flight
+  // guard will run a follow-up refresh that reads the new
+  // value, so we must NOT overwrite it here.
+  if (state.fbDir === startDir || !state.fbDir) {
+    state.fbDir = target.dir;
+    // Keep the per-tab slot in sync with the actual browser location so
+    // navigating within a tab (e.g. via the Up button) is remembered.
+    // Also trigger an autosave so the new folder survives an app
+    // restart even if the user never switches tabs afterwards.
+    if (state.currentTab && state.fbDirs[state.currentTab] !== target.dir) {
+      state.fbDirs[state.currentTab] = target.dir;
+      scheduleStateSave();
+    }
+  } else {
+    // The user has navigated elsewhere while we were waiting on
+    // fbList. Mark a follow-up so the in-flight guard reruns
+    // with the freshest state.fbDir.
+    _refreshPending = true;
   }
   $('#fb-path').textContent = target.dir;
   $('#fb-path').title = target.dir;
@@ -136,6 +291,17 @@ async function refreshBrowser(opts = {}) {
   renderFbList(visible);
   // Apply current search filter if any
   applyFileSearch();
+  // v1.1 (user request): re-enable the Up button now that the
+  // user is in a real folder. The button is disabled at the
+  // drives list (handled in the early-return branch above), so
+  // every non-drives refresh must clear the disabled state.
+  const upBtn = $('#fb-up');
+  if (upBtn) { upBtn.disabled = false; upBtn.classList.remove('fb-up-disabled'); upBtn.title = 'Up one level'; }
+  })();
+  // Wait for the wrapped refresh to settle, then clear the
+  // in-flight slot. If a concurrent caller marked _refreshPending,
+  // it will run a single follow-up with the latest state.
+  try { await _refreshInFlight; } finally { _refreshInFlight = null; }
 }
 // Phase 3 Block 11: FB_SORT_MODES + normalizeFbSort + naturalCompare +
 // sortFbItems extrahiert nach renderer/utils/fbSort.js. Pure Modul,
@@ -387,7 +553,14 @@ function _toggleFbSelected(path, checked) {
 function fbSelectAll() {
   if (!Array.isArray(state._fbItems) || !state._fbItems.length) return;
   if (!state.fbSelected) state.fbSelected = new Set();
-  for (const it of state._fbItems) state.fbSelected.add(it.path);
+  // v1.1 (audit L9): only select VISIBLE items. Pre-v1.1 iterated
+  // state._fbItems (the full snapshot), so "Images only" filter +
+  // Select all + switch to "All types" revealed surprise pre-checked
+  // audio/text files in the bulk selection. The visible subset is
+  // what isItemVisibleInList + applyFileSearch already gate the
+  // rendered rows on; we mirror that exact filter here.
+  const visibleItems = state._fbItems.filter((it) => isItemVisibleInList(it));
+  for (const it of visibleItems) state.fbSelected.add(it.path);
   // Re-render the list (so the checkboxes flip to checked) AND
   // the toolbar (so the count + master checkbox update).
   const sorted = sortFbItems(state._fbItems, state.fbSort);
@@ -437,6 +610,71 @@ async function fbBulkAction(label, op) {
 window.fbSelectAll = fbSelectAll;
 window.fbClearSelection = fbClearSelection;
 window.fbBulkAction = fbBulkAction;
+
+// v1.1 (user request): drives-list rendering. The Up button
+// jumps to this view when the user is already at a drive root.
+// Each row is a clickable drive (e.g. C:\, D:\, E:\ on Windows
+// or / on POSIX). Clicking a drive sets state.fbDir to the
+// drive path and refreshes — the user lands at the drive's
+// root. Double-clicking does the same (a single click on a
+// drive is enough, but double-click is honoured too because
+// it's the file-browser muscle memory for "navigate in").
+function renderFbDrivesList(drives) {
+  const ul = $('#fb-list');
+  if (!ul) return;
+  ul.innerHTML = '';
+  ul.classList.remove('fb-thumbs-on');
+  ul.classList.add('fb-thumbs-off');
+  // Set a sensible column template for the drives list
+  // (icon + name only — drives don't have size / type / mtime).
+  ul.style.gridTemplateColumns = '44px minmax(120px, 1fr)';
+  if (!drives || drives.length === 0) {
+    const empty = el('li', { class: 'fb-empty' });
+    empty.appendChild(el('div', { class: 'fb-empty-title' }, 'No drives found'));
+    empty.appendChild(el('div', { class: 'fb-empty-hint' },
+      'Your system does not expose any drives. Use 📂 to pick a folder.'));
+    ul.appendChild(empty);
+    return;
+  }
+  for (const drv of drives) {
+    // Drive rows: emoji icon (💽 for the hard-disk glyph) +
+    // a label like "C:" + the full path as the title tooltip.
+    const driveIcon = process.platform === 'win32' ? '💽' : '🖴';
+    const li = el('li', {
+      class: 'fb-item fb-drive-row',
+      'data-path': drv.name,
+      'data-isdir': '1',
+      'data-name': drv.label,
+      'data-ext': '',
+      draggable: 'false',
+      style: 'grid-template-columns: 44px minmax(120px, 1fr);',
+      title: drv.name,
+    }, [
+      el('span', { class: 'icon fb-icon' }, driveIcon),
+      el('span', { class: 'name' }, drv.label + '  —  ' + drv.name),
+    ]);
+    const navigate = () => {
+      // Set fbDir to the drive root and re-enable the Up
+      // button. The next refreshBrowser() call lists the
+      // drive's contents.
+      state.fbDir = drv.name;
+      // Mirror the drive into the per-tab saved slot so
+      // switching tabs and coming back keeps the user
+      // where they were.
+      if (state.currentTab) state.fbDirs[state.currentTab] = drv.name;
+      scheduleStateSave();
+      // Re-enable the Up button (it was disabled at the
+      // drives list).
+      const upBtn = $('#fb-up');
+      if (upBtn) { upBtn.disabled = false; upBtn.classList.remove('fb-up-disabled'); upBtn.title = 'Up one level'; }
+      refreshBrowser();
+    };
+    li.addEventListener('click', navigate);
+    li.addEventListener('dblclick', navigate);
+    ul.appendChild(li);
+  }
+}
+window.renderFbDrivesList = renderFbDrivesList;
 
 // Phase 3 Block 13: _attachDropTarget() extrahiert nach
 // renderer/utils/dropTarget.js. Shim-Alias unten.
