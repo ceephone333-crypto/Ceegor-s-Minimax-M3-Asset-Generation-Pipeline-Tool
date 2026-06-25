@@ -102,7 +102,10 @@ async function init() {
       // (CSS .fb-up-disabled + .title) but a stale click could
       // still reach this handler; the early-return is the
       // authoritative guard.
-      if (isDrivesList()) return;
+      if (isDrivesList()) {
+        if (typeof window.logAction === 'function') window.logAction('file-browser', 'up-noop', { reason: 'drives-list' });
+        return;
+      }
       const outRoot = state.config.output_dir || '';
       // v1.1.17 (reported by user — "the up one level button in
       // folder explorer has no functionality (except triggering the
@@ -117,6 +120,7 @@ async function init() {
       // or the drives list when there's no output_dir either.
       // This makes the button always do SOMETHING visible.
       if (!state.fbDir) {
+        if (typeof window.logAction === 'function') window.logAction('file-browser', 'up-empty-fbdir', { to: outRoot ? 'output_dir' : 'drives-sentinel' });
         if (outRoot) {
           state.fbDir = outRoot;
         } else {
@@ -130,6 +134,7 @@ async function init() {
         // At the output root, climb one level (parentDir) so the
         // user can see the drives (or root) on the next click.
         const up = parentDir(state.fbDir);
+        if (typeof window.logAction === 'function') window.logAction('file-browser', 'up-at-output-root', { to: up || 'drives-sentinel' });
         if (up) {
           state.fbDir = up;
         } else {
@@ -144,6 +149,7 @@ async function init() {
       if (isDriveRoot(state.fbDir)) {
         // Already at a drive root, jumping up further means
         // the drives list (you can't go above a drive root).
+        if (typeof window.logAction === 'function') window.logAction('file-browser', 'up-drive-root', { to: 'drives-sentinel' });
         state.fbDir = FB_DRIVES_SENTINEL;
         refreshBrowser({ keepCurrent: true });
         updateFbUpButton();
@@ -151,8 +157,22 @@ async function init() {
       }
       // Normal mid-tree case: one level up.
       const up = parentDir(state.fbDir) || outRoot || FB_DRIVES_SENTINEL;
+      if (typeof window.logAction === 'function') window.logAction('file-browser', 'up-climb', { from: state.fbDir, to: up });
       state.fbDir = up;
-      refreshBrowser({ keepCurrent: true });
+      refreshBrowser({ keepCurrent: true })
+        .then(() => {
+          if (typeof window.logAction === 'function') window.logAction('file-browser', 'up-refresh-ok', { fbDir: state.fbDir });
+        })
+        .catch((e) => {
+          // v1.1.28: surface async refreshBrowser failure so
+          // the file log explains why the click "did nothing".
+          if (typeof window.logError === 'function') {
+            window.logError('fb-up-refresh', 'renderer/app.js:fb-up-refreshBrowser', e);
+          }
+          if (typeof window.logAction === 'function') {
+            window.logAction('file-browser', 'up-refresh-err', { fbDir: state.fbDir, err: String((e && e.message) || e) });
+          }
+        });
       updateFbUpButton();
     } catch (e) {
       // v1.1.25: don't swallow. Log to the in-app pane AND the
