@@ -187,6 +187,45 @@ test('popupPolicy: "always", "per-session", "never" are never auto-downgraded', 
   stateMod.write({ popupPolicy: 'never', lastSeenVersion: '' });
   assert.equal(stateMod.read().popupPolicy, 'never');
 });
+test('popupPolicy: read-side migration downgrades legacy "once-fresh" on first launch', () => {
+  // v1.1.23 follow-up: the write-side migration alone is not
+  // enough — it only takes effect after the user triggers a
+  // save, and the very first launch of v1.1.23 reads the
+  // on-disk value BEFORE anything saves. The shared migration
+  // helper runs on BOTH read and write, so by the time the
+  // renderer sees popupPolicy it's already 'never' for a legacy
+  // install. This test exercises the helper directly (the same
+  // path that read() uses) to confirm a pre-v1.1.18
+  // 'once-fresh' is downgraded regardless of which side calls
+  // it.
+  const helper = stateMod._migrateLegacyPopupPolicy;
+  assert.equal(typeof helper, 'function', 'migration helper must be exported');
+  // Legacy in-place upgrade from v1.1.0: empty lastSeenVersion,
+  // once-fresh policy.
+  const raw1 = { popupPolicy: 'once-fresh', lastSeenVersion: '' };
+  helper(raw1);
+  assert.equal(raw1.popupPolicy, 'never');
+  // Pre-1.1.18 lastSeenVersion + once-fresh.
+  const raw2 = { popupPolicy: 'once-fresh', lastSeenVersion: '1.1.0' };
+  helper(raw2);
+  assert.equal(raw2.popupPolicy, 'never');
+  // 1.1.18+ lastSeenVersion + once-fresh = user actively chose it.
+  const raw3 = { popupPolicy: 'once-fresh', lastSeenVersion: '1.1.18' };
+  helper(raw3);
+  assert.equal(raw3.popupPolicy, 'once-fresh');
+  // Missing lastSeenVersion field at all.
+  const raw4 = { popupPolicy: 'once-fresh' };
+  helper(raw4);
+  assert.equal(raw4.popupPolicy, 'never');
+  // Other policies pass through untouched.
+  const raw5 = { popupPolicy: 'never', lastSeenVersion: '' };
+  helper(raw5);
+  assert.equal(raw5.popupPolicy, 'never');
+  // Corrupted value falls back to 'never' (whitelist defence).
+  const raw6 = { popupPolicy: 'bogus', lastSeenVersion: '1.1.22' };
+  helper(raw6);
+  assert.equal(raw6.popupPolicy, 'never');
+});
 
 test('seenPopups drops entries with non-string values and oversize keys', () => {
   stateMod.write({

@@ -1,6 +1,6 @@
 {
   "name": "ceegor-minimax-m3-asset-generation-pipeline-tool",
-  "version": "1.1.23",
+  "version": "1.1.24",
   "description": "Cross-modal asset generation GUI for the MiniMax Token Plan — image, speech, music, and video, with a local image pipeline (upscale / crop / format conversion / background removal).",
   "main": "main.js",
   "scripts": {

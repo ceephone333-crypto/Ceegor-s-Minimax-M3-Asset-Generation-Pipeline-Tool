@@ -121,6 +121,22 @@ function sanitisePipelineAdvancedSettings(input) {
   };
 }
 
+// v1.1.23: legacy popupPolicy migration. Pre-v1.1.18 default was
+// 'once-fresh' which fires every gated popup until dismissed.
+// Users who upgraded in-place from v1.1.0 still have
+// `popupPolicy: 'once-fresh'` + empty `seenPopups` in their
+// state.json, so the v1.1.18 'default off' change had no effect
+// for them. Applied on BOTH read and write so the very first
+// launch of v1.1.23+ resolves a legacy 'once-fresh' to 'never'
+// immediately (write-side alone wouldn't trigger until first save).
+const WL_POPUP = ['once-fresh', 'per-session', 'never', 'always'];
+function _migrateLegacyPopupPolicy(raw) {
+  const ls = (typeof raw?.lastSeenVersion === 'string') ? raw.lastSeenVersion : '';
+  const persisted = WL_POPUP.includes(raw?.popupPolicy) ? raw.popupPolicy : 'never';
+  const legacy = raw?.popupPolicy === 'once-fresh' && (!ls || ls < '1.1.18');
+  raw.popupPolicy = legacy ? 'never' : persisted;
+}
+
 function read() {
   const p = statePath();
   if (!fs.existsSync(p)) return { tabs: {} };
@@ -128,6 +144,7 @@ function read() {
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
     if (!raw || typeof raw !== 'object') return { tabs: {} };
     if (!raw.tabs) raw.tabs = {};
+    _migrateLegacyPopupPolicy(raw);
     // Phase C: clamp the L2 cap on read so a corrupted state.json
     // (e.g. `jobsArchiveCap: 5000`) never lands in the renderer.
     // We clamp on read AND on write — the write-side clamp is the
@@ -155,6 +172,15 @@ function read() {
     if (raw.pipelineAdvancedSettings && typeof raw.pipelineAdvancedSettings === 'object') {
       raw.pipelineAdvancedSettings = sanitisePipelineAdvancedSettings(raw.pipelineAdvancedSettings);
     }
+    // v1.1.23 (reported by user — "we still see lots of popups,
+    // even though they are turned off"): the write-side migration
+    // alone is not enough — it only takes effect after the user
+    // triggers a save (which the very first launch of v1.1.23
+    // does not, because the renderer reads the on-disk value
+    // BEFORE anything saves). Apply the same migration on read so
+    // a legacy 'once-fresh' from a pre-v1.1.18 install is
+    // downgraded to 'never' immediately, on the first launch.
+    _migrateLegacyPopupPolicy(raw);
     return raw;
   } catch {
     return { tabs: {} };
@@ -168,25 +194,11 @@ function write(s) {
   // toggle + settings. The previous version only persisted `tabs`, which
   // silently dropped the per-tab folder map and the last-active-tab on
   // every save.
-  // v1.1.23 (reported by user — "we still see lots of popups,
-  // even though they are turned off"): pre-v1.1.18 the default
-  // popup policy was 'once-fresh', which fires every gated popup
-  // until the user dismisses it. Users who upgraded in-place from
-  // v1.1.0 still have `popupPolicy: 'once-fresh'` (and an empty
-  // `seenPopups`) in their state.json, so the "popups off by
-  // default" change in v1.1.18 silently had no effect for them.
-  // Migration: if the persisted value is 'once-fresh' AND the
-  // user never confirmed a v1.1.18+ build (lastSeenVersion is
-  // empty or < '1.1.18'), downgrade to 'never'. Users who
-  // actively chose 'once-fresh' in the Settings dialog after
-  // the v1.1.18 change have lastSeenVersion ≥ '1.1.18' so
-  // their choice is preserved.
-  const _POLICY_WHITELIST = ['once-fresh', 'per-session', 'never', 'always'];
-  const _lastSeenV = (typeof s?.lastSeenVersion === 'string') ? s.lastSeenVersion : '';
-  const _persistedPolicy = _POLICY_WHITELIST.includes(s?.popupPolicy) ? s.popupPolicy : 'never';
-  const _legacyOnceFresh = s?.popupPolicy === 'once-fresh'
-    && (!_lastSeenV || _lastSeenV < '1.1.18');
-  const _resolvedPolicy = _legacyOnceFresh ? 'never' : _persistedPolicy;
+  // v1.1.23: run the shared migration helper here too (mutates
+  // s.popupPolicy in place) so the on-disk value is resolved on
+  // first save. read() applies the same migration so the very
+  // first launch of v1.1.23 already sees the resolved value.
+  _migrateLegacyPopupPolicy(s);
   const clean = {
     tabs: (s && s.tabs && typeof s.tabs === 'object') ? s.tabs : {},
     currentTab: (s && typeof s.currentTab === 'string') ? s.currentTab : null,
@@ -367,9 +379,11 @@ function write(s) {
     // output folder) is NOT one of these — it shows whenever the config
     // is incomplete, independent of this policy (see openFirstTimeSetup).
     // Whitelisted so a corrupted state.json can't inject an
-    // arbitrary value. The legacy-default migration (see top of
-    // write()) is applied here via _resolvedPolicy.
-    popupPolicy: _resolvedPolicy,
+    // arbitrary value. The legacy-default migration is applied at the
+    // top of write() (mutates s.popupPolicy in place) AND on read()
+    // (mutates raw.popupPolicy in place), so by this point `s.popupPolicy`
+    // is already the resolved value.
+    popupPolicy: s?.popupPolicy,
     // Map of popup-id → ISO timestamp of when the user dismissed
     // it. Used by the 'once-fresh' policy to decide whether the
     // popup should still fire. Capped to a small set (popups a
@@ -482,4 +496,4 @@ function write(s) {
   return clean;
 }
 
-module.exports = { read, write, statePath };
+module.exports = { read, write, statePath, _migrateLegacyPopupPolicy };
