@@ -72,7 +72,7 @@ ipcMain.handle = (channel, handler) => {
       try {
         const ts = new Date().toISOString().slice(11, 23);
         const msg = `[main] ipc:${channel} threw: ${error && error.stack ? error.stack : String((error && error.message) || error)}`;
-        fs.appendFileSync(RENDERER_LOG, ts + ' ' + msg + '\n');
+        if (RENDERER_LOG) fs.appendFileSync(RENDERER_LOG, ts + ' ' + msg + '\n');
       } catch (_) { /* secondary failure — never block the original throw */ }
       // #region debug-point D:ipc-throw
       reportIpcDebugEvent('pre-fix', 'D', `ipc:${channel}:throw`, `[DEBUG] throw ${channel}`, {
@@ -86,23 +86,57 @@ ipcMain.handle = (channel, handler) => {
 };
 
 // Phase 4 Fix 21: renderer-error.log Handler. Schreibt alle
-// Errors aus dem Renderer in eine Datei im Projekt-Root, damit
-// wir ohne DevTools sehen was passiert.
-const RENDERER_LOG = path.join(PARENT_ROOT, 'renderer-error.log');
+// Errors aus dem Renderer in eine Datei, damit wir ohne DevTools
+// sehen was passiert.
+//
+// v1.1.27: the original path `path.join(PARENT_ROOT, 'renderer-error.log')`
+// resolved inside the asar (e.g. `…/resources/app.asar/renderer-error.log`),
+// and `fs.writeFileSync` to an asar path silently failed (asar is a
+// virtual read-only mount). The log was effectively never written in
+// packaged builds — every diagnostic line the user needed was
+// dropped on the floor.
+//
+// Fix: pick a writable location that works in BOTH dev and packaged
+// builds. In dev, `PARENT_ROOT` is the project root (writable). In
+// packaged, `PARENT_ROOT` resolves inside the asar (read-only), so we
+// fall back to `app.getPath('logs')` — an Electron-blessed writable
+// directory the OS creates for us (e.g. %APPDATA%\MiniMax Assets
+// Tool\logs on Windows, ~/Library/Logs/.../ on macOS).
+function _resolveRendererLogPath() {
+  const candidates = [
+    path.join(PARENT_ROOT, 'renderer-error.log'),
+    (() => { try { return path.join(app.getPath('logs'), 'renderer-error.log'); } catch (_) { return null; } })(),
+    path.join(process.cwd(), 'renderer-error.log'),
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try {
+      // Force-create (or truncate) to verify writability. The next
+      // line — truncate on app start — overwrites anyway.
+      fs.writeFileSync(p, '');
+      return p;
+    } catch (_) { /* asar / read-only / no permission — try next */ }
+  }
+  return null;
+}
+const RENDERER_LOG = _resolveRendererLogPath();
 ipcMain.on('renderer:log', (event, line) => {
+  if (!RENDERER_LOG) return; // No writable path found; drop the line
   try {
     const ts = new Date().toISOString().slice(11, 23);
     fs.appendFileSync(RENDERER_LOG, ts + ' ' + line + '\n');
   } catch (e) { /* ignore - secondary failure */ }
 });
 // Truncate log on app start
-try { fs.writeFileSync(RENDERER_LOG, '=== renderer-error.log @ ' + new Date().toISOString() + ' ===\n'); } catch (_) {}
+if (RENDERER_LOG) {
+  try { fs.writeFileSync(RENDERER_LOG, '=== renderer-error.log @ ' + new Date().toISOString() + ' ===\n'); }
+  catch (_) {}
+}
 
 process.on('uncaughtException', (err) => {
   try {
     const ts = new Date().toISOString().slice(11, 23);
     const msg = `[main] uncaughtException: ${err && err.stack ? err.stack : err}`;
-    fs.appendFileSync(RENDERER_LOG, ts + ' ' + msg + '\n');
+    if (RENDERER_LOG) fs.appendFileSync(RENDERER_LOG, ts + ' ' + msg + '\n');
     console.error(msg);
   } catch (_) {}
 });
@@ -111,7 +145,7 @@ process.on('unhandledRejection', (reason) => {
   try {
     const ts = new Date().toISOString().slice(11, 23);
     const msg = `[main] unhandledRejection: ${reason && reason.stack ? reason.stack : reason}`;
-    fs.appendFileSync(RENDERER_LOG, ts + ' ' + msg + '\n');
+    if (RENDERER_LOG) fs.appendFileSync(RENDERER_LOG, ts + ' ' + msg + '\n');
     console.error(msg);
   } catch (_) {}
 });
@@ -154,7 +188,7 @@ app.whenReady().then(() => {
       // IPC channel is visible across sessions without DevTools.
       try {
         const ts = new Date().toISOString().slice(11, 23);
-        fs.appendFileSync(RENDERER_LOG, ts + ' [main] IPC registrar failed: ' +
+        if (RENDERER_LOG) fs.appendFileSync(RENDERER_LOG, ts + ' [main] IPC registrar failed: ' +
           (e && e.stack ? e.stack : String((e && e.message) || e)) + '\n');
       } catch (_) {}
       console.error('[main] IPC registrar failed:', e);
