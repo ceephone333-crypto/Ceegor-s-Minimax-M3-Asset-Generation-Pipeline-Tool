@@ -64,22 +64,30 @@
   // v1.1.26: extended to dump config.txt + state.json + addons
   // detection so the file log captures what the tool loaded at
   // startup WITHOUT requiring the user to open DevTools.
+  //
+  // CRITICAL: every identifier in the probe body MUST be safe
+  // to read at parse time. debugLog.js is the FIRST <script> in
+  // index.html — `TABS`, `state`, etc. are not yet declared.
+  // `typeof` works on bare undeclared identifiers (e.g. `typeof TABS`)
+  // but NOT on member access (`typeof TABS?.image`) because `TABS?.image`
+  // evaluates the member access first and ReferenceErrors on the bare
+  // identifier. So: only `typeof IDENT`, never `typeof IDENT?.member`.
   const probe = setInterval(() => {
     const parts = [
       'applyFileSearch=' + (typeof applyFileSearch),
       'refreshBrowser=' + (typeof refreshBrowser),
       'state=' + (typeof state),
       'window.state=' + (typeof window.state),
-      'TABS.image=' + (typeof TABS?.image),
-      'TABS.speech=' + (typeof TABS?.speech),
+      'TABS=' + (typeof TABS),
       'init=' + (typeof init),
     ];
     // Dump a redacted config snapshot so we know what the tool
     // actually loaded from disk. Never log the api_key value
     // (the mask helper above strips it from log lines).
     try {
-      if (typeof window.state !== 'undefined' && window.state && window.state.config) {
-        const c = window.state.config;
+      const s = (typeof window !== 'undefined') ? window.state : null;
+      if (s && s.config) {
+        const c = s.config;
         parts.push('cfg.api_key_set=' + (!!c.api_key && c.api_key.length > 0));
         parts.push('cfg.output_dir=' + (c.output_dir || '(empty)'));
         parts.push('cfg.region=' + (c.region || '(empty)'));
@@ -89,8 +97,9 @@
     } catch (_) {}
     // Addons: which optional binaries the tool found at boot.
     try {
-      if (typeof window.state !== 'undefined' && window.state) {
-        parts.push('addons.realesrgan=' + (window.state.realesrganFirstRunDismissed ? 'dismissed' : 'pending'));
+      const s = (typeof window !== 'undefined') ? window.state : null;
+      if (s) {
+        parts.push('addons.realesrgan=' + (s.realesrganFirstRunDismissed ? 'dismissed' : 'pending'));
       }
     } catch (_) {}
     log('probe: ' + parts.join(' '));
