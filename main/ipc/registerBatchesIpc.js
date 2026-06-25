@@ -70,17 +70,17 @@ Your output must be a single markdown table with the following columns:
 ### 1. Image Generation (\`type: image\`)
 - \`--model\`: \`image-01\` (default, general purpose) or \`image-01-live\` (artistic/cartoon).
 - \`--aspect-ratio\`: \`1:1\`, \`16:9\`, \`9:16\`, \`4:3\`, \`3:4\`, \`2:3\`, \`3:2\`, \`21:9\`.
-- \`--width\`: 512 to 2048 px (multiple of 8). Overrides aspect ratio when paired with \`--height\`.
-- \`--height\`: 512 to 2048 px (multiple of 8). Overrides aspect ratio when paired with \`--width\`.
-- \`--n\`: 1 to 4 (number of images generated per batch item).
+- \`--width\`: 512 to 2048 px (multiple of 8). Overrides aspect ratio when paired with \`--height\`. **image-01 only.**
+- \`--height\`: 512 to 2048 px (multiple of 8). Overrides aspect ratio when paired with \`--width\`. **image-01 only.**
+- \`--n\`: 1 to 4 (number of images per mmx call; tool spawns N×Variants calls total).
 - \`--seed\`: integer (for reproducible generation).
-- \`--prompt-optimizer\`: \`true\` or \`false\` (lets model optimize prompt).
-- \`--aigc-watermark\`: \`true\` or \`false\` (embeds digital watermark).
-- \`--subject-ref\`: path or URL to character reference image (consistency).
-- \`--response-format\`: \`url\` (default) or \`base64\`.
-- \`--variants\`: 1 to 5 (number of variants to generate for this batch item in the UI runner).
+- \`--prompt-optimizer\`: \`true\` or \`false\` (lets the model optimize the prompt).
+- \`--aigc-watermark\`: \`true\` or \`false\` (embeds a digital watermark).
+- \`--subject-ref\`: path or URL to character reference image (consistency across generations). Format: \`type=character,image=<path-or-url>\`.
+- \`--response-format\`: \`url\` (default, downloads to disk) or \`base64\` (bypasses CDN, embeds in JSON).
+- \`--variants\`: 1 to 5 (re-spawns mmx N times in the BatchGen runner for one prompt).
 - \`--upscale\`: \`true\` or \`false\` (enable local post-generation upscaling).
-- \`--upscale-multiplier\`: \`2\` or \`4\` (upscale multiplier).
+- \`--upscale-multiplier\`: \`2\` or \`4\` (upscale multiplier when \`--upscale true\`).
 
 > [!IMPORTANT]
 > **Resolution Limit Handling for AI**:
@@ -89,43 +89,55 @@ Your output must be a single markdown table with the following columns:
 > 2. Set \`--width\` and \`--height\` to this base resolution (e.g. \`--width 1920 --height 1080\`).
 > 3. Add the upscale flag \`--upscale true --upscale-multiplier 2\` to double the size, reaching 3840x2160!
 
+> [!IMPORTANT]
+> **--n combined with --variants** (BUG-9-08): \`--n=2 --variants=2\` spawns 2 mmx calls each requesting 2 images = 4 images total. Rapid back-to-back mmx calls can trigger API rate limits (observed: silent "mmx exited with code -1" on the 2nd call). The tool warns on Generate; consider using just one of \`--n\` or \`--variants\`.
+
 ### 2. Speech Synthesis / TTS (\`type: speech\`)
-- \`--model\`: \`speech-2.8-hd\` (default), \`speech-2.8-turbo\`, \`speech-2.6-hd\`, \`speech-2.6-turbo\`, \`speech-02-hd\`, \`speech-02-turbo\`.
-- \`--voice\`: Voice ID (default \`English_expressive_narrator\`). List other voices in the app.
+- \`--model\`: \`speech-2.8-hd\` (default), \`speech-2.8-turbo\`, \`speech-2.6-hd\`, \`speech-2.6-turbo\`, \`speech-02-hd\`, \`speech-02-turbo\`, \`speech-01-hd\`, \`speech-01-turbo\`.
+- \`--voice\`: Voice ID (default \`English_expressive_narrator\`). List other voices in the app under the Voice dropdown.
 - \`--speed\`: 0.5 to 2.0 (default \`1.0\`).
-- \`--volume\`: 0 to 10 (default \`1\`).
-- \`--pitch\`: -12 to 12 (default \`0\`).
+- \`--volume\`: 0 to 10 (default \`1\`; the API treats 0 as "no volume", so use a small positive value like 0.1).
+- \`--pitch\`: -12 to 12 semitones (default \`0\`).
 - \`--format\`: \`mp3\` (default), \`wav\`, \`pcm\`, \`flac\`, \`opus\`.
 - \`--sample-rate\`: \`8000\`, \`16000\`, \`22050\`, \`24000\`, \`32000\` (default), \`44100\`, \`48000\`.
-- \`--bitrate\`: \`32000\` to \`320000\` (default \`128000\`).
+- \`--bitrate\`: \`32000\` to \`320000\` (default \`128000\`). Only affects MP3 / Opus.
 - \`--channels\`: \`1\` (default, mono) or \`2\` (stereo).
 - \`--language\`: \`auto\`, \`en\`, \`zh\`, \`ja\`, \`ko\`.
+- \`--subtitles\`: \`true\` or \`false\` (saves an \`.srt\` alongside the audio).
+- \`--sound-effect\`: path/URL to a sound effect to mix in.
+- \`--pronunciation\`: \`from=to\` pair (repeatable; e.g. \`--pronunciation tomato=tom-ah-to\`).
+- \`--emotion\`: \`happy\`, \`sad\`, \`angry\`, \`fearful\`, \`surprised\`, \`disgusted\`, \`neutral\`. **speech-2.6+ only** — the API rejects it on 2.6/02/01.
 - \`--variants\`: 1 to 5.
 
 ### 3. Music Generation (\`type: music\`)
-- \`--model\`: \`music-2.6\` (default), \`music-2.5\`, \`music-2.0\`.
-- \`--instrumental\`: \`true\` or \`false\` (generate instrumental music without vocals).
-- \`--vocal-mode\`: \`lyrics-optimizer\` (default, auto lyrics), \`lyrics\` (custom lyrics), \`instrumental\` (no vocals).
-- \`--custom-lyrics\`: custom lyric text (only if vocal mode is \`lyrics\`).
-- \`--genre\`: e.g. \`pop\`, \`synthwave\`, \`classical\`.
-- \`--mood\`: e.g. \`happy\`, \`sad\`, \`epic\`.
-- \`--vocals\`: e.g. \`male\`, \`female\`.
-- \`--instruments\`: e.g. \`guitar\`, \`piano\`, \`synthesizer\`.
-- \`--bpm\`: e.g. \`120\`.
-- \`--tempo\`: e.g. \`fast\`, \`medium\`, \`slow\`.
-- \`--format\`: \`mp3\` (default), \`wav\`.
+- \`--model\`: \`music-2.6\` (default, newest), \`music-2.5+\`, \`music-2.5\`. (The legacy \`music-2.0\` was removed in v1.1.17; the tool now rejects it.)
+- \`--instrumental\`: \`true\` or \`false\` (generate an instrumental track with no vocals). Requires \`music-2.5\` or newer.
+- \`--lyrics\`: the song lyrics with structure tags (\`[Verse]\`, \`[Chorus]\`, …). Max 3500 chars. Required unless \`--instrumental\` or \`--lyrics-optimizer\` is set.
+- \`--lyrics-optimizer\`: \`true\` or \`false\` (auto-generate lyrics from the prompt). **music-2.6 only.** Mutually exclusive with \`--lyrics\` and \`--instrumental\`.
+- \`--genre\`: e.g. \`pop\`, \`synthwave\`, \`classical\`, \`jazz\`, \`electronic\`, \`folk\`, \`hip-hop\`, \`r&b\`, \`rock\`.
+- \`--mood\`: e.g. \`happy\`, \`sad\`, \`epic\`, \`calm\`, \`energetic\`, \`melancholic\`, \`uplifting\`, \`nostalgic\`.
+- \`--vocals\`: e.g. \`male\`, \`female\`, \`baritone\`, \`soprano\`, \`choir\`. Ignored when \`--instrumental true\`.
+- \`--instruments\`: e.g. \`guitar\`, \`piano\`, \`synthesizer\`, \`strings\`, \`drums\`.
+- \`--bpm\`: 40 to 220 (exact tempo in beats per minute).
+- \`--tempo\`: \`slow\`, \`moderate\`, \`fast\` (coarse alternative to \`--bpm\`).
+- \`--key\`: musical key, e.g. \`C major\`, \`A minor\`, \`G sharp\`.
+- \`--references\`: free-form style reference, e.g. \`similar to Ed Sheeran\`.
+- \`--avoid\`: elements to keep OUT, e.g. \`no brass, no saxophone\`.
+- \`--format\`: \`mp3\` (default), \`wav\`, \`pcm\`.
+- \`--sample-rate\`: \`16000\`, \`24000\`, \`32000\`, \`44100\` (default).
+- \`--bitrate\`: \`32000\`, \`64000\`, \`128000\`, \`256000\`.
 - \`--aigc-watermark\`: \`true\` or \`false\`.
 - \`--variants\`: 1 to 5.
 
 ### 4. Video Generation (\`type: video\`)
-- \`--model\`: \`video-01-live\` (default, high quality), \`video-01\` (legacy).
-- \`--duration\`: \`5\` (default) or \`10\` seconds.
-- \`--resolution\`: \`720p\` (default, 1280x720) or \`1080p\` (1920x1080).
-- \`--first-frame\`: path to start frame image (I2V / SEF).
-- \`--last-frame\`: path to end frame image (SEF only).
-- \`--subject-image\`: path to subject character/object (S2V-01).
+- \`--model\`: \`MiniMax-Hailuo-2.3\` (default, T2V/I2V), \`MiniMax-Hailuo-2.3-Fast\` (fast I2V; **requires \`--first-frame-image\`**), \`MiniMax-Hailuo-02\` (T2V/I2V/SEF; supports \`--last-frame-image\`), \`S2V-01\` (subject-driven; **requires \`--subject-image\`**).
+- \`--first-frame-image\`: path or URL to the starting frame (image-to-video). Required on \`MiniMax-Hailuo-2.3-Fast\`.
+- \`--last-frame-image\`: path or URL to the ending frame (start-end interpolation on \`MiniMax-Hailuo-02\` only).
+- \`--subject-image\`: path or URL to the subject reference (character consistency on \`S2V-01\` only).
+- \`--duration\`: \`6\` (always available) or \`10\` seconds (768P only; 1080P caps at 6s).
+- \`--resolution\`: \`768P\` (default) or \`1080P\` (Hailuo-2.3-Fast and S2V-01 only support 768P).
 - \`--prompt-optimizer\`: \`true\` or \`false\`.
-- \`--fast-pretreatment\`: \`true\` or \`false\`.
+- \`--fast-pretreatment\`: \`true\` or \`false\` (Hailuo-2.3 / Hailuo-2.3-Fast / Hailuo-02 only).
 - \`--variants\`: 1 to 5.
 
 ---
@@ -135,8 +147,8 @@ Your output must be a single markdown table with the following columns:
 |---|---|---|
 | image | A futuristic cityscape with glowing neon lights | --model image-01 --aspect-ratio 16:9 --variants 3 --upscale true --upscale-multiplier 2 |
 | speech | Hello, this is a batch voice recording | --model speech-2.8-hd --voice English_expressive_narrator --speed 1.05 |
-| music | Upbeat 80s style retro arcade theme | --model music-2.6 --genre synthwave --instrumental true |
-| video | A drone shot flying through a forest valley | --model video-01-live --duration 5 --resolution 1080p |
+| music | Upbeat 80s style retro arcade theme | --model music-2.6 --genre synthwave --instrumental true --bpm 120 |
+| video | A drone shot flying through a forest valley | --model MiniMax-Hailuo-2.3 --duration 6 --resolution 768P |
 `;
 
       const txtContent = `MiniMax Asset Import Instructions (AI-Readable Plain-Text Template)
@@ -157,17 +169,17 @@ DETAILED PARAMETERS REFERENCE TABLE:
 1. IMAGE GENERATION (type: image)
 - --model: image-01 (default) or image-01-live
 - --aspect-ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 2:3, 3:2, 21:9
-- --width: 512 to 2048 px (multiple of 8). Overrides aspect ratio when paired with --height.
-- --height: 512 to 2048 px (multiple of 8). Overrides aspect ratio when paired with --width.
-- --n: 1 to 4
-- --seed: integer
-- --prompt-optimizer: true/false
-- --aigc-watermark: true/false
-- --subject-ref: path/URL to character reference image
-- --response-format: url/base64
-- --variants: 1 to 5
-- --upscale: true/false
-- --upscale-multiplier: 2 or 4
+- --width: 512 to 2048 px (multiple of 8). Overrides aspect ratio when paired with --height. image-01 only.
+- --height: 512 to 2048 px (multiple of 8). Overrides aspect ratio when paired with --width. image-01 only.
+- --n: 1 to 4 (number of images per mmx call; tool spawns N * Variants calls total).
+- --seed: integer (for reproducible generation).
+- --prompt-optimizer: true/false (lets the model optimize the prompt).
+- --aigc-watermark: true/false (embeds a digital watermark).
+- --subject-ref: path or URL to character reference image. Format: type=character,image=<path-or-url>.
+- --response-format: url (default, downloads to disk) or base64 (bypasses CDN).
+- --variants: 1 to 5 (re-spawns mmx N times in the BatchGen runner for one prompt).
+- --upscale: true/false (enable local post-generation upscaling).
+- --upscale-multiplier: 2 or 4 (upscale multiplier when --upscale true).
 
 * IMPORTANT: RESOLUTION LIMITS FOR AI *
 The model maximum native resolution is 2048x2048. If the user asks for a resolution larger than 2048 px (e.g., 3840x2160), you MUST:
@@ -175,51 +187,63 @@ The model maximum native resolution is 2048x2048. If the user asks for a resolut
 2. Set --width 1920 --height 1080.
 3. Add --upscale true --upscale-multiplier 2 to scale it back up post-generation.
 
+* IMPORTANT: --n COMBINED WITH --variants (BUG-9-08) *
+--n=2 --variants=2 spawns 2 mmx calls each requesting 2 images = 4 images total. Rapid back-to-back mmx calls can trigger API rate limits (observed: silent "mmx exited with code -1" on the 2nd call). The tool warns on Generate; consider using just one of --n or --variants.
+
 2. SPEECH SYNTHESIS / TTS (type: speech)
-- --model: speech-2.8-hd (default), speech-2.8-turbo, speech-2.6-hd, speech-2.6-turbo, speech-02-hd, speech-02-turbo
-- --voice: Voice ID (default English_expressive_narrator)
-- --speed: 0.5 to 2.0 (default 1.0)
-- --volume: 0 to 10 (default 1)
-- --pitch: -12 to 12 (default 0)
-- --format: mp3, wav, pcm, flac, opus
-- --sample-rate: 8000 to 48000 (default 32000)
-- --bitrate: 32000 to 320000 (default 128000)
-- --channels: 1 (mono) or 2 (stereo)
-- --language: auto, en, zh, ja, ko
-- --variants: 1 to 5
+- --model: speech-2.8-hd (default), speech-2.8-turbo, speech-2.6-hd, speech-2.6-turbo, speech-02-hd, speech-02-turbo, speech-01-hd, speech-01-turbo.
+- --voice: Voice ID (default English_expressive_narrator).
+- --speed: 0.5 to 2.0 (default 1.0).
+- --volume: 0 to 10 (default 1; treat 0 as muted -- use a small positive value).
+- --pitch: -12 to 12 semitones (default 0).
+- --format: mp3 (default), wav, pcm, flac, opus.
+- --sample-rate: 8000, 16000, 22050, 24000, 32000 (default), 44100, 48000.
+- --bitrate: 32000 to 320000 (default 128000). Only affects MP3 / Opus.
+- --channels: 1 (default, mono) or 2 (stereo).
+- --language: auto, en, zh, ja, ko.
+- --subtitles: true/false (saves an .srt alongside the audio).
+- --sound-effect: path or URL to a sound effect to mix in.
+- --pronunciation: from=to pair (repeatable). Example: --pronunciation tomato=tom-ah-to.
+- --emotion: happy, sad, angry, fearful, surprised, disgusted, neutral. speech-2.6+ only -- API rejects on 2.6/02/01.
+- --variants: 1 to 5.
 
 3. MUSIC GENERATION (type: music)
-- --model: music-2.6 (default), music-2.5, music-2.0
-- --instrumental: true/false
-- --vocal-mode: lyrics-optimizer, lyrics, instrumental
-- --custom-lyrics: lyric text (only if vocal-mode is lyrics)
-- --genre: e.g. pop, synthwave
-- --mood: e.g. happy, sad, epic
-- --vocals: e.g. male, female
-- --instruments: e.g. guitar, piano, synthesizer
-- --bpm: e.g. 120
-- --tempo: fast, medium, slow
-- --format: mp3, wav
-- --aigc-watermark: true/false
-- --variants: 1 to 5
+- --model: music-2.6 (default, newest), music-2.5+, music-2.5. (Legacy music-2.0 was removed in v1.1.17; the tool rejects it.)
+- --instrumental: true/false (no vocals). Requires music-2.5 or newer.
+- --lyrics: song lyrics with structure tags ([Verse], [Chorus], ...). Max 3500 chars. Required unless --instrumental or --lyrics-optimizer is set.
+- --lyrics-optimizer: true/false (auto-generate lyrics from the prompt). music-2.6 only. Mutually exclusive with --lyrics and --instrumental.
+- --genre: pop, synthwave, classical, jazz, electronic, folk, hip-hop, r&b, rock, etc.
+- --mood: happy, sad, epic, calm, energetic, melancholic, uplifting, nostalgic, etc.
+- --vocals: male, female, baritone, soprano, choir, etc. Ignored when --instrumental true.
+- --instruments: guitar, piano, synthesizer, strings, drums, etc.
+- --bpm: 40 to 220 (exact tempo in beats per minute).
+- --tempo: slow, moderate, fast (coarse alternative to --bpm).
+- --key: musical key, e.g. C major, A minor, G sharp.
+- --references: free-form style reference, e.g. similar to Ed Sheeran.
+- --avoid: elements to keep OUT, e.g. no brass, no saxophone.
+- --format: mp3 (default), wav, pcm.
+- --sample-rate: 16000, 24000, 32000, 44100 (default).
+- --bitrate: 32000, 64000, 128000, 256000.
+- --aigc-watermark: true/false.
+- --variants: 1 to 5.
 
 4. VIDEO GENERATION (type: video)
-- --model: video-01-live (default), video-01
-- --duration: 5 or 10 seconds
-- --resolution: 720p or 1080p
-- --first-frame: path to start frame image
-- --last-frame: path to end frame image
-- --subject-image: path to subject reference image
-- --prompt-optimizer: true/false
-- --fast-pretreatment: true/false
-- --variants: 1 to 5
+- --model: MiniMax-Hailuo-2.3 (default, T2V/I2V), MiniMax-Hailuo-2.3-Fast (fast I2V; requires --first-frame-image), MiniMax-Hailuo-02 (T2V/I2V/SEF; supports --last-frame-image), S2V-01 (subject-driven; requires --subject-image).
+- --first-frame-image: path or URL to the starting frame. Required on MiniMax-Hailuo-2.3-Fast.
+- --last-frame-image: path or URL to the ending frame. MiniMax-Hailuo-02 only.
+- --subject-image: path or URL to the subject reference. S2V-01 only.
+- --duration: 6 (always) or 10 seconds (768P only; 1080P caps at 6s).
+- --resolution: 768P (default) or 1080P. Hailuo-2.3-Fast and S2V-01 only support 768P.
+- --prompt-optimizer: true/false.
+- --fast-pretreatment: true/false (Hailuo-2.3 / Hailuo-2.3-Fast / Hailuo-02 only).
+- --variants: 1 to 5.
 
 ---
 EXAMPLE IMPORT ROWS:
 image | A futuristic cityscape with glowing neon lights | --model image-01 --aspect-ratio 16:9 --variants 3 --upscale true --upscale-multiplier 2
 speech | Hello, this is a batch voice recording | --model speech-2.8-hd --voice English_expressive_narrator --speed 1.05
-music | Upbeat 80s style retro arcade theme | --model music-2.6 --genre synthwave --instrumental true
-video | A drone shot flying through a forest valley | --model video-01-live --duration 5 --resolution 1080p
+music | Upbeat 80s style retro arcade theme | --model music-2.6 --genre synthwave --instrumental true --bpm 120
+video | A drone shot flying through a forest valley | --model MiniMax-Hailuo-2.3 --duration 6 --resolution 768P
 `;
 
       fs.writeFileSync(path.join(targetDir, 'example_batch_import.md'), mdContent, 'utf8');
