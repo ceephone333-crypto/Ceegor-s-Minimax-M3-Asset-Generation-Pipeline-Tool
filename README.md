@@ -43,4 +43,7 @@ Contributions and feedback regarding scalability bottlenecks, workflow optimizat
 
 ---
 
-*Insert Screenshot / Animated GIF of the workflow here*
+<img width="1638" height="883" alt="grafik" src="https://github.com/user-attachments/assets/fcbf7ed9-e369-41b9-8ed3-763001e7bb9b" /> <img width="1920" height="1032" alt="grafik" src="https://github.com/user-attachments/assets/3770048b-fcfd-4d05-8e51-413046a8cde1" /> <img width="610" height="960" alt="grafik" src="https://github.com/user-attachments/assets/66a2e5de-57ef-4e59-949e-b09515845908" />
+
+
+
