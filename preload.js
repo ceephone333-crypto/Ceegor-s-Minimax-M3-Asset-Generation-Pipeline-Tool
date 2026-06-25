@@ -42,7 +42,20 @@ contextBridge.exposeInMainWorld('api', {
 
   // ---- file browser ----
   fbList: (dir) => ipcRenderer.invoke('fb:list', dir),
+  // v1.1.28: trust a path + its ancestors so the Up button can
+  // climb out of output_dir without forcing the user through the
+  // file picker. Only walks up from an already-trusted root.
+  fbTrustAncestors: (dir) => ipcRenderer.invoke('fb:trust-ancestors', dir),
+  // v1.1 (user request): the file browser's Up button now
+  // navigates to a list of available drives when the user is
+  // already at a drive root. The main process enumerates the
+  // drives (Windows: C:\, D:\, ...; POSIX: /) and returns them
+  // as { ok, drives: [{ name, label }] } so the renderer's
+  // folder explorer can render the list. No path-allowlist
+  // check needed (no user-supplied path).
+  fbListDrives: () => ipcRenderer.invoke('fb:listDrives'),
   fbMkdir: (dir, name) => ipcRenderer.invoke('fb:mkdir', dir, name),
+  fbEnsureDir: (dir) => ipcRenderer.invoke('fb:ensureDir', dir),
   fbRename: (path, newName) => ipcRenderer.invoke('fb:rename', path, newName),
   fbDelete: (path) => ipcRenderer.invoke('fb:delete', path),
   fbMove: (src, destDir) => ipcRenderer.invoke('fb:move', src, destDir),
@@ -127,6 +140,17 @@ contextBridge.exposeInMainWorld('api', {
   // Failures (corrupt file, sharp not installed, etc.) are
   // returned as { ok: false, error: '...' } — never thrown.
   optimizeImage: (srcPath, opts) => ipcRenderer.invoke('image:optimize', srcPath, opts),
+  // bug-fix M6 (_temp4.md): sniffs the real format from content and
+  // renames the file to match when mmx's downloaded CDN bytes (e.g.
+  // JPEG) disagree with the hardcoded --out extension (always .png).
+  //   fixImageExtension(path) → { ok, path, renamed, error? }
+  fixImageExtension: (filePath) => ipcRenderer.invoke('image:fixExtension', filePath),
+  // Bug-fix (reported by user): pre-flight existence check for a
+  // --subject-ref reference image so a stale/missing path is caught with
+  // a clear message instead of a cryptic, 4×-retried mmx ENOENT. URLs
+  // (http/https) report exists:true (validated server-side, not on disk).
+  //   refImageExists(path) → { ok, exists, url? }
+  refImageExists: (filePath) => ipcRenderer.invoke('image:refExists', filePath),
 
   // ---- Audio cut / probe (folder-browser right-click) ----
   // Wraps the bundled ffmpeg-static binary. Used by the

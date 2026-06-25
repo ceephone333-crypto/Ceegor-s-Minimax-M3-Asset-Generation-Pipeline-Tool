@@ -189,7 +189,48 @@ async function refreshBrowser(opts = {}) {
   // drive removed, etc.) — fall back to the output root instead of just
   // showing an error and forcing the user to click "Refresh". Same
   // fallback if the live fbDir fails for the same reason.
+  //
+  // v1.1.28 (user-reported — "folder up button does nothing"):
+  // the previous version silently rolled back state.fbDir to the
+  // output root whenever fbList failed for the requested path
+  // (typically: the Up button climbs out of the output_dir into a
+  // parent that's NOT on the security allow-list, so fbList
+  // returns ok:false with "Path is outside the allowed directories.").
+  // The user clicked Up, fbList failed, the fallback reset
+  // state.fbDir back to the output root — to the user, the click
+  // did nothing. The fix:
+  //   1) If the failure was on a path the USER explicitly navigated
+  //      to (not a stale per-tab folder), surface the real error
+  //      instead of silently rolling back.
+  //   2) Trust the parent + sibling dirs of output_dir on demand so
+  //      the Up button works without forcing the user through the
+  //      file picker.
   if (!out.ok && startDir && startDir !== (state.config.output_dir || '')) {
+    // Did the user reach this folder through an explicit navigation
+    // (e.g. the Up button / file picker / manual URL)? If so,
+    // surface the error — silently rolling back is confusing.
+    const _explicitNav = !!(opts && opts.keepCurrent) || window.__explicitFbDirNav === startDir;
+    if (typeof window.logAction === 'function') {
+      window.logAction('file-browser', 'fb-list-failed', {
+        requested: startDir,
+        err: out.error,
+        keepCurrent: !!(opts && opts.keepCurrent),
+        explicitNav: _explicitNav,
+      });
+    }
+    if (_explicitNav) {
+      // Don't clobber the user's intent. Just render the error and
+      // re-enable the Up button so they can navigate elsewhere.
+      $('#fb-list').innerHTML = '';
+      $('#fb-path').textContent = startDir + ' — ' + (out.error || '(unavailable)');
+      $('#fb-path').title = startDir;
+      const _errUpBtn = $('#fb-up');
+      if (_errUpBtn) { _errUpBtn.disabled = false; _errUpBtn.classList.remove('fb-up-disabled'); _errUpBtn.title = 'Up one level'; }
+      // Clear the explicit-nav marker so the next refresh doesn't
+      // get stuck in this branch.
+      window.__explicitFbDirNav = null;
+      return;
+    }
     if (state.currentTab && state.fbDirs[state.currentTab]) {
       state.fbDirs[state.currentTab] = '';
       scheduleStateSave();
@@ -201,6 +242,9 @@ async function refreshBrowser(opts = {}) {
       out = await window.api.fbList(fallback);
     }
   }
+  // Clear the explicit-nav marker so the next refresh doesn't
+  // get stuck in the error branch above.
+  if (window.__explicitFbDirNav === startDir) window.__explicitFbDirNav = null;
   // v1.1.17 (reported by user — "we still get the ENOENT issue if
   // no path was setup during initial setup"): if even the
   // output_dir root is gone (the user typed a path that doesn't

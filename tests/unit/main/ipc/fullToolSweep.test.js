@@ -168,7 +168,29 @@ test('preload bridge exposes every tool function and maps to the expected channe
     'diagnose',
     'mmxCancel',
     'fbList',
+    // v1.1 (audit BUG-2): fbListDrives is the new IPC channel
+    // that powers the file browser's "drives list" view (the
+    // Up button now navigates to a list of mounted drives when
+    // the user is at a drive root). The handler was added in
+    // main/ipc/registerFileBrowserIpc.js + preload.js, and the
+    // contract test below expects every key the preload
+    // bridge exposes. This entry keeps the contract test
+    // honest — it will keep failing every time a new IPC
+    // surface is added until the list is manually updated, so
+    // any new channel must be added here in the same commit
+    // that adds it to preload.js.
+    'fbListDrives',
+    // v1.1.28: fbTrustAncestors — walks up from an already-
+    // trusted root and adds each ancestor to the security
+    // allow-list. Used by the file browser's Up button so
+    // clicking Up out of output_dir keeps working without the
+    // user re-picking the parent through the system dialog.
+    // The renderer can't ask for arbitrary paths — the main
+    // process rejects any dir that's not already a descendant
+    // of a trusted root.
+    'fbTrustAncestors',
     'fbMkdir',
+    'fbEnsureDir',
     'fbRename',
     'fbDelete',
     'fbMove',
@@ -187,6 +209,8 @@ test('preload bridge exposes every tool function and maps to the expected channe
     'isnetbgAvailable',
     'isnetbgRun',
     'optimizeImage',
+    'fixImageExtension',
+    'refImageExists',
     'audioAvailable',
     'audioProbe',
     'audioDecodePeaks',
@@ -226,7 +250,9 @@ test('preload bridge exposes every tool function and maps to the expected channe
     ['diagnose', [], 'mmx:diagnose'],
     ['mmxCancel', [], 'mmx:cancel'],
     ['fbList', ['C:\\work'], 'fb:list'],
+    ['fbTrustAncestors', ['C:\\work\\sub'], 'fb:trust-ancestors'],
     ['fbMkdir', ['C:\\work', 'sub'], 'fb:mkdir'],
+    ['fbEnsureDir', ['C:\\work\\newdir'], 'fb:ensureDir'],
     ['fbRename', ['C:\\work\\a.txt', 'b.txt'], 'fb:rename'],
     ['fbDelete', ['C:\\work\\a.txt'], 'fb:delete'],
     ['fbMove', ['C:\\work\\a.txt', 'C:\\work\\out'], 'fb:move'],
@@ -244,6 +270,8 @@ test('preload bridge exposes every tool function and maps to the expected channe
     ['isnetbgAvailable', [], 'isnetbg:available'],
     ['isnetbgRun', ['C:\\in.png', 'C:\\out.png', { useGpu: true }], 'isnetbg:run'],
     ['optimizeImage', ['C:\\in.png', { quality: 82 }], 'image:optimize'],
+    ['fixImageExtension', ['C:\\in.png'], 'image:fixExtension'],
+    ['refImageExists', ['C:\\ref.png'], 'image:refExists'],
     ['audioAvailable', [], 'audio:available'],
     ['audioProbe', ['C:\\tone.wav'], 'audio:probe'],
     ['audioDecodePeaks', ['C:\\tone.wav', { maxBuckets: 32 }], 'audio:decodePeaks'],
@@ -280,6 +308,22 @@ test('preload bridge exposes every tool function and maps to the expected channe
   offLog();
   assert.equal(listeners[3].type, 'remove');
   assert.equal(listeners[3].channel, 'mmx:log');
+
+  // v1.1 (audit BUG-N8): onBeforeQuit is the renderer-side
+  // listener for the main process's before-quit signal. The
+  // previous test only asserted the bridge method exists
+  // (via `expectedKeys`); it didn't verify the call returns
+  // a working unsubscribe function. We add a full
+  // subscribe-and-unsubscribe cycle below — same shape as
+  // the onLog / onRealesrganDownloadProgress tests above.
+  const onBeforeQuitCount = listeners.length;
+  const offBeforeQuit = api.onBeforeQuit(() => {});
+  assert.equal(typeof offBeforeQuit, 'function', 'onBeforeQuit must return a function (the unsubscribe handle)');
+  assert.equal(listeners[onBeforeQuitCount].type, 'on');
+  assert.equal(listeners[onBeforeQuitCount].channel, 'app:before-quit');
+  offBeforeQuit();
+  assert.equal(listeners[onBeforeQuitCount + 1].type, 'remove');
+  assert.equal(listeners[onBeforeQuitCount + 1].channel, 'app:before-quit');
 
   api.logToFile('[renderer] boom');
   assert.deepEqual(sent, [{ channel: 'renderer:log', args: ['[renderer] boom'] }]);
@@ -323,7 +367,7 @@ test('app, config, state, batches, and file browser handlers pass a real filesys
     assert.equal(currentConfig.api_key, 'sk-initial');
     assert.equal(currentConfig.output_dir, outputDir);
 
-    const savedConfig = electron.handlers['config:set'](null, {
+    const savedResult = electron.handlers['config:set'](null, {
       api_key: 'sk-updated',
       output_dir: outputDir,
       region: 'cn',
@@ -331,6 +375,12 @@ test('app, config, state, batches, and file browser handlers pass a real filesys
       styles: [{ name: 'Moody', value: 'Noir' }],
       ignored: 'nope',
     });
+    // Bug-fix M2 (_temp5.md 360° audit): config:set now returns an
+    // envelope `{ ok, config, error }` instead of the bare config
+    // (which was null on failure and crashed callers).
+    assert.equal(savedResult.ok, true);
+    assert.equal(savedResult.error, null);
+    const savedConfig = savedResult.config;
     assert.equal(savedConfig.api_key, 'sk-updated');
     assert.equal(savedConfig.region, 'cn');
     assert.equal(savedConfig.theme, 'light');
@@ -349,13 +399,31 @@ test('app, config, state, batches, and file browser handlers pass a real filesys
     const rootFile = path.join(outputDir, 'note.txt');
     const writeRes = await electron.handlers['fb:write'](null, rootFile, base64);
     assert.deepEqual(writeRes, { ok: true, path: rootFile });
-    assert.equal(await electron.handlers['fb:exists'](null, rootFile), true);
+    // v1.1 (audit BUG-R2-09): fb:exists now returns the
+    // { ok, exists } envelope. The test asserts both fields.
+    const existsRes = await electron.handlers['fb:exists'](null, rootFile);
+    assert.equal(existsRes.ok, true, 'fb:exists should return ok=true on success');
+    assert.equal(existsRes.exists, true, 'fb:exists should report the file exists');
     const readRes = await electron.handlers['fb:read'](null, rootFile);
     assert.equal(Buffer.from(readRes.base64, 'base64').toString('utf8'), 'hello world');
 
     const mkdirRes = await electron.handlers['fb:mkdir'](null, outputDir, 'sub');
     assert.equal(mkdirRes.ok, true);
     assert.equal(fs.existsSync(path.join(outputDir, 'sub')), true);
+
+    // bug-fix D1 (_temp4.md): fb:ensureDir must create a path that does
+    // not exist yet directly (no named-child requirement like fb:mkdir),
+    // and must still be gated by the same allow-list as every other fb:*
+    // handler.
+    const notYetCreated = path.join(outputDir, 'ensured-root-child');
+    assert.equal(fs.existsSync(notYetCreated), false);
+    const ensureRes = await electron.handlers['fb:ensureDir'](null, notYetCreated);
+    assert.deepEqual(ensureRes, { ok: true, path: notYetCreated });
+    assert.equal(fs.existsSync(notYetCreated), true);
+
+    const deniedEnsure = await electron.handlers['fb:ensureDir'](null, path.join(tmp, 'outside', 'denied'));
+    assert.equal(deniedEnsure.ok, false);
+    assert.match(deniedEnsure.error, /outside the allowed directories/i);
 
     const renameRes = await electron.handlers['fb:rename'](null, rootFile, 'renamed.txt');
     assert.equal(renameRes.ok, true);
@@ -506,6 +574,10 @@ test('image, upscale, and background-removal handlers keep returning envelopes w
           if (imageMode === 'throw') throw new Error('optimizer boom');
           return { ok: true, outputPath: opts.outputPath || srcPath, inputSize: 1, outputSize: 1, savedBytes: 0, savedPercent: 0, format: 'png', width: 1, height: 1 };
         },
+        async fixExtensionToMatchContent(filePath) {
+          if (imageMode === 'throw') throw new Error('optimizer boom');
+          return { ok: true, path: filePath, renamed: false };
+        },
       },
       '../../src/realesrgan': {
         isAvailable: () => true,
@@ -557,6 +629,21 @@ test('image, upscale, and background-removal handlers keep returning envelopes w
     const imageFail = await electron.handlers['image:optimize'](null, srcPath, { outputPath: dstPath });
     assert.equal(imageFail.ok, false);
     assert.match(imageFail.error, /optimizer boom/);
+    imageMode = 'ok';
+
+    // bug-fix M6 (_temp4.md)
+    const fixOk = await electron.handlers['image:fixExtension'](null, srcPath);
+    assert.deepEqual(fixOk, { ok: true, path: srcPath, renamed: false });
+
+    const fixDenied = await electron.handlers['image:fixExtension'](null, path.join(outputDir, '..', 'outside.png'));
+    assert.equal(fixDenied.ok, false);
+    assert.match(fixDenied.error, /outside the allowed directories/i);
+
+    imageMode = 'throw';
+    const fixFail = await electron.handlers['image:fixExtension'](null, srcPath);
+    assert.equal(fixFail.ok, false);
+    assert.match(fixFail.error, /optimizer boom/);
+    imageMode = 'ok';
 
     const upscaleAvailable = electron.handlers['upscale:realesrgan:available']();
     assert.deepEqual(upscaleAvailable, {
@@ -686,6 +773,7 @@ test('mmx handlers cover validation, streaming logs, voices, quota, auth, cancel
   let runMode = 'ok';
   let cancelCount = 0;
   let voiceKeys = [];
+  const cancelByJobIdCalls = [];
 
   await withIsolatedProject({
     mocks: {
@@ -732,6 +820,10 @@ test('mmx handlers cover validation, streaming logs, voices, quota, auth, cancel
         },
         cancelAll() {
           cancelCount += 1;
+        },
+        cancelByJobId(jobId) {
+          cancelByJobIdCalls.push(jobId);
+          return jobId === 'job-known';
         },
         resolve() {
           return {
@@ -820,11 +912,92 @@ test('mmx handlers cover validation, streaming logs, voices, quota, auth, cancel
     assert.deepEqual(cancel(), { ok: true });
     assert.equal(cancelCount, 1);
 
+    // bug-fix H4/Phase1 (_temp4.md): a jobId-scoped cancel must call
+    // cancelByJobId, NOT the panic-button cancelAll — it must not kill
+    // sibling jobs on other tabs/batch items.
+    assert.deepEqual(cancel(null, { jobId: 'job-known' }), { ok: true });
+    assert.deepEqual(cancelByJobIdCalls, ['job-known']);
+    assert.equal(cancelCount, 1, 'a jobId-scoped cancel must not also fall through to cancelAll');
+
     const diag = await diagnose();
     assert.equal(diag.platform, process.platform);
     assert.equal(diag.nodePath, 'C:\\Program Files\\nodejs\\node.exe');
     assert.equal(diag.mmxCommand, 'node.exe');
     assert.equal(diag.apiKeyPresent, true);
     assert.equal(diag.region, 'global');
+  });
+});
+
+// bug-fix S1 (_temp4.md): mmx:run / mmx:run:job used to pass --out /
+// --out-dir / --download straight through to the spawned mmx process
+// with no allow-list check, unlike every other path-taking IPC handler.
+// Uses the REAL src/config.js + PathSecurityService (only src/mmx is
+// mocked, so no process is actually spawned) so the allow-list check
+// runs for real against a real isolated output directory.
+test('mmx:run / mmx:run:job reject --out / --out-dir / --download paths outside the allowed directories (S1)', async () => {
+  const runCalls = [];
+  await withIsolatedProject({
+    mocks: {
+      '../../src/mmx': {
+        async runMmx({ args }) {
+          runCalls.push(args);
+          return { ok: true, code: 0, stdout: '{"ok":true}', stderr: '', parsed: { ok: true }, command: 'mmx', argv: args };
+        },
+        cancelAll() {},
+        resolve() { return { command: 'mmx', prefix: [], node: null, entry: null, error: null }; },
+      },
+    },
+  }, async ({ outputDir, tmp, electron, load }) => {
+    load('src/config.js').write({
+      api_key: 'sk-s1',
+      output_dir: outputDir,
+      region: 'global',
+      theme: 'dark',
+      styles: [],
+    });
+    load('main/ipc/registerMmxIpc.js').register({ appRoot: ROOT, getMainWindow: () => null });
+    const run = electron.handlers['mmx:run'];
+    const runJob = electron.handlers['mmx:run:job'];
+
+    // --- mmx:run -------------------------------------------------------
+    const okOut = await run(null, ['image', '--prompt', 'x', '--out', path.join(outputDir, 'a.png')]);
+    assert.equal(okOut.ok, true);
+
+    const okOutDir = await run(null, ['image', '--prompt', 'x', '--n', '2', '--out-dir', outputDir]);
+    assert.equal(okOutDir.ok, true);
+
+    const noPathFlags = await run(null, ['quota']);
+    assert.equal(noPathFlags.ok, true, 'a call with no path flags must be unaffected by the new check');
+
+    const deniedOut = await run(null, ['image', '--prompt', 'x', '--out', path.join(tmp, 'outside', 'a.png')]);
+    assert.equal(deniedOut.ok, false);
+    assert.match(deniedOut.stderr, /outside the allowed directories/i);
+    assert.match(deniedOut.stderr, /--out/);
+
+    const deniedOutDir = await run(null, ['image', '--prompt', 'x', '--n', '2', '--out-dir', path.join(tmp, 'outside')]);
+    assert.equal(deniedOutDir.ok, false);
+    assert.match(deniedOutDir.stderr, /outside the allowed directories/i);
+    assert.match(deniedOutDir.stderr, /--out-dir/);
+
+    const deniedDownload = await run(null, ['video', '--prompt', 'x', '--download', path.join(tmp, 'outside', 'clip.mp4')]);
+    assert.equal(deniedDownload.ok, false);
+    assert.match(deniedDownload.stderr, /outside the allowed directories/i);
+
+    // A traversal attempt must also be rejected (not just a sibling dir).
+    const traversal = await run(null, ['image', '--prompt', 'x', '--out', path.join(outputDir, '..', 'escape.png')]);
+    assert.equal(traversal.ok, false);
+    assert.match(traversal.stderr, /outside the allowed directories/i);
+
+    // --- mmx:run:job -----------------------------------------------------
+    const jobOk = await runJob(null, { args: ['image', '--prompt', 'x', '--out', path.join(outputDir, 'b.png')], jobId: 'j1' });
+    assert.equal(jobOk.ok, true);
+
+    const jobDenied = await runJob(null, { args: ['image', '--prompt', 'x', '--out', path.join(tmp, 'outside', 'b.png')], jobId: 'j2' });
+    assert.equal(jobDenied.ok, false);
+    assert.match(jobDenied.stderr, /outside the allowed directories/i);
+
+    // Exactly the allowed calls reached the spawn layer — none of the
+    // denied ones did.
+    assert.equal(runCalls.length, 4);
   });
 });

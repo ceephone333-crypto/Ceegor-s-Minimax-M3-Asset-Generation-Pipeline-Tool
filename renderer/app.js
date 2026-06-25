@@ -136,6 +136,22 @@ async function init() {
         const up = parentDir(state.fbDir);
         if (typeof window.logAction === 'function') window.logAction('file-browser', 'up-at-output-root', { to: up || 'drives-sentinel' });
         if (up) {
+          // v1.1.28 (user-reported — "Up button does nothing"):
+          // the parent of output_dir is normally OFF the security
+          // allow-list (which only knows output_dir). fbList would
+          // reject it and the AUDIT-08 fallback would silently
+          // reset state.fbDir back to output_dir, so the user
+          // would see no change. Auto-trust the ancestors via a
+          // dedicated IPC that ONLY walks up from an already-trusted
+          // root (the renderer can't ask for arbitrary paths).
+          window.__explicitFbDirNav = up;
+          if (window.api && typeof window.api.fbTrustAncestors === 'function') {
+            window.api.fbTrustAncestors(up).then((r) => {
+              if (typeof window.logAction === 'function') {
+                window.logAction('file-browser', 'up-trust-ancestors', { ok: !!(r && r.ok), trusted: (r && r.trusted) || [], err: r && r.error });
+              }
+            }).catch(() => {});
+          }
           state.fbDir = up;
         } else {
           // output_dir IS a drive root (or has no parent) —
@@ -158,6 +174,12 @@ async function init() {
       // Normal mid-tree case: one level up.
       const up = parentDir(state.fbDir) || outRoot || FB_DRIVES_SENTINEL;
       if (typeof window.logAction === 'function') window.logAction('file-browser', 'up-climb', { from: state.fbDir, to: up });
+      // v1.1.28: same fix — auto-trust ancestors so a deep
+      // navigate-out keeps working.
+      window.__explicitFbDirNav = up;
+      if (window.api && typeof window.api.fbTrustAncestors === 'function') {
+        window.api.fbTrustAncestors(up).then(() => {}).catch(() => {});
+      }
       state.fbDir = up;
       refreshBrowser({ keepCurrent: true })
         .then(() => {
