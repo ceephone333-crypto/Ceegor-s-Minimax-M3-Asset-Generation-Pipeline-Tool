@@ -1,4 +1,4 @@
-# Minimax GUI & Asset Pipeline
+# Minimax API - Generation GUI & Asset Pipeline Tool
 
 A desktop interface and automated asset pipeline for Windows designed to streamline workflows with the Minimax APIs. 
 
