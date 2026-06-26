@@ -158,7 +158,7 @@ function run(cmd, args) {
 async function main() {
   if (!fs.existsSync(ASAR)) {
     console.error('ERROR: asar not found at', ASAR);
-    console.error('Re-create dist-stable/ by extracting dist/MiniMaxAssetTool-1.1.0-x64.zip');
+    console.error('Re-create dist-stable/ by extracting dist/MiniMaxAssetTool-1.1.2-x64.zip');
     process.exit(1);
   }
   const asarBin = path.join(ROOT, 'node_modules', '@electron', 'asar', 'bin', 'asar.js');

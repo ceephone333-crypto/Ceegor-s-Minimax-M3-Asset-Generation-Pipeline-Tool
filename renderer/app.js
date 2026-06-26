@@ -9,7 +9,7 @@
 // someone forgets to bump it. The format is "<version> · <compile
 // date> <compile time>" so the user can see at a glance which
 // build they have.
-let BUILD_VERSION = '1.1.0 · loading…';
+let BUILD_VERSION = '1.1.2 · loading…';
 const TOOL_NAME = 'MiniMax Assets Tool';
 const TOOL_INFO =
   'A friendly desktop app for the MiniMax AI service. ' +

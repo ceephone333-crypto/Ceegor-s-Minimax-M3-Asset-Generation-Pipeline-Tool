@@ -55,19 +55,11 @@ function sanitisePipelineAdvancedSettings(input) {
       },
     };
   }
-  // Helper: parse a number from any input, returning `fallback`
-  // when the result is non-finite OR falls outside [min, max].
-  // The previous `Number(x) || default` rejected 0 (the falsy
-  // case) — `Number.isFinite(n = Number(x))` correctly accepts
-  // 0 and only rejects NaN / Infinity / non-numeric strings.
-  //
-  // We additionally treat null / undefined / '' as "missing"
-  // (not "the value 0") so the documented default kicks in.
-  // Without this, a hand-edited state.json with `mp3Quality: null`
-  // would persist as 0 instead of the documented default 2.
-  // The pre-v1.1 `Number(null) || default` was the right
-  // intuition; we just fixed the 0-acceptance problem in the
-  // cases where the user explicitly types 0.
+  // Parse a number from any input, returning `fallback` when the
+  // result is non-finite OR outside [min, max]. Unlike the old
+  // `Number(x) || default` (AUDIT-01), this accepts an explicit 0.
+  // null / undefined / '' are treated as "missing" → fallback (so a
+  // hand-edited `mp3Quality: null` keeps the documented default).
   function nOr(value, min, max, fallback) {
     if (value == null || value === '') return fallback;
     const n = Number(value);
@@ -91,9 +83,13 @@ function sanitisePipelineAdvancedSettings(input) {
   const ALLOWED_M4A_BITRATES = ['96k', '128k', '160k', '192k', '256k', '320k'];
   return {
     realesrgan: {
-      tileSize: nOr(r.tileSize, 0, 2048, 0),
+      // v1.1.2 (BUG-C, _temp12.md): valid tile set is {0=auto} ∪ [32,4096]
+      // (the binary rejects <32); 1..31 / out-of-range → 0 (auto).
+      tileSize: (() => { const t = nOr(r.tileSize, 0, 4096, 0); return (t === 0 || (t >= 32 && t <= 4096)) ? t : 0; })(),
       ttaMode: r.ttaMode === true,
-      gpuId: ['auto', '0', '1', '2', '3'].includes(r.gpuId) ? r.gpuId : 'auto',
+      // v1.1.2 (BUG-C, _temp12.md): GPU id whitelist widened to [0,15]
+      // (was [0,3]) so multi-GPU rigs can pin a real device; else 'auto'.
+      gpuId: (r.gpuId === 'auto' || (/^\d+$/.test(String(r.gpuId)) && Number(r.gpuId) >= 0 && Number(r.gpuId) <= 15)) ? String(r.gpuId) : 'auto',
     },
     isnetbg: {
       intraOpNumThreads: nOr(i.intraOpNumThreads, 0, 64, 0),

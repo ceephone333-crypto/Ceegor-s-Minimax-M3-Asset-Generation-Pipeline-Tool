@@ -123,7 +123,7 @@ function openAdvancedPipelineSettings() {
 
     m.appendChild(selRow(
       'Tile size',
-      'Smaller tiles fit on lower-VRAM GPUs (a 4K image at tile=128 can run on 2 GB). 0 = auto — the binary picks based on the image size and your GPU. Increase only if you see GPU OOM errors. Pick "Custom…" to enter a value not listed (e.g. 4096 for very large GPUs).',
+      'Smaller tiles fit on lower-VRAM GPUs (a 4K image at tile=128 can run on 2 GB). 0 = auto — the binary picks based on the image size and your GPU. Increase only if you see GPU OOM errors. Pick "Custom…" to enter a value not listed — must be 32–4096 (the binary rejects anything below 32; pick "0 — auto" to let it decide).',
       s.realesrgan.tileSize,
       [
         [0, '0 — auto (default, recommended)'],
@@ -134,7 +134,10 @@ function openAdvancedPipelineSettings() {
         [2048, '2048 — max VRAM (fastest on big GPUs)'],
       ],
       (v) => { s.realesrgan.tileSize = Number(v); },
-      { kind: 'number', min: 0, max: 4096, step: 1 },
+      // v1.1.2 (BUG-C from _temp12.md): the binary rejects a tile size
+      // below 32, so the custom input floor is 32 (the "0 — auto"
+      // preset above still covers the let-the-binary-decide case).
+      { kind: 'number', min: 32, max: 4096, step: 1 },
     ));
 
     m.appendChild(cbRow(
@@ -146,7 +149,7 @@ function openAdvancedPipelineSettings() {
 
     m.appendChild(selRow(
       'GPU device id',
-      'For systems with more than one GPU. "auto" lets the binary pick the first available device. Pick "Custom…" to enter a different device id (e.g. 4 for a 5th GPU).',
+      'For systems with more than one GPU. "auto" lets the binary pick the first available device. Pick "Custom…" to enter a different device id, 0–15 (e.g. 4 for a 5th GPU). An id that does not exist on your machine falls back to the built-in upscaler.',
       s.realesrgan.gpuId,
       [
         ['auto', 'auto — let the binary pick (default)'],
@@ -156,7 +159,10 @@ function openAdvancedPipelineSettings() {
         ['3', '3 — fourth GPU'],
       ],
       (v) => { s.realesrgan.gpuId = v; },
-      { kind: 'string', pattern: '^(auto|\\d+)$' },
+      // v1.1.2 (BUG-C from _temp12.md): constrain the custom id to the
+      // same [0, 15] range the state layer + wrapper now accept, so the
+      // overlay can no longer offer a value that is silently discarded.
+      { kind: 'string', pattern: '^(auto|[0-9]|1[0-5])$' },
     ));
 
     // ==========================================================

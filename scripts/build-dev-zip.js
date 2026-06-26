@@ -31,7 +31,7 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const STAGE = path.join(ROOT, '.dev-zip-stage');
-const ZIP_PATH = path.join(ROOT, 'dist', 'MiniMaxAssetTool-Dev-1.1.0-x64.zip');
+const ZIP_PATH = path.join(ROOT, 'dist', 'MiniMaxAssetTool-Dev-1.1.2-x64.zip');
 
 // Was alles in den Zip soll. node_modules + bin + source + start.cmd.
 // NICHT enthalten: dist, dist-stable, .asar-stage, etc.

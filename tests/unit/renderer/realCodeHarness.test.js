@@ -1100,8 +1100,16 @@ test('HARNESS 9: every user-reported change is present in the source files', () 
   // the regression by checking the file's token pattern.
   // (We strip line comments first so the matching doesn't fire
   // on a comment that mentions the function name.)
+  // v1.1.27 (SEV-2 from _temp10.md): the previous strip regex
+  // `l.replace(/\/\/.*$/, '')` was CRLF-fragile — `.` does not match
+  // `\r` in JS, and `$` (no `m` flag) cannot anchor immediately before
+  // a trailing `\r`. On this repo's 100%-CRLF files every line still
+  // ended with `\r` after split('\n'), so the regex never matched and
+  // the comment survived the strip — false-failing the assertion
+  // below. The fix is to use `[^\n]*` (matches anything except the
+  // newline that split() removed, including `\r`).
   const musicTabCode = musicTabSrc.split('\n')
-    .map((l) => l.replace(/\/\/.*$/, ''))
+    .map((l) => l.replace(/\/\/[^\n]*$/, ''))
     .join('\n');
   assert.ok(!/\bupdatePreview\s*\(\s*\)/.test(musicTabCode),
     'musicTab must NOT call updatePreview() (it was the function that updated the removed style-preview block; calling it now throws ReferenceError)');
@@ -1110,8 +1118,20 @@ test('HARNESS 9: every user-reported change is present in the source files', () 
   // referenced — we only removed updatePreview, not
   // updatePreviewPane. The two names are easy to confuse
   // and we don't want to break the file-browser preview.
-  assert.ok(musicTabSrc.includes('updatePreviewPane') || !musicTabSrc.includes('updatePreviewPane'),
-    'musicTab is not expected to use updatePreviewPane (picture preview is in fileBrowser2a, not musicTab) — sanity check');
+  // v1.1.27 (SEV-2 from _temp10.md): the previous assertion was
+  // a tautology (`X || !X` is always true) that could never catch
+  // the regression it claimed to guard. Replace with a real
+  // assertion: fileBrowser2a must still reference updatePreviewPane,
+  // because that's the live picture-preview function the music tab
+  // would now collide with if updatePreview() ever leaked back in.
+  const fb2aSrc = src('renderer/services/fileBrowser2a.js');
+  assert.ok(fb2aSrc.includes('updatePreviewPane') || fb2aSrc.includes('window.updatePreviewPane'),
+    'fileBrowser2a must define / reference updatePreviewPane (the live picture-preview function — guards against the music tab reintroducing the dead updatePreview() that would shadow it)');
+  // And musicTab must still NOT define updatePreviewPane (it lives
+  // in fileBrowser2a, not in the tab handlers).
+  const musicTabNoComments = musicTabSrc.replace(/\/\/[^\n]*$/gm, '');
+  assert.ok(!/\bfunction\s+updatePreviewPane\b|\bconst\s+updatePreviewPane\b|\blet\s+updatePreviewPane\b|\bvar\s+updatePreviewPane\b/.test(musicTabNoComments),
+    'musicTab must NOT declare its own updatePreviewPane function (it lives in fileBrowser2a; a duplicate declaration would shadow the real one on the music tab)');
   // 4.2 — force-prefix-only checkbox.
   const formHelpersSrc = src('renderer/sections/section14_Form_helpers.js');
   assert.ok(formHelpersSrc.includes('filePrefixForceOnly') || formHelpersSrc.includes('Force prefix only'),

@@ -141,11 +141,17 @@ function run(srcPath, dstPath, opts = {}) {
     // means "auto" and the binary's default — do NOT emit -t.
     if (Number.isFinite(Number(opts.tileSize))) {
       const t = Math.round(Number(opts.tileSize));
-      if (t > 0 && t <= 4096) {
+      // v1.1.2 (BUG-C from _temp12.md): the binary rejects a tile size
+      // below 32 ("invalid tilesize argument"), which used to bubble
+      // up as a hard Real-ESRGAN failure and silently downgrade every
+      // upscale to the canvas pipeline. Only emit -t for a value the
+      // binary actually accepts ([32, 4096]); 0 / 1..31 / out-of-range
+      // all drop the flag (binary default = auto). The state layer
+      // already maps 1..31 → 0, so this is the defensive mirror for a
+      // hand-edited state.json or a programmatic caller.
+      if (t >= 32 && t <= 4096) {
         args.push('-t', String(t));
       }
-      // t === 0 → auto, drop the flag (binary default).
-      // t > 4096 → out of range, drop the flag (binary default).
     }
     if (opts.ttaMode === true) {
       args.push('-x');
@@ -162,15 +168,21 @@ function run(srcPath, dstPath, opts = {}) {
     // existent GPU. We now mirror the state whitelist
     // [0, 1, 2, 3] (as strings) here as a defensive layer; any
     // value outside the set is dropped (binary default = auto).
-    const ALLOWED_GPU_IDS = ['auto', '0', '1', '2', '3'];
-    if (typeof opts.gpuId === 'string' && ALLOWED_GPU_IDS.includes(opts.gpuId) && opts.gpuId !== 'auto') {
+    // v1.1.2 (BUG-C from _temp12.md): widen the accepted GPU-id range
+    // to [0, 15] (was [0, 3]). The overlay help text explicitly invites
+    // "4 for a 5th GPU", and a real multi-GPU rig can have more than 4
+    // devices. 'auto' (the default) never emits -g. An id outside the
+    // range is dropped (auto); an id that exists in the range but not
+    // on this machine makes the binary error → canvas fallback.
+    if (typeof opts.gpuId === 'string' && /^\d+$/.test(opts.gpuId)
+        && Number(opts.gpuId) >= 0 && Number(opts.gpuId) <= 15) {
       args.push('-g', opts.gpuId);
     } else if (opts.gpuId === undefined && opts.gpu !== undefined && opts.gpu !== null) {
       // Legacy single-release shim: accept a number here too, but
-      // ALSO validate it against the whitelist so a corrupted
-      // legacy caller can't pin a non-existent GPU either.
+      // ALSO validate it against the same [0, 15] range so a corrupted
+      // legacy caller can't pin a nonsensical device.
       const n = Number(opts.gpu);
-      if (Number.isInteger(n) && n >= 0 && n <= 3) args.push('-g', String(n));
+      if (Number.isInteger(n) && n >= 0 && n <= 15) args.push('-g', String(n));
     }
     if (typeof opts.threads === 'string' && /^\d+:\d+:\d+$/.test(opts.threads)) {
       args.push('-j', opts.threads);

@@ -94,3 +94,11 @@ pnpm-lock.yaml
 *.pem
 *.key
 dist-verify/
+
+# ---- dev scratch / bug-hunt reproducers (not part of the product) ----
+# Ad-hoc audit notes and one-off reproducer scripts kept locally for
+# reference but never shipped or committed.
+_temp*.md
+_repro_*.js
+_verify_*.js
+test_out/

@@ -28,6 +28,20 @@ const {
   emptyResult,
 } = require('./imageOptimizer/formatUtils');
 
+// v1.1.2 (BUG-A from _temp12.md): clamp `value` to the integer range
+// [min, max], returning `fallback` ONLY when the value is non-finite.
+// The previous `Math.round(x) || fallback` pattern was the AUDIT-01
+// falsy-fallback bug surviving in this consumer: `Math.round(0)` is 0
+// (falsy), so a user-selected effort/compression of 0 ("fastest")
+// silently became the slowest default. `Number.isFinite` correctly
+// accepts 0 and only rejects NaN / Infinity / non-numeric input — so
+// the value the user picked (and state.js already persists) is honoured.
+function clampInt(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(n)));
+}
+
 /**
  * Optimise / compress an image on disk.
  *
@@ -150,7 +164,7 @@ async function optimize(srcPath, opts) {
       // honour `quality` for PNG (e.g. palette-quantisation quality)
       // doesn't silently change behaviour.
       const pngOpts = {
-        compressionLevel: Math.max(1, Math.min(9, Math.round(enc.pngCompressionLevel) || 9)),
+        compressionLevel: clampInt(enc.pngCompressionLevel, 0, 9, 9),
         palette: enc.pngPalette !== false,
         effort: 10,
       };
@@ -162,18 +176,18 @@ async function optimize(srcPath, opts) {
       // screenshots / line art) | 'nearLossless' (middle ground).
       const mode = enc.webpMode || 'lossy';
       if (mode === 'lossless') {
-        pipeline = pipeline.webp({ quality, effort: Math.max(0, Math.min(6, Math.round(enc.webpEffort) || 6)), lossless: true });
+        pipeline = pipeline.webp({ quality, effort: clampInt(enc.webpEffort, 0, 6, 6), lossless: true });
       } else if (mode === 'nearLossless') {
-        pipeline = pipeline.webp({ quality, effort: Math.max(0, Math.min(6, Math.round(enc.webpEffort) || 6)), nearLossless: true });
+        pipeline = pipeline.webp({ quality, effort: clampInt(enc.webpEffort, 0, 6, 6), nearLossless: true });
       } else {
-        pipeline = pipeline.webp({ quality, effort: Math.max(0, Math.min(6, Math.round(enc.webpEffort) || 6)), lossless: false });
+        pipeline = pipeline.webp({ quality, effort: clampInt(enc.webpEffort, 0, 6, 6), lossless: false });
       }
       break;
     }
     case 'avif':
       pipeline = pipeline.avif({
         quality,
-        effort: Math.max(0, Math.min(9, Math.round(enc.avifEffort) || 9)),
+        effort: clampInt(enc.avifEffort, 0, 9, 9),
         lossless: false,
         chromaSubsampling: enc.avifChromaSubsampling === '4:2:0' ? '4:2:0' : '4:4:4',
       });

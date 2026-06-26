@@ -359,6 +359,16 @@ window.TABS.image = {
       let allOk = true;
       let lastPreview = null;
       let lastOutFile = null;
+      // v1.1.27 (SEV-1 from _temp10.md): --n > 1 runs (`useOutDir`)
+      // never push anything to outFiles in the variant loop, so the
+      // success gate below (`outFiles.length > 0`) was structurally
+      // false for every successful multi-image run. Track a parallel
+      // succeededCount that increments on every variant call that
+      // returned ok, regardless of mode. The post-loop success gate
+      // now keys off succeededCount so both single-image and
+      // multi-image runs reach the preview / post-process / quota /
+      // notifyImageGenerated path on success.
+      let succeededCount = 0;
       // bug-fix Phase1 (_temp4.md): carries the final file list out of
       // the `if (allOk && lastOutFile...)` block below (where
       // displayFiles is declared) so the JobRunner runFn wrapper can
@@ -467,6 +477,32 @@ window.TABS.image = {
           return nextFreeForcePrefixPath(outDir, forceCounter, prefix, 'png', ['jpg', 'jpeg', 'webp', 'gif', 'bmp']);
         }
         return uniquePath(outDir, `${prefix}${ts}_${slug}${variantTag}.png`);
+      }
+      // v1.1.2 (BUG-B from _temp12.md): discover the files an --out-dir
+      // (--n > 1) run produced by scanning outDir for entries written
+      // during this run (mmx picks its own filenames, so the renderer
+      // can't know them up front). Extracted from the success block so
+      // the CANCEL path can also populate the output list — a cancelled
+      // multi-image run that had already written files previously
+      // recorded outputPaths:[] (the scan only ran in the non-cancel
+      // success branch), orphaning the files from the job history.
+      async function resolveOutDirFiles() {
+        try {
+          const dirList = await window.api.fbList(outDir);
+          if (dirList && dirList.ok && Array.isArray(dirList.items)) {
+            const startMs = (state.genStartMs && state.genStartMs.image) || (Date.now() - 600000);
+            const nowMs = Date.now();
+            const matches = dirList.items
+              .filter((it) => !it.isDir && ['.png', '.jpg', '.jpeg', '.webp'].includes(it.ext))
+              .filter((it) => {
+                const m = it.mtimeMs || 0;
+                return m >= startMs - 1500 && m <= nowMs + 5000;
+              })
+              .sort((a, b) => (a.mtimeMs || 0) - (b.mtimeMs || 0));
+            if (matches.length) return matches.map((m) => m.path);
+          }
+        } catch (_) { /* fall back to whatever we have */ }
+        return [];
       }
       try {
         for (let v = 1; v <= variantsCount; v++) {
@@ -587,6 +623,15 @@ window.TABS.image = {
           lastPreview = r.parsed;
           lastOutFile = outFile;
           if (!useOutDir) outFiles.push(outFile);
+          // v1.1.27 (SEV-1): see succeededCount declaration above.
+          // Increment for every variant call that returned ok,
+          // regardless of mode. This is the structural fix for the
+          // `--n > 1` gate bug — outFiles is empty for useOutDir
+          // runs by design (mmx picks its own filenames, scanned
+          // later in the post-process block), but a successful
+          // variant call IS a successful generation from the user's
+          // perspective, and we must NOT route them to the failure UI.
+          succeededCount++;
           // Live-update the folder explorer + preview pane. The
           // gen handler knows the output path for non-(--out-dir)
           // runs, so we don't have to wait for the 1s polling
@@ -639,8 +684,22 @@ window.TABS.image = {
         // below may overwrite this with its post-processed list
         // (which is the better outcome when it runs to
         // completion).
+        // v1.1.27 (SEV-1 fix from _temp10.md): the previous gate
+        // used `outFiles.length > 0`, which is structurally false
+        // for `--n > 1` runs even when EVERY variant succeeded —
+        // outFiles is only pushed to in the non-(--out-dir) branch
+        // of the variant loop (see `if (!useOutDir) outFiles.push(outFile)`
+        // above). For useOutDir runs the renderer relies on the
+        // directory scan inside the post-process block to discover
+        // the produced files, but that scan lives INSIDE the
+        // success-block that `outFiles.length > 0` gates, so it
+        // never ran for --n > 1. The correct gate is `succeededCount
+        // > 0` (did at least one variant call return ok?). outFiles
+        // seeding still happens for the single-image path — it
+        // remains the best list to return when present — but is no
+        // longer the structural gate.
         if (outFiles.length > 0) finalOutputPaths = outFiles.slice();
-        if (outFiles.length > 0 && !cancel.wasCancelled()) {
+        if (succeededCount > 0 && !cancel.wasCancelled()) {
         // Resolve the full list of output files. For --out-dir runs
         // (--n > 1), the per-call filenames are not known to the
         // renderer (mmx writes them with its own naming scheme), so
@@ -651,21 +710,10 @@ window.TABS.image = {
         // from the variant loop in `outFiles`.
         let sourceFiles = outFiles.slice();
         if (useOutDir) {
-          try {
-            const dirList = await window.api.fbList(outDir);
-            if (dirList && dirList.ok && Array.isArray(dirList.items)) {
-              const startMs = (state.genStartMs && state.genStartMs.image) || (Date.now() - 600000);
-              const nowMs = Date.now();
-              const matches = dirList.items
-                .filter((it) => !it.isDir && ['.png', '.jpg', '.jpeg', '.webp'].includes(it.ext))
-                .filter((it) => {
-                  const m = it.mtimeMs || 0;
-                  return m >= startMs - 1500 && m <= nowMs + 5000;
-                })
-                .sort((a, b) => (a.mtimeMs || 0) - (b.mtimeMs || 0));
-              if (matches.length) sourceFiles = matches.map((m) => m.path);
-            }
-          } catch (_) { /* fall back to whatever we have */ }
+          // v1.1.2 (BUG-B from _temp12.md): the discovery scan now lives
+          // in resolveOutDirFiles() so the cancel path can reuse it.
+          const scanned = await resolveOutDirFiles();
+          if (scanned.length) sourceFiles = scanned;
           // bug-fix M6 (_temp4.md): --out-dir runs let mmx pick its
           // own filenames per image, so the same hardcoded-extension
           // mismatch can apply here too — fix each one up front,
@@ -785,11 +833,18 @@ window.TABS.image = {
           headline: `Generated ${displayFiles.length} image${displayFiles.length === 1 ? '' : 's'}`,
           details: displayFiles.map((p) => '• ' + p),
         });
-      } else if (outFiles.length === 0 && !cancel.wasCancelled()) {
+      } else if (succeededCount === 0 && !cancel.wasCancelled()) {
         // Pure failure: NO variant succeeded. Partial-success runs
-        // (outFiles.length > 0 but !allOk) now go through the success
+        // (succeededCount > 0 but not allOk) now go through the success
         // branch above with their post-process chain applied, so the
         // user keeps the images they paid API credits for.
+        // v1.1.27 (SEV-1 from _temp10.md): mirror the success-gate
+        // change here too — `outFiles.length === 0` is structurally
+        // true for every successful --n > 1 run, which is why the
+        // user saw "mmx exited with code -1" on successful multi-
+        // image generations. We now key off succeededCount so a
+        // successful --n run takes the success branch and only a
+        // truly-zero-success run lands here.
         // Log a "generation failed" event so the user can copy
         // the structured error from the log pane (e.g. into a
         // support ticket). The full classified error message +
@@ -951,7 +1006,13 @@ window.TABS.image = {
         // that already landed). A cancel AFTER partial success still
         // leaves real files on disk, so we treat that as 'ok' too —
         // the cancel flag only matters for runs that produced nothing.
-        state.genLastResult.image = (outFiles.length > 0 && !threw) ? 'ok' : 'err';
+        // v1.1.27 (SEV-1 from _temp10.md): gate on succeededCount,
+        // not outFiles.length. outFiles is empty by design for
+        // --n > 1 runs (they're filled later by the directory scan
+        // inside the post-process block, which is unreachable from
+        // this finally). Counting variant calls that returned ok is
+        // structurally correct for both modes.
+        state.genLastResult.image = (succeededCount > 0 && !threw) ? 'ok' : 'err';
         cancel.cleanup();
         setStatus('Ready', false);
         // Always refresh — even on cancel/failure, partial files may exist
@@ -963,18 +1024,45 @@ window.TABS.image = {
       if (cancel.wasCancelled()) {
         preview.innerHTML = '<div class="empty">Generation cancelled.</div>';
         toast('Cancelled.', 'warn');
+        // v1.1.2 (BUG-B from _temp12.md): a cancelled --n > 1 run may
+        // have already written files to outDir before the cancel
+        // landed. The out-dir discovery scan normally runs inside the
+        // success branch (skipped on cancel), so finalOutputPaths would
+        // be [] and the job history / ActiveJobsWidget / Archive would
+        // orphan the produced files. Recover them here so the job
+        // records its real outputs even on cancel.
+        if (useOutDir && succeededCount > 0 && finalOutputPaths.length === 0) {
+          finalOutputPaths = await resolveOutDirFiles();
+        }
         return { status: 'cancel', outputPaths: finalOutputPaths };
       }
       // v1.1 (audit H1): same partial-success gate as the post-process
       // block — a 4/5-success run returns 'ok' (with a toast that names
       // the partial outcome) so the BatchGen runner does NOT re-spawn it.
-      if (outFiles.length > 0) {
-        const okCount = outFiles.length;
-        const failCount = variantsCount - okCount;
-        toast(failCount > 0
-          ? `Image generated. ${okCount}/${variantsCount} variants saved (${failCount} failed — see log).`
-          : (variantsCount > 1 ? `Image generated. ${variantsCount} variants saved.` : 'Image generated.'),
-          failCount > 0 ? 'warn' : 'ok');
+      // v1.1.27 (SEV-1 from _temp10.md): gate on succeededCount,
+      // not outFiles.length. outFiles is empty by design for --n > 1
+      // runs (the produced files are discovered by the directory
+      // scan inside the post-process block, which doesn't run when
+      // outFiles.length is 0). For --n > 1 runs the toast's "variants
+      // saved" wording is wrong anyway — there's only one Variant
+      // call but it produces nCount images — so we now use the
+      // total image count from finalOutputPaths (or totalImages as
+      // the fallback) and only show the "X/N variants failed"
+      // wording when Variants > 1.
+      if (succeededCount > 0) {
+        const savedCount = finalOutputPaths.length || totalImages;
+        const failedVariants = variantsCount - succeededCount;
+        let toastMsg;
+        if (variantsCount > 1 && failedVariants > 0) {
+          toastMsg = `Image generated. ${succeededCount}/${variantsCount} variants saved (${failedVariants} failed — see log).`;
+        } else if (variantsCount > 1) {
+          toastMsg = `Image generated. ${variantsCount} variants saved.`;
+        } else if (nCount > 1) {
+          toastMsg = `Image generated. ${savedCount} images saved.`;
+        } else {
+          toastMsg = 'Image generated.';
+        }
+        toast(toastMsg, failedVariants > 0 ? 'warn' : 'ok');
         return { status: 'ok', outputPaths: finalOutputPaths };
       }
       return { status: 'err', outputPaths: finalOutputPaths };

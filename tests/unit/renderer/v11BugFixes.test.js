@@ -23,27 +23,42 @@ function src(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 // images lost their upscale / background-removal / optimisation
 // pass. BatchGen also saw the run as a failure and re-ran all 5
 // variants on Retry — wasting API quota.
+//
+// v1.1.27 (SEV-1 from _temp10.md): the post-v1.1 gate used
+// `outFiles.length > 0`, which is structurally empty for `--n > 1`
+// runs (outFiles is only pushed to in the non-(--out-dir) branch of
+// the variant loop). Every successful --n > 1 run was routed to the
+// pure-failure UI and reported "mmx exited with code -1" (fabricated
+// from a hardcoded fallback because lastFailedR was null). The fix
+// is to gate the success branch on `succeededCount > 0` (number of
+// variant calls that returned ok) — structurally correct regardless
+// of mode.
 // ============================================================================
-test('H1+H2 FIX: imageTab gates success on outFiles.length, not allOk', () => {
+test('H1+H2 + SEV-1 FIX: imageTab gates success on succeededCount, not allOk or outFiles.length', () => {
   const s = src('renderer/tabs/imageTab.js');
-  // The success branch must check `outFiles.length > 0`, not `allOk`.
-  // We assert the literal source token so the regression is caught
-  // even if someone refactors the surrounding condition.
-  assert.ok(s.includes('if (outFiles.length > 0 && !cancel.wasCancelled())'),
-    'the post-process + success branch must be gated on outFiles.length > 0 (was allOk pre-v1.1)');
+  // The success branch must check `succeededCount > 0`, not `allOk`
+  // (pre-v1.1) and not `outFiles.length > 0` (post-v1.1, broken for
+  // --n > 1 per SEV-1).
+  assert.ok(s.includes('if (succeededCount > 0 && !cancel.wasCancelled())'),
+    'the post-process + success branch must be gated on succeededCount > 0 (was allOk pre-v1.1, then outFiles.length — also broken for --n > 1 per SEV-1)');
   // The pure-failure branch must require zero successful variants.
-  assert.ok(s.includes("} else if (outFiles.length === 0 && !cancel.wasCancelled())"),
-    'the pure-failure UI branch must require outFiles.length === 0 (no successful variants)');
+  assert.ok(s.includes("} else if (succeededCount === 0 && !cancel.wasCancelled())"),
+    'the pure-failure UI branch must require succeededCount === 0 (no successful variants)');
   // genLastResult (read by BatchGen) must mirror the same gate so a
   // 4/5-success run is NOT flagged as retryable. The gate does NOT
   // include cancel.wasCancelled() — a cancel after partial success
   // still leaves real files on disk, so we mark 'ok' (v1.1 L1 fix).
-  assert.ok(s.includes("(outFiles.length > 0 && !threw) ? 'ok' : 'err'"),
+  assert.ok(s.includes("(succeededCount > 0 && !threw) ? 'ok' : 'err'"),
     'genLastResult.image must be "ok" when ANY variant succeeded (BatchGen retry contract, v1.1 L1: cancel after partial success still counts as ok)');
   // The post-run return value must NOT use `if (allOk)` — that
   // would route partial-success through the 'err' return.
   assert.ok(!/\bif \(allOk\) \{[\s\S]*?return \{ status: 'ok'/.test(s),
-    'the return-value branch must NOT be gated on `allOk` (gating on outFiles.length is the v1.1 fix)');
+    'the return-value branch must NOT be gated on `allOk` (gating on succeededCount is the v1.1.27 fix)');
+  // The post-run return value must NOT use `if (outFiles.length > 0)` —
+  // that was the v1.1 partial-success fix but it broke --n > 1
+  // (SEV-1). The new gate is succeededCount > 0.
+  assert.ok(!/\bif \(outFiles\.length > 0\) \{[\s\S]*?return \{ status: 'ok'/.test(s),
+    'the post-run return-value branch must NOT be gated on outFiles.length > 0 (broken for --n > 1 per SEV-1)');
   // The success toast must mention partial-success so the user
   // knows not every variant landed.
   assert.ok(s.includes('variants saved') && s.includes('failed — see log'),
