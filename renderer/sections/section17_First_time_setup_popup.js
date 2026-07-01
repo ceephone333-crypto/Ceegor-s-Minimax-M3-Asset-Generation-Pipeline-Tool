@@ -114,6 +114,16 @@ function openFirstTimeSetup(opts) {
       const region = regInput.value || 'global';
       if (!api_key) { toast('API key is required. Paste it into the API key field above, or click "Skip for now" and set it later in ⚙ Settings.', 'err', 5000); return; }
       if (!output_dir) { toast('Output directory is required. Pick a folder with the Browse… button, or click "Skip for now".', 'err', 5000); return; }
+      // v1.1.29 (bug-fix A1): capture the pre-save output_dir
+      // BEFORE we reassign state.config so the change-detection
+      // below compares the right values. Pre-fix, `oldOut` was
+      // read from state.config AFTER it had been overwritten with
+      // result.config, so it was always equal to newOut and the
+      // navigation branch was dead code. Keep this as a local
+      // const (NOT a property of state) so the post-await block
+      // can read the snapshot regardless of what state.config
+      // looks like by then.
+      const oldOut = (state.config && state.config.output_dir) || '';
       const newCfg = { ...state.config, api_key, output_dir, region };
       const result = await window.api.setConfig(newCfg);
       // Bug-fix M2 (_temp5.md 360° audit): config:set now returns
@@ -133,6 +143,24 @@ function openFirstTimeSetup(opts) {
       // Reload anything that depends on config (quota + the file
       // browser, so the freshly-set output_dir is shown).
       refreshQuota();
+      // v1.1.29: same behaviour as the Settings dialog — when
+      // the first-time-setup just wrote an output_dir, point the
+      // file browser at it (and every per-tab folder) instead of
+      // leaving the user in the previous folder. Pre-v1.1.29 the
+      // explorer just refreshed in place, so a user who picked a
+      // new destination here had to manually click it.
+      // `oldOut` was captured at the top of the handler from the
+      // pre-save state.config (the local `oldOut` const above)
+      // so the comparison here is meaningful — bug A1 was that
+      // we read `oldOut` from state.config AFTER state.config had
+      // been reassigned to result.config, so oldOut === newOut
+      // ALWAYS and the navigation branch was dead code.
+      const newOut = (result.config && result.config.output_dir) || '';
+      if (newOut !== oldOut) {
+        state.fbDir = newOut;
+        if (state.fbDirs) for (const k of Object.keys(state.fbDirs)) state.fbDirs[k] = newOut;
+        scheduleStateSave();
+      }
       refreshBrowser();
     });
     m.appendChild(el('div', { class: 'footer' }, [skip, save]));

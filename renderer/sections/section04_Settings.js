@@ -122,6 +122,19 @@ function openSettings() {
       if (apiKeyNoSave) {
         merged.api_key = '';
       }
+      // v1.1.29 (bug-fix A1 + A2): capture the OLD output_dir
+      // from the pre-save snapshot (state.config, before the
+      // Object.assign(merged, partial) above mutated merged)
+      // so the change-detection below can compare the right
+      // values. For navigation we also resolve the EFFECTIVE
+      // output dir (the actual folder the explorer should land
+      // on) — when the user blanks the field, the effective
+      // output dir falls back to the platform default
+      // (<userData>/generated) and the explorer must follow
+      // it. Pre-A1/A2 fix, the explorer was stuck on the OLD
+      // folder even when the user had deliberately cleared
+      // the field to use the default.
+      const oldOut = (state.config && state.config.output_dir) || '';
       // CRITICAL: merge with the current config — do NOT replace it.
       // The previous version of this code built a fresh
       // {api_key,output_dir,region} object which silently dropped
@@ -156,6 +169,54 @@ function openSettings() {
       toast('Saved.', 'ok');
       close();
       refreshQuota();
+      // v1.1.29: when the user changed output_dir, re-point the
+      // file browser at the new folder too — not just refresh
+      // the current view. Pre-v1.1.29, the explorer stayed on
+      // whatever folder it was showing (often the OLD output_dir
+      // or a subfolder of it) so a user who picked a new
+      // destination in Settings had to manually click the new
+      // path in the explorer to land there. We always navigate
+      // to the new output_dir; clear every per-tab saved
+      // folder too so a tab switch also lands on the new
+      // location.
+      //
+      // Bug-fix A2: also navigate when the user CLEARED the
+      // output_dir field. In that case the new effective
+      // output dir is the platform default (<userData>/generated
+      // on Windows, per src/config.js#defaultOutputDir) — we
+      // resolve it via the same `config:defaultOutputDir` IPC
+      // the file browser's last-ditch fallback uses
+      // (fileBrowser1.js refreshBrowser). The explorer then
+      // follows the user's intent ("use the default") instead
+      // of staying on the OLD folder.
+      const rawNew = (saved && saved.output_dir) || '';
+      const rawOld = oldOut || '';
+      const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+      // Resolve the effective dir for the NEW state: if the
+      // user blanked the field, ask main for the platform
+      // default. We try the IPC synchronously-looking but the
+      // result is awaited below.
+      const newEffectivePromise = rawNew
+        ? Promise.resolve(rawNew)
+        : (window.api && typeof window.api.defaultOutputDir === 'function'
+            ? window.api.defaultOutputDir().then((d) => d || '').catch(() => '')
+            : Promise.resolve(''));
+      const oldEffectivePromise = rawOld
+        ? Promise.resolve(rawOld)
+        : (window.api && typeof window.api.defaultOutputDir === 'function'
+            ? window.api.defaultOutputDir().then((d) => d || '').catch(() => '')
+            : Promise.resolve(''));
+      const [newEffective, oldEffective] = await Promise.all([newEffectivePromise, oldEffectivePromise]);
+      if (norm(newEffective) !== norm(oldEffective)) {
+        // Prefer the user-supplied path when present (rawNew),
+        // else use the resolved default so the explorer lands
+        // on the actual folder, not the empty string that would
+        // make refreshBrowser() show a "no output dir" error.
+        const target = rawNew || newEffective;
+        state.fbDir = target;
+        if (state.fbDirs) for (const k of Object.keys(state.fbDirs)) state.fbDirs[k] = target;
+        scheduleStateSave();
+      }
       refreshBrowser();
     });
     m.appendChild(el('div', { class: 'footer settings-footer' }, [cancelBtn, saveBtn]));

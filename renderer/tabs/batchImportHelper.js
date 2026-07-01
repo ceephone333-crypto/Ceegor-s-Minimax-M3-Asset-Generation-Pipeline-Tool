@@ -291,9 +291,110 @@ function reconstructParamStr(entry) {
   return parts.join(' ');
 }
 
+// v1.1.29: apply a style preset to a freshly-imported batch.
+//   - Saves {name, value} to the global config.styles list (de-duped
+//     by name — overwrites an existing style of the same name without
+//     asking, so the import flow is one-click). The list is persisted
+//     to config.txt via setConfig so the style is available across
+//     sessions and surfaces in every tab's style dropdown.
+//   - Stamps `style: name` on every entry of every importedBatches
+//     slot, so the existing BatchGen runner (batchManager.js
+//     `item.style` handling) pre-selects the style on each entry's
+//     per-tab dropdown and prepends it via buildFinalPrompt when the
+//     row generates.
+//   - Returns the chosen name (or '' if nothing was applied) so the
+//     caller can refresh dropdowns + toast.
+//
+// Bug-fix history (v1.1.29 hot-fix):
+//   A3 — idempotence: if (name, value) already matches the in-memory
+//        style, return early without re-persisting. A double-click
+//        of Overwrite / Append used to re-run the full flow (two
+//        setConfig round-trips, two _refreshAllStyleDropdowns
+//        sweeps).
+//   A4 — mutation order: state.config.styles is mutated ONLY after
+//        setConfig resolves with ok=true. A failed IPC used to leave
+//        a half-applied style in state.config.styles that leaked
+//        into the next setConfig save.
+async function applyStyleToImportedBatch({ name, value }) {
+  const n = String(name || '').trim();
+  const v = String(value || '').trim();
+  if (!n || !v) return '';
+  // 'config.txt' style name round-trip: '=' would break parsing
+  // (the line format is `<name> = <value>` and the first '=' is
+  // the name/value separator). Reject up-front with a toast — the
+  // user can rename and re-import.
+  if (n.includes('=')) {
+    toast('Style name cannot contain "=" (would break config parsing). Rename and re-import.', 'err', 6000);
+    return '';
+  }
+  state.config = state.config || {};
+  state.config.styles = Array.isArray(state.config.styles) ? state.config.styles : [];
+  // Bug-fix A3 (idempotence): if a style of the same name is
+  // already in state.config.styles AND its value is identical to
+  // what the user just entered, there's nothing to do — the
+  // in-memory state is already correct, the dropdown is already
+  // showing the name, and the persisted config.txt already has
+  // the value. Return the name so the caller can stamp the
+  // entries without doing a redundant setConfig round-trip.
+  const existing = state.config.styles.find((s) => s && s.name === n);
+  if (existing && String(existing.value || '').trim() === v) {
+    return n;
+  }
+  // Build the NEW styles array (de-duped by name) WITHOUT
+  // mutating state.config.styles yet — we apply the mutation
+  // only after setConfig confirms the write succeeded. Bug-fix
+  // A4 used to mutate the in-memory array first and then
+  // discover the IPC failed, leaving a half-applied style in
+  // state.config.styles that leaked into the next save.
+  const newStyles = state.config.styles
+    .filter((s) => s && s.name !== n)
+    .concat([{ name: n, value: v }]);
+  const nextConfig = Object.assign({}, state.config, { styles: newStyles });
+  let res;
+  try {
+    res = await window.api.setConfig(nextConfig);
+  } catch (e) {
+    toast('Could not save style preset: ' + (e && e.message || e), 'err', 5000);
+    return '';
+  }
+  if (!res || res.ok !== true) {
+    const msg = (res && res.error) || 'unknown error';
+    toast('Could not save style preset: ' + msg, 'err', 5000);
+    return '';
+  }
+  // Persist succeeded → commit the mutation to state.config.
+  // The IPC returned the sanitised full config; use it
+  // wholesale so other concurrently-edited fields stay in
+  // lock-step with disk.
+  state.config = res.config || nextConfig;
+  // Refresh every per-tab <select class="style-select"> so the
+  // just-added name shows up in the dropdowns immediately.
+  if (typeof _refreshAllStyleDropdowns === 'function') {
+    try { _refreshAllStyleDropdowns(); } catch (_) {}
+  }
+  return n;
+}
+
+// Stamp `style: <name>` on every non-empty entry of an importedBatches
+// object so the existing BatchGen runner picks it up. Mutates and
+// returns the same object. Pure helper — no I/O.
+function stampStyleOnImportedBatch(importedBatches, styleName) {
+  const n = String(styleName || '').trim();
+  if (!n) return importedBatches;
+  for (const type of ['image', 'speech', 'music', 'video']) {
+    const list = importedBatches[type] || [];
+    for (const entry of list) {
+      if (entry && typeof entry === 'object') entry.style = n;
+    }
+  }
+  return importedBatches;
+}
+
 window.BatchManager = window.BatchManager || {};
 window.BatchManager.buildImportedEntry = buildImportedEntry;
 window.BatchManager.reconstructParamStr = reconstructParamStr;
+window.BatchManager.applyStyleToImportedBatch = applyStyleToImportedBatch;
+window.BatchManager.stampStyleOnImportedBatch = stampStyleOnImportedBatch;
 
 async function importBatchFileDialog() {
   try {
@@ -386,26 +487,122 @@ async function importBatchFileDialog() {
 
       m.appendChild(el('p', { style: 'font-size: 12px; font-weight: bold;' }, 'Choose how to import these items:'));
 
+      // v1.1.29 (user request): combined styles + import. The user
+      // can attach a style preset to the imported batch in one
+      // step. When enabled:
+      //   - The preset is saved into the global config.styles list
+      //     (de-duped by name) so it persists across sessions and
+      //     shows up in every tab's style dropdown.
+      //   - Every imported entry gets `style: <name>` stamped on it,
+      //     which the existing BatchGen runner (batchManager.js
+      //     `item.style` handling) picks up to pre-select the
+      //     dropdown + prepend the value via buildFinalPrompt when
+      //     the row generates.
+      // The whole "style preset" feature is opt-in: a user who just
+      // wants the prompts and will pick a style per-tab in the
+      // editor can leave the checkbox off and the import is
+      // unchanged.
+      const styleBox = el('div', {
+        style: 'margin: 4px 0 14px; padding: 10px 12px; border: 1px solid var(--border-2); border-radius: var(--radius-sm); background: rgba(255,255,255,0.02);',
+      });
+      const styleCb = el('input', { type: 'checkbox' });
+      styleCb.id = 'batch-import-style-enabled';
+      const styleCbLabel = el('label', {
+        for: 'batch-import-style-enabled',
+        style: 'font-size: 12.5px; cursor: pointer; user-select: none;',
+      }, ' Apply a style preset to all items in this batch');
+      const styleCbRow = el('div', {}, [styleCb, styleCbLabel]);
+      const styleFields = el('div', { style: 'margin: 8px 0 0 22px; display: none;' });
+      const styleNameInput = el('input', {
+        type: 'text',
+        placeholder: 'Style name (e.g. "Imported batch — Watercolour")',
+        style: 'width: 100%; margin-bottom: 6px;',
+      });
+      const styleValueInput = el('textarea', {
+        placeholder: 'Style value — text prepended to every prompt (e.g. "watercolour, soft lighting, 35mm")',
+        style: 'width: 100%; min-height: 56px;',
+      });
+      styleFields.appendChild(styleNameInput);
+      styleFields.appendChild(styleValueInput);
+      styleFields.appendChild(el('p', {
+        style: 'margin: 6px 0 0; font-size: 11.5px; color: var(--fg-2);',
+      }, 'The preset is saved to the global style list (used by every tab) AND pre-selected for every imported entry, so BatchGen prepends it automatically when each item runs.'));
+      styleBox.appendChild(styleCbRow);
+      styleBox.appendChild(styleFields);
+      m.appendChild(styleBox);
+      styleCb.addEventListener('change', () => {
+        styleFields.style.display = styleCb.checked ? '' : 'none';
+      });
+
       const overwriteBtn = el('button', { class: 'primary' }, 'Overwrite existing queues');
       const appendBtn = el('button', {}, 'Append to existing queues');
       const cancelBtn = el('button', { class: 'btn-mini' }, 'Cancel');
 
-      overwriteBtn.addEventListener('click', async () => {
-        const next = { ...state.batches };
-        for (const type of ['image', 'speech', 'music', 'video']) {
-          next[type] = importedBatches[type].slice(0, 100);
+      // Bug-fix A5 (double-click guard): disable the
+      // committing buttons (Overwrite + Append) for the
+      // duration of the in-flight applyStyleIfRequested await,
+      // so an impatient double-click can't fire two
+      // setConfig / batchesSet round-trips in parallel.
+      // Cancel stays enabled — the user must always be able to
+      // abort. The buttons are re-enabled on every return path
+      // (success, validation failure, IPC failure) so a
+      // rejected style write doesn't permanently lock the
+      // dialog.
+      const setCommitButtonsBusy = (busy) => {
+        overwriteBtn.disabled = !!busy;
+        appendBtn.disabled = !!busy;
+        // also re-style so the user can see the lock visually
+        overwriteBtn.style.opacity = busy ? '0.5' : '';
+        appendBtn.style.opacity = busy ? '0.5' : '';
+        overwriteBtn.style.cursor = busy ? 'wait' : '';
+        appendBtn.style.cursor = busy ? 'wait' : '';
+      };
+
+      async function applyStyleIfRequested() {
+        if (!styleCb.checked) return '';
+        const n = String(styleNameInput.value || '').trim();
+        const v = String(styleValueInput.value || '').trim();
+        if (!n || !v) {
+          toast('Style name and value are required to apply a style, or uncheck the box.', 'warn', 5000);
+          return '';
         }
-        await saveImported(next);
-        close();
+        const savedName = await applyStyleToImportedBatch({ name: n, value: v });
+        if (savedName) stampStyleOnImportedBatch(importedBatches, savedName);
+        return savedName;
+      }
+
+      overwriteBtn.addEventListener('click', async () => {
+        if (overwriteBtn.disabled) return;
+        setCommitButtonsBusy(true);
+        try {
+          const applied = await applyStyleIfRequested();
+          if (styleCb.checked && !applied) return;
+          const next = { ...state.batches };
+          for (const type of ['image', 'speech', 'music', 'video']) {
+            next[type] = importedBatches[type].slice(0, 100);
+          }
+          await saveImported(next);
+          close();
+        } finally {
+          setCommitButtonsBusy(false);
+        }
       });
 
       appendBtn.addEventListener('click', async () => {
-        const next = { ...state.batches };
-        for (const type of ['image', 'speech', 'music', 'video']) {
-          next[type] = [...(state.batches[type] || []), ...importedBatches[type]].slice(0, 100);
+        if (appendBtn.disabled) return;
+        setCommitButtonsBusy(true);
+        try {
+          const applied = await applyStyleIfRequested();
+          if (styleCb.checked && !applied) return;
+          const next = { ...state.batches };
+          for (const type of ['image', 'speech', 'music', 'video']) {
+            next[type] = [...(state.batches[type] || []), ...importedBatches[type]].slice(0, 100);
+          }
+          await saveImported(next);
+          close();
+        } finally {
+          setCommitButtonsBusy(false);
         }
-        await saveImported(next);
-        close();
       });
 
       cancelBtn.addEventListener('click', () => close());
