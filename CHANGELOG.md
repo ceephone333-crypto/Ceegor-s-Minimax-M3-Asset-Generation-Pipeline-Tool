@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.1.3 — 2026-07-01
+
+Bug-fix release addressing three user-reported issues in BatchGen import and the
+folder-explorer image pipeline. Every fix was verified end-to-end in the real
+renderer (booted headless with live IPC), not just by unit tests.
+
+### Fixed
+
+- **Imported BatchGen requests ignored `--n` — and, in fact, every other
+  per-row parameter.** A row imported from a `.md`/`.txt` document such as
+  `image | a red apple | --n 3` only ever generated **one** image. Root cause:
+  the batch runner maps each imported flag to its tab input by the parameter
+  label, but the label text was read *including* the injected help-button "?",
+  so every derived key came out as `n?` / `width?` / … and never matched the
+  clean key (`n`) parsed from the row. The help button is now stripped before
+  the key is derived, so `--n`, `--aspect-ratio`, `--width`, `--seed`,
+  `--response-format`, etc. all apply. Verified: an imported `--n 2` now
+  forwards `--n 2 --out-dir …` to the backend.
+- **Right-click image-pipeline actions only processed one image when several
+  were checked.** Checking three images in the folder explorer and choosing
+  Upscale (or Crop / Convert / Optimize / Remove background) processed only the
+  right-clicked image. The context menu is now multi-select-aware: when the
+  right-clicked image is part of a ≥2-image checkbox selection, the action's
+  dialog collects its settings once and applies them to **every** checked image
+  (sequential run with a progress line + summary). Buttons relabel accordingly
+  ("Upscale 3 images…"). Single-image behaviour, and the preview-pane / audio
+  context menus, are unchanged.
+- **The image tab had no model selector, and imported `--model` was ignored.**
+  The `--model` row (image-01 / image-01-live) was built but never mounted in
+  the DOM, so it neither appeared in the UI nor received an imported `--model`
+  value. It is now mounted at the top of the Parameters grid.
+
 ## 1.1.2 — 2026-06-26
 
 Bug-fix release. Closes the multi-image generation defect and three issues found

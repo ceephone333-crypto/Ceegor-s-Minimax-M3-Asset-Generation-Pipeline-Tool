@@ -127,7 +127,15 @@ window.TABS.image = {
     root.appendChild(el('div', { class: 'section' }, [
       el('h3', {}, 'Parameters'),
       buildFilePrefixRow(),
-      el('div', { class: 'grid' }, [aspect.row, width.row, height.row, n.row, seed.row, respFmt.row, promptOpt.row, watermark.row, subjRef.row]),
+      // Bug-fix (2026-07-01, user-reported follow-up): the --model row
+      // was built above but never mounted, so the image tab had NO model
+      // selector at all (image-01 vs image-01-live) and an imported
+      // `--model` was silently dropped (getTabInputs only scans rows that
+      // are actually in the DOM). Mount it first in the grid, matching the
+      // speech/music tabs. Both image models accept the same parameter set
+      // (see MODEL_SPECS.image), so no per-model row-visibility wiring is
+      // needed — switching models only changes the --model string sent.
+      el('div', { class: 'grid' }, [model.row, aspect.row, width.row, height.row, n.row, seed.row, respFmt.row, promptOpt.row, watermark.row, subjRef.row]),
       // Live validity warnings for the W × H combo and the subject
       // ref field. attachImageDimGuards wires the aspect/W/H
       // listeners (auto-fill on aspect change, ratio-mismatch

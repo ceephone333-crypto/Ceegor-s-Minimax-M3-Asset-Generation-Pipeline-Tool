@@ -5,7 +5,12 @@
 // Format-converter overlay. Shows the source format and a dropdown of
 // supported targets (PNG, JPEG, WebP). Output file uses the new
 // extension; quality is fixed at 0.95.
-function showConvertOverlay(srcPath) {
+function showConvertOverlay(srcPath, targets) {
+  // Multi-select batch (2026-07-01): when ≥2 images are checked in the
+  // folder explorer, `targets` holds all of them and the confirm loops
+  // over every one with the chosen output format. The dialog UI still
+  // reflects the primary (right-clicked) srcPath.
+  const batch = Array.isArray(targets) && targets.length > 1 ? targets.slice() : null;
   // v1.1 (audit M11): use path-based extension extraction, NOT
   // split('.').pop(). The pre-v1.1 code returned the WHOLE filename
   // for an extension-less source, which then failed to match any
@@ -18,7 +23,7 @@ function showConvertOverlay(srcPath) {
   showModal((m, close) => {
     m.appendChild(el('h2', {}, '⇄ Convert image format'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
-      'Source: ' + srcPath));
+      batch ? `Converting ${batch.length} selected images` : 'Source: ' + srcPath));
     const srcFmtLabel = el('input', { type: 'text', value: srcFmt, readonly: '' });
     const outSel = el('select', {});
     // Supported output targets. All three are written natively by
@@ -39,12 +44,20 @@ function showConvertOverlay(srcPath) {
     const cancelBtn = el('button', { onclick: close }, 'Cancel');
     convertBtn.addEventListener('click', async () => {
       const target = outSel.value;
-      if (target === ext) {
+      // The "same format, nothing to do" guard only makes sense for a
+      // single source; a batch can contain mixed source formats.
+      if (!batch && target === ext) {
         toast('Source and target format are the same — nothing to do.', 'warn', 3000);
         return;
       }
       convertBtn.disabled = true; convertBtn.textContent = 'Converting…';
       try {
+        if (batch) {
+          // Loop every checked image through the same target format.
+          await runImagePipelineBatch(`Convert → ${target.toUpperCase()}`, batch, (p) => convertImageFile(p, target));
+          close();
+          return;
+        }
         const out = await convertImageFile(srcPath, target);
         toast(`Converted to ${target.toUpperCase()} → ${out}`, 'ok', 4000);
         await refreshBrowser();
@@ -70,11 +83,18 @@ function showConvertOverlay(srcPath) {
 // a scrollable container; the user enters W x H, clicks Apply, and a
 // green-bordered draggable frame appears at the specified size. The
 // user can drag the frame to position it; clicking Crop finalizes.
-function showCropOverlay(srcPath) {
+function showCropOverlay(srcPath, targets) {
+  // Multi-select batch (2026-07-01): apply the SAME crop rectangle
+  // (position + W × H, as dragged on the primary image) to every checked
+  // image. cropImageFile clamps the rectangle to each image's own bounds
+  // and throws if it falls entirely outside — those count as failures in
+  // the batch summary. Best suited to same-sized images (the common case
+  // for a batch of generated assets).
+  const batch = Array.isArray(targets) && targets.length > 1 ? targets.slice() : null;
   showModal((m, close) => {
     m.appendChild(el('h2', {}, '✂ Crop image'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
-      'Source: ' + srcPath));
+      batch ? `Cropping ${batch.length} selected images — the frame below is set on the first; the same rectangle is applied to all.` : 'Source: ' + srcPath));
 
     // Inputs row: auto-size checkbox, Width, Height, Apply
     // The "auto-size" checkbox is on by default: when checked, the
@@ -201,6 +221,12 @@ function showCropOverlay(srcPath) {
       const h = parseInt(hInput.value, 10) || 1;
       cropBtn.disabled = true; cropBtn.textContent = 'Cropping…';
       try {
+        if (batch) {
+          // Same rectangle for every checked image (clamped per-image).
+          await runImagePipelineBatch(`Crop ${w}×${h}`, batch, (p) => cropImageFile(p, frameX, frameY, w, h));
+          close();
+          return;
+        }
         const out = await cropImageFile(srcPath, frameX, frameY, w, h);
         toast(`Cropped to ${w}×${h} → ${out}`, 'ok', 4000);
         await refreshBrowser();
@@ -240,7 +266,12 @@ function showCropOverlay(srcPath) {
 // folder" link. The user can keep clicking "Run" with different
 // settings without re-opening the dialog (the slider
 // reposition would otherwise re-trigger the action).
-function showOptimizeOverlay(srcPath) {
+function showOptimizeOverlay(srcPath, targets) {
+  // Multi-select batch (2026-07-01): when ≥2 images are checked, run the
+  // chosen quality/format/strip settings across every one. The dialog UI
+  // reflects the primary srcPath; the per-file results block is replaced
+  // by a batch summary line.
+  const batch = Array.isArray(targets) && targets.length > 1 ? targets.slice() : null;
   // v1.1 (audit M11): same path-aware extraction as showConvertOverlay.
   // The pre-v1.1 split('.').pop() returned the WHOLE filename for an
   // extension-less source path, mis-classifying it as a known format.
@@ -257,7 +288,7 @@ function showOptimizeOverlay(srcPath) {
   showModal((m, close) => {
     m.appendChild(el('h2', {}, '🗜 Optimize / Compress image'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
-      'Source: ' + srcPath));
+      batch ? `Optimizing ${batch.length} selected images` : 'Source: ' + srcPath));
 
     // ---- Quality slider ----
     // The slider's range is 1..100. We display the current value
@@ -346,6 +377,22 @@ function showOptimizeOverlay(srcPath) {
       status.textContent = `Re-encoding at quality ${quality}…`;
       resultsBox.style.display = 'none';
       resultsBox.innerHTML = '';
+      // Batch: run every checked image through the same settings, then
+      // report a summary. The per-file results block (bytes saved etc.)
+      // is single-file only; the batch worker's toast carries the roll-up.
+      if (batch) {
+        try {
+          const { ok, fail } = await runImagePipelineBatch(`Optimize q${quality}`, batch,
+            (p) => optimizeImageFile(p, { quality, format, stripMetadata }));
+          status.textContent = `Done. ${ok} optimized${fail ? `, ${fail} failed (kept in selection)` : ''}.`;
+        } catch (e) {
+          status.textContent = 'Failed: ' + (e && e.message || e);
+          toast('Optimize failed: ' + (e && e.message || e), 'err', 6000);
+        }
+        runBtn.disabled = false;
+        runBtn.textContent = '🗜 Optimize';
+        return;
+      }
       try {
         const r = await optimizeImageFile(srcPath, { quality, format, stripMetadata });
         // Build a human-friendly results block. The exact bytes

@@ -451,7 +451,29 @@ async function fbClipboardPaste(destDir) {
   await refreshBrowser();
 }
 
-function showItemContextMenu(it, x, y) {
+function showItemContextMenu(it, x, y, opts) {
+  // Bug-fix (2026-07-01, user-reported): multi-select batch for the
+  // image-pipeline actions. When this menu is opened from the folder
+  // explorer (opts.allowBatch) on an image that is itself CHECKED, and
+  // ≥2 images are checked, the pipeline actions (Upscale / Crop /
+  // Convert / Optimize / Remove background) apply to ALL checked images
+  // instead of only the right-clicked one. The preview-pane / overlay /
+  // music-tab entry points go through showItemContextMenuForPath, which
+  // does NOT pass allowBatch, so they keep the single-file behaviour.
+  const IMG_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'];
+  const extOfPath = (p) => {
+    const name = (p || '').split(/[\\/]/).pop() || '';
+    const d = name.lastIndexOf('.');
+    return d > 0 ? name.slice(d).toLowerCase() : '';
+  };
+  const itIsImage = !it.isDir && IMG_EXTS.includes(it.ext);
+  let batchTargets = null;
+  if (opts && opts.allowBatch && itIsImage && state.fbSelected && state.fbSelected.has(it.path)) {
+    const imgs = Array.from(state.fbSelected).filter((p) => IMG_EXTS.includes(extOfPath(p)));
+    if (imgs.length >= 2) batchTargets = imgs;
+  }
+  const batchN = batchTargets ? batchTargets.length : 0;
+
   // v1.1.15 (reported by user): redesigned the right-click
   // context menu so it has TWO columns:
   //   - LEFT: the action list (Open / Preview, Open in
@@ -478,8 +500,13 @@ function showItemContextMenu(it, x, y) {
   // a modal afterwards.
   showModal((m, close) => {
     m.classList.add('fb-context-menu-modal');
-    m.appendChild(el('h2', {}, it.name));
-    m.appendChild(el('div', { class: 'meta', style: 'margin-bottom: 8px; color: var(--fg-2);' }, it.path));
+    m.appendChild(el('h2', {}, batchN ? `${batchN} images selected` : it.name));
+    m.appendChild(el('div', { class: 'meta', style: 'margin-bottom: 8px; color: var(--fg-2);' }, batchN ? `${it.path}  (+${batchN - 1} more)` : it.path));
+    if (batchN) {
+      m.appendChild(el('div', {
+        style: 'margin: 0 0 8px; padding: 6px 9px; border: 1px solid var(--accent, #5b9dd9); border-radius: var(--radius-sm, 6px); background: rgba(91,157,217,0.10); color: var(--fg-1); font-size: 12px;',
+      }, `🗂 Image-pipeline actions below (Upscale / Crop / Convert / Optimize / Remove background) will run on all ${batchN} checked images.`));
+    }
 
     // The two-column body. The right column (preview) is
     // hidden for non-image files via CSS (display: none on
@@ -580,24 +607,28 @@ function showItemContextMenu(it, x, y) {
     // user moves the cursor away — no modal to close.
     const rows = [];
     if (isImage) {
+      // When batchN is set (≥2 checked images incl. this one), each
+      // pipeline button applies to ALL of them (batchTargets); the
+      // dialog collects its settings once and loops. Otherwise the
+      // single-file (it.path) behaviour is unchanged.
       const rU = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
-        el('button', { class: 'btn-mini', onclick: () => { close(); showUpscaleDirect(it.path); } }, '🔍 Upscale…'),
+        el('button', { class: 'btn-mini', onclick: () => { close(); showUpscaleDirect(it.path, batchTargets); } }, batchN ? `🔍 Upscale ${batchN} images…` : '🔍 Upscale…'),
         el('span', { class: 'help', 'data-help': 'Make the image bigger (2×, 3×, or 4×) using the built-in canvas pipeline, or the higher-quality Real-ESRGAN binary if installed. The new file is written next to the original with a "_2x" / "_3x" / "_4x" suffix in the filename.', title: 'Upscale' }, '?'),
       ])]);
       const rC = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
-        el('button', { class: 'btn-mini', onclick: () => { close(); showCropOverlay(it.path); } }, '✂ Crop…'),
-        el('span', { class: 'help', 'data-help': 'Crop the image to a specific rectangle. Drag the crop frame with the mouse, or type exact W × H values. The cropped file is written next to the original with a "_cropped_WxH" suffix.', title: 'Crop' }, '?'),
+        el('button', { class: 'btn-mini', onclick: () => { close(); showCropOverlay(it.path, batchTargets); } }, batchN ? `✂ Crop ${batchN} images…` : '✂ Crop…'),
+        el('span', { class: 'help', 'data-help': 'Crop the image to a specific rectangle. Drag the crop frame with the mouse, or type exact W × H values. The cropped file is written next to the original with a "_cropped_WxH" suffix. For a multi-selection the same crop rectangle is applied to every checked image (clamped to each image\'s bounds).', title: 'Crop' }, '?'),
       ])]);
       const rF = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
-        el('button', { class: 'btn-mini', onclick: () => { close(); showConvertOverlay(it.path); } }, '⇄ Convert format…'),
+        el('button', { class: 'btn-mini', onclick: () => { close(); showConvertOverlay(it.path, batchTargets); } }, batchN ? `⇄ Convert ${batchN} images…` : '⇄ Convert format…'),
         el('span', { class: 'help', 'data-help': 'Re-encode the image to a different format. PNG is lossless (good for screenshots / illustrations, supports transparency). JPEG is much smaller (good for photos, no transparency). WebP is a modern middle ground (smaller than JPEG, supports transparency, but less universal).', title: 'Convert format' }, '?'),
       ])]);
       const rO = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
-        el('button', { class: 'btn-mini', onclick: () => { close(); showOptimizeOverlay(it.path); } }, '🗜 Optimize / Compress…'),
+        el('button', { class: 'btn-mini', onclick: () => { close(); showOptimizeOverlay(it.path, batchTargets); } }, batchN ? `🗜 Optimize ${batchN} images…` : '🗜 Optimize / Compress…'),
         el('span', { class: 'help', 'data-help': 'Shrink the file size while keeping the image looking (almost) the same. The default quality of 82 is the "perceptually lossless" sweet spot for photos. You can also re-encode to WebP / AVIF for further size savings, and strip non-essential EXIF data (camera model, GPS, software tag) while keeping the colour profile.', title: 'Optimize / Compress' }, '?'),
       ])]);
       const rB = el('div', { class: 'row' }, [el('div', { class: 'row-flex' }, [
-        el('button', { class: 'btn-mini', onclick: () => { close(); runRemoveBackgroundOnItem(it); } }, '✨ Remove background'),
+        el('button', { class: 'btn-mini', onclick: () => { close(); runRemoveBackgroundOnItem(it, batchTargets); } }, batchN ? `✨ Remove background (${batchN})` : '✨ Remove background'),
         el('span', { class: 'help', 'data-help': 'Replace the background of the image with transparency. Uses the optional IS-Net model (a state-of-the-art segmentation model) — the tool walks you through the one-time install on first use. The result is a transparent PNG written next to the original.', title: 'Remove background' }, '?'),
       ])]);
       rows.push(rU, rC, rF, rO, rB);

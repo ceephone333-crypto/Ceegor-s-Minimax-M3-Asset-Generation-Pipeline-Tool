@@ -47,9 +47,24 @@ function getTabInputs(tabKey) {
   for (const row of rows) {
     const labelEl = row.querySelector('label');
     if (!labelEl) continue;
-    
-    let label = labelEl.textContent.trim().toLowerCase();
-    
+
+    // Bug-fix (2026-07-01, user-reported "--n from imported .md is
+    // ignored"): the centralized help system (section23) injects a help
+    // "?" button (class .help-btn, text "?") as a child of every param
+    // label. labelEl.textContent therefore included that trailing "?",
+    // so EVERY derived key came out as "n?" / "width?" / … instead of
+    // "n" / "width". The batch runner (batchManager.js) looks up
+    // tabFields[cleanKey] with the CLEAN key parsed from the imported
+    // row ("n"), so the lookup ALWAYS missed and every generic imported
+    // param (--n, --width, --seed, …) was silently dropped — only the
+    // specially-cased keys (upscale/style) ever applied. Strip ALL
+    // buttons (help-btn today, the legacy help-button, and any future
+    // affordance — a param label's semantic text is never inside a
+    // button) from a clone before reading the text so keys are clean.
+    const labelClone = labelEl.cloneNode(true);
+    labelClone.querySelectorAll('button').forEach((b) => b.remove());
+    let label = labelClone.textContent.trim().toLowerCase();
+
     // Clean label text:
     label = label.replace(/^[^\w-]+/, ''); // remove leading symbols/emojis
     label = label.replace(/^--/, ''); // remove CLI dashes

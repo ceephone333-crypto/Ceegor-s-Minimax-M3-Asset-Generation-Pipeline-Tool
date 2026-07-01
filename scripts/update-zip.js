@@ -18,7 +18,7 @@ const STABLE_EXE = path.join(ROOT, 'dist-stable', 'MiniMaxAssetTool.exe');
 const DIST_BUILD = path.join(ROOT, 'dist-build', 'win-unpacked');
 const STAGE = path.join(ROOT, '.zip-stage');
 const OUT_DIR = path.join(ROOT, 'dist');
-const ZIP_NAME = 'MiniMaxAssetTool-1.1.2-x64.zip';
+const ZIP_NAME = 'MiniMaxAssetTool-1.1.3-x64.zip';
 
 const ASAR_STAGE_FILES = [
   'main.js', 'preload.js', 'package.json',

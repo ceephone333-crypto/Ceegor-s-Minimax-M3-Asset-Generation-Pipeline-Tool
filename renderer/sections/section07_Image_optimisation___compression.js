@@ -609,7 +609,14 @@ function showUpscaleSettings() {
 // renderer/sections/section07_Image_optimisation_part2.js (Phase 3 Block 30)
 // Second half of Image optimisation section.
 
-async function showUpscaleDirect(srcPath) {
+async function showUpscaleDirect(srcPath, targets) {
+  // Multi-select batch (2026-07-01, user-reported): when ≥2 images are
+  // checked in the folder explorer, `targets` holds all of them and the
+  // whole upscale (+ optional crop + optional background-removal)
+  // pipeline runs on every one with the settings chosen here. The
+  // dialog's resolution/crop-preview UI still reflects the primary
+  // (right-clicked) srcPath.
+  const batch = Array.isArray(targets) && targets.length > 1 ? targets.slice() : null;
   // We need the source's natural resolution to compute the target.
   // If the image is unreadable, surface the error and bail — the
   // dialog needs a known sourceW × sourceH to do anything useful.
@@ -633,7 +640,7 @@ async function showUpscaleDirect(srcPath) {
   showModal((m, close) => {
     m.appendChild(el('h2', {}, '🔍 Upscale image'));
     m.appendChild(el('p', { class: 'meta', style: 'color: var(--fg-2); font-size: 12px;' },
-      'Source: ' + srcPath));
+      batch ? `Upscaling ${batch.length} selected images — settings below apply to all.` : 'Source: ' + srcPath));
 
     // Resolution row: source (immutable) + target after upscale (live).
     // The target updates whenever the multiplier or crop W/H changes.
@@ -917,67 +924,83 @@ async function showUpscaleDirect(srcPath) {
       // is owned exclusively by that dedicated checkbox). Setting it
       // true here used to leak into every future Generate click.
       upscaleBtn.disabled = true; upscaleBtn.textContent = 'Upscaling…';
-      // `final` is the path to the file we want to preview at the
-      // end of the pipeline. It gets reassigned by the optional
-      // crop + background-removal steps, and is the only file
-      // that should be left on disk for the user to see.
-      let final = null;
-      try {
-        // Step 1: upscale.
-        const upscaled = await upscaleImageFile(srcPath, multiplier);
-        // Step 2: optionally crop.
-        if (autoCropCb.checked) {
-          upscaleBtn.textContent = 'Cropping…';
-          const cropW = Math.max(1, parseInt(cropWInput.value, 10) || 1);
-          const cropH = Math.max(1, parseInt(cropHInput.value, 10) || 1);
+      // Snapshot the settings once so a single runOne() body serves both
+      // the single-file and the batch path (and can't be perturbed by a
+      // stray input event mid-run).
+      const doCrop = !!autoCropCb.checked;
+      const wantCropW = Math.max(1, parseInt(cropWInput.value, 10) || 1);
+      const wantCropH = Math.max(1, parseInt(cropHInput.value, 10) || 1);
+      const anchorX = anchor.x, anchorY = anchor.y;
+      const doBg = !!noBgCb.checked;
+
+      // Run the full pipeline on ONE image. Returns the path of the file
+      // to keep (upscaled → optionally cropped → optionally bg-removed).
+      // `quiet` suppresses per-file toasts + button-text updates so the
+      // batch worker owns the progress/summary UI. Upscale/crop failures
+      // throw (fatal for that item); background removal is non-fatal (the
+      // upscaled/cropped file is kept and a warning shows in single mode).
+      const runOne = async (path, quiet) => {
+        const upscaled = await upscaleImageFile(path, multiplier);
+        let out = upscaled;
+        let bgRemoved = false;
+        if (doCrop) {
+          if (!quiet) upscaleBtn.textContent = 'Cropping…';
           // Need the actual upscaled dimensions to anchor correctly.
           const upImg = await loadImageFromFile(upscaled);
           const uW = upImg.naturalWidth;
           const uH = upImg.naturalHeight;
           // Clamp the crop to the upscaled size; anchor otherwise.
-          const w = Math.min(cropW, uW);
-          const h = Math.min(cropH, uH);
+          const w = Math.min(wantCropW, uW);
+          const h = Math.min(wantCropH, uH);
           const maxX = uW - w;
           const maxY = uH - h;
           let x, y;
-          if (anchor.x === 'left')       x = 0;
-          else if (anchor.x === 'right') x = maxX;
-          else                            x = Math.floor(maxX / 2);
-          if (anchor.y === 'top')         y = 0;
-          else if (anchor.y === 'bottom') y = maxY;
-          else                            y = Math.floor(maxY / 2);
+          if (anchorX === 'left')       x = 0;
+          else if (anchorX === 'right') x = maxX;
+          else                           x = Math.floor(maxX / 2);
+          if (anchorY === 'top')         y = 0;
+          else if (anchorY === 'bottom') y = maxY;
+          else                           y = Math.floor(maxY / 2);
           const cropped = await cropImageFile(upscaled, x, y, w, h);
           // Drop the intermediate (full-upscaled) file — the user
           // asked for the cropped one, not the raw intermediate.
           window.api.fbDelete(upscaled).catch(() => {});
-          final = cropped;
-        } else {
-          final = upscaled;
+          out = cropped;
         }
-        // Step 3: optionally remove the background. Non-fatal: a
-        // missing / failed binary keeps the upscaled (or cropped)
-        // file as the deliverable and surfaces a warning toast,
-        // so the user never loses the image they already paid
-        // API credits to generate.
-        if (noBgCb.checked) {
-          upscaleBtn.textContent = 'Removing background…';
+        // Optional background removal. Non-fatal: a missing / failed
+        // binary keeps the upscaled (or cropped) file as the deliverable,
+        // so the user never loses the image they already paid API
+        // credits to generate.
+        if (doBg) {
+          if (!quiet) upscaleBtn.textContent = 'Removing background…';
           try {
-            const noBg = await removeBackgroundFile(final);
-            if (noBg !== final) {
-              window.api.fbDelete(final).catch(() => {});
-              final = noBg;
+            const noBg = await removeBackgroundFile(out);
+            if (noBg !== out) {
+              window.api.fbDelete(out).catch(() => {});
+              out = noBg;
             }
-            toast(`Upscaled ${multiplier}× + background removed → ${final}`, 'ok', 4500);
+            bgRemoved = true;
           } catch (e) {
             console.error('Remove background failed:', e);
-            toast('Background removal failed (kept upscaled image): ' + (e && e.message || e), 'warn', 5000);
+            if (!quiet) toast('Background removal failed (kept upscaled image): ' + (e && e.message || e), 'warn', 5000);
           }
-        } else {
-          toast(`Upscaled to ${multiplier}× → ${final}`, 'ok', 4000);
         }
-        await refreshBrowser();
-        if (typeof updatePreviewPane === 'function' && final) {
-          try { previewImageFromFile(final); } catch (_) {}
+        if (!quiet) {
+          if (bgRemoved) toast(`Upscaled ${multiplier}× + background removed → ${out}`, 'ok', 4500);
+          else toast(`Upscaled to ${multiplier}× → ${out}`, 'ok', 4000);
+        }
+        return out;
+      };
+
+      try {
+        if (batch) {
+          // Loop every checked image through the same pipeline. The
+          // worker owns the progress line, summary toast, and refresh.
+          await runImagePipelineBatch(`Upscale ${multiplier}×`, batch, (p) => runOne(p, true));
+        } else {
+          const final = await runOne(srcPath, false);
+          await refreshBrowser();
+          if (final) { try { previewImageFromFile(final); } catch (_) {} }
         }
         // Persist the new upscale settings now that we know the
         // upscale succeeded. (The setting is also updated in-place
@@ -987,7 +1010,7 @@ async function showUpscaleDirect(srcPath) {
         try { await scheduleStateSave(); } catch (_) {}
         close();
       } catch (e) {
-        toast('Upscale' + (autoCropCb.checked ? '+crop' : '') + ' failed: ' + (e && e.message || e), 'err', 6000);
+        toast('Upscale' + (doCrop ? '+crop' : '') + ' failed: ' + (e && e.message || e), 'err', 6000);
         upscaleBtn.disabled = false;
         upscaleBtn.textContent = 'Upscale';
       }

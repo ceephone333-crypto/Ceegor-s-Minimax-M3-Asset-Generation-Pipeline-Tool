@@ -54,7 +54,11 @@ function showItemContextMenuForPath(path, x, y) {
 // We pre-flight the binary / model probe so the user sees a
 // precise error message ("binary not installed" vs "model
 // missing") instead of a generic failure toast.
-async function runRemoveBackgroundOnItem(it) {
+async function runRemoveBackgroundOnItem(it, targets) {
+  // Multi-select batch (2026-07-01): when ≥2 images are checked in the
+  // folder explorer, run background removal on every one after the
+  // binary/model pre-flight passes once.
+  const batch = Array.isArray(targets) && targets.length > 1 ? targets.slice() : null;
   let st = await probeIsnetbgStatus();
   if (!st.checked) {
     toast('Could not contact background-removal backend.', 'err', 5000);
@@ -66,6 +70,12 @@ async function runRemoveBackgroundOnItem(it) {
   }
   if (!st.modelPresent) {
     toast('isnetbg model file missing — drop isnet-general-use.onnx into ./bin/models/.', 'err', 6000);
+    return;
+  }
+  if (batch) {
+    // One pre-flight, then loop every checked image.
+    toast(`Removing background from ${batch.length} images…`, 'info', 2500);
+    await runImagePipelineBatch('Remove background', batch, (p) => removeBackgroundFile(p));
     return;
   }
   // Show a brief progress toast so the user knows the action was

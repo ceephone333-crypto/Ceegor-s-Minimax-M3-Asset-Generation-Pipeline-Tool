@@ -676,6 +676,51 @@ window.fbSelectAll = fbSelectAll;
 window.fbClearSelection = fbClearSelection;
 window.fbBulkAction = fbBulkAction;
 
+// Bug-fix (2026-07-01, user-reported): the folder-explorer right-click
+// pipeline actions (Upscale / Crop / Convert / Optimize / Remove
+// background) used to operate on ONLY the right-clicked image, ignoring
+// the multi-select checkboxes — so checking 3 images and picking
+// "Upscale" upscaled just one. This worker is the batch counterpart:
+// the action's dialog collects its settings ONCE, then this applies the
+// per-file operation to EVERY given target sequentially (IPC pipeline
+// ops can corrupt each other's temp state if fired in parallel), with a
+// live status line + a single summary toast. It is deliberately separate
+// from fbBulkAction: (a) it takes an EXPLICIT `targets` list (the image
+// subset of the selection — fbBulkAction iterates the whole fbSelected,
+// which may include folders / audio), and (b) it does NOT confirm()
+// again — the pipeline dialog the user just clicked through is the
+// confirmation. `perFileFn(path, i, total)` runs the underlying per-file
+// worker (upscaleImageFile / convertImageFile / …) and must throw on
+// failure. Succeeded paths are unchecked; failed ones stay selected so
+// the user can retry. Returns { ok, fail }.
+async function runImagePipelineBatch(label, targets, perFileFn) {
+  const paths = Array.isArray(targets) ? targets.filter(Boolean) : [];
+  if (!paths.length) return { ok: 0, fail: 0 };
+  const total = paths.length;
+  let ok = 0, fail = 0;
+  const errors = [];
+  for (let i = 0; i < total; i++) {
+    const p = paths[i];
+    try {
+      if (typeof setStatus === 'function') setStatus(`${label} ${i + 1}/${total}…`, true);
+      await perFileFn(p, i, total);
+      if (state.fbSelected) state.fbSelected.delete(p);
+      ok++;
+    } catch (e) {
+      fail++;
+      errors.push((p.split(/[\\/]/).pop() || p) + ': ' + (e && e.message || e));
+      console.error(`${label} failed for`, p, e);
+    }
+  }
+  if (typeof setStatus === 'function') setStatus(`${label}: ${ok} ok${fail ? `, ${fail} failed` : ''}.`, false);
+  const detail = fail ? ` (kept in selection: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? '…' : ''})` : '';
+  toast(`${label}: ${ok} ok${fail ? `, ${fail} failed` : ''}${detail}`, fail ? 'warn' : 'ok', fail ? 7000 : 3500);
+  try { await refreshBrowser(); } catch (_) { /* best-effort */ }
+  try { window.dispatchEvent(new CustomEvent('fb-selection-changed', { detail: { size: state.fbSelected ? state.fbSelected.size : 0 } })); } catch (_) { /* no-op in tests */ }
+  return { ok, fail };
+}
+window.runImagePipelineBatch = runImagePipelineBatch;
+
 // v1.1 (user request): drives-list rendering. The Up button
 // jumps to this view when the user is already at a drive root.
 // Each row is a clickable drive (e.g. C:\, D:\, E:\ on Windows
@@ -932,7 +977,11 @@ function renderFbList(items) {
       $$('.fb-item', ul).forEach((n) => n.classList.remove('selected'));
       li.classList.add('selected');
       state._selected = it;
-      showItemContextMenu(it, e.clientX, e.clientY);
+      // allowBatch: this is the folder-explorer entry point, where the
+      // multi-select checkboxes live. When several images are checked
+      // and one of them is right-clicked, the pipeline actions apply to
+      // the whole checked set (see showItemContextMenu → batchTargets).
+      showItemContextMenu(it, e.clientX, e.clientY, { allowBatch: true });
     });
     ul.appendChild(li);
   }
