@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.1.4 — 2026-07-01
+
+User-requested feature release: output-folder auto-navigation in the file
+explorer, and a combined "style preset + batch import" flow. Verified end-to-end
+with 26 new unit tests (7 source-pinned structural + 6 adversarial + 13
+behavioural side-effect audits) on top of the existing 602-test suite.
+
+### Added
+
+- **Output-folder change auto-navigates the file browser.** When the user
+  changes `output_dir` in ⚙ Settings (or in the first-time-setup popup), the
+  file browser now re-points to the new folder instead of just refreshing
+  in place. Every per-tab saved folder is also updated, so a tab switch
+  after the change lands on the new location too. When the user blanks
+  the field to use the platform default (`%APPDATA%\MiniMaxAssetTool
+  \generated` on Windows), the explorer follows the new effective
+  location instead of staying on the old folder.
+
+- **Batch-import + style preset, combined.** The batch-import summary
+  modal now has an "Apply a style preset to all items in this batch"
+  section (checkbox + name + value). When enabled:
+  - The preset is added to the global style list (`config.styles`,
+    de-duped by name) and persisted to `config.txt`, so it survives a
+    restart and shows in every tab's style dropdown.
+  - Every imported entry is stamped with `style: <name>`, which the
+    existing BatchGen runner (`batchManager.js` `item.style` handling)
+    picks up to pre-select the dropdown and prepend the value via
+    `buildFinalPrompt` when the row generates. No more re-typing the
+    same style hint on every prompt.
+
+  The feature is opt-in: a user who just wants the prompts can leave
+  the checkbox off and the import is unchanged from v1.1.3.
+
+### Verified
+
+- Full unit suite: 628 / 628 green (26 new tests for the features above).
+- Lint clean.
+- Renderer no-node-globals check clean.
+
 ## 1.1.3 — 2026-07-01
 
 Bug-fix release addressing three user-reported issues in BatchGen import and the
